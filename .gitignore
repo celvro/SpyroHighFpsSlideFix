@@ -1,0 +1,14 @@
+# Build output
+build/
+bin/
+obj/
+
+# Local tool binaries (repak, UAssetGUI, etc.)
+tools/bin/
+
+# Never commit extracted retail game content
+*.pak
+*.ucas
+*.utoc
+*.wem
+*.bnk
