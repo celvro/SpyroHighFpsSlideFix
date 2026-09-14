@@ -1,5 +1,5 @@
-SpyroFpsFixes
-=============
+High FPS Sliding and Jump Fix
+=============================
 
 Makes Spyro Reignited Trilogy play the same above 30 FPS as it does at 30 FPS (the console tuning).
 
@@ -17,11 +17,11 @@ Requirements
 Install
 1. Install UE4SS into  Spyro Reignited Trilogy\Falcon\Binaries\Win64
 2. Extract this zip into the game folder  Spyro Reignited Trilogy\
-   The mod ends up in  Falcon\Binaries\Win64\ue4ss\Mods\SpyroFpsFixes
-3. Start the game. Falcon\Binaries\Win64\ue4ss\UE4SS.log should contain "[SpyroFpsFixes] v... loaded".
+   The mod ends up in  Falcon\Binaries\Win64\ue4ss\Mods\HighFpsSlidingAndJumpFix
+3. Start the game. Falcon\Binaries\Win64\ue4ss\UE4SS.log should contain "[HighFpsSlidingAndJumpFix] v... loaded".
 
 Notes
 - Restart the game after changing mods. UE4SS hot reload (Ctrl+R) can crash this game.
 
 Uninstall
-- Delete the Falcon\Binaries\Win64\ue4ss\Mods\SpyroFpsFixes folder.
+- Delete the Falcon\Binaries\Win64\ue4ss\Mods\HighFpsSlidingAndJumpFix folder.

@@ -1,58 +1,115 @@
-# SpyroFpsFixes
+# High FPS Sliding and Jump Fix for Spyro Reignited Trilogy
 
-Mods for Spyro Reignited Trilogy (Unreal Engine 4.19).
+Spyro Reignited Trilogy was tuned for 30 FPS. At higher framerates Spyro handles differently, and some jumps and glides become impossible. This mod makes the game play the same at any framerate as it does at 30 FPS.
 
-## Framerate fixes (UE4SS)
+**What it fixes**
 
-`ue4ss\Mods\SpyroFpsFixes` fixes two bugs that appear when the game runs above 30 FPS:
+- **Sliding:** above ~80 FPS, Spyro keeps sliding slowly after you let go of the stick.
+- **Jump height:** ground, water and charge jumps peak about 5 units lower than at 30 FPS. That's enough to miss ledges and shorten glides. Jumps now reach exactly the same height as at 30 FPS.
 
-- **Sliding:** above ~80 FPS Spyro keeps sliding slowly after stopping. Braking is lost to float rounding far from the world origin.
-- **Jump height:** jumps (ground, water, charge) peak ~5 units lower than at 30 FPS because the no-gravity window is rounded to frame boundaries. Jumps now rise exactly as they do at 30 FPS.
+At 30 FPS the mod changes nothing.
 
-Install:
+## Requirements
 
-1. Extract a [UE4SS](https://github.com/UE4SS-RE/RE-UE4SS/releases) release (tested with experimental `v3.0.1-1133-gb4cefa18`) into `tools\bin\ue4ss-dist\`, so that `dwmapi.dll` sits directly in that folder.
-2. Run:
+- Spyro Reignited Trilogy on **Steam** (the only version tested).
+- **UE4SS experimental build**, a free mod loader. Tested with `v3.0.1-1133-gb4cefa18`. The older "stable" UE4SS v3.0.1 release does **not** work with this mod.
+
+## Installation
+
+### 1. Find the game folder
+
+In Steam, right-click **Spyro Reignited Trilogy** → **Manage** → **Browse local files**. This opens the game folder, usually:
+
+```
+C:\Program Files (x86)\Steam\steamapps\common\Spyro Reignited Trilogy
+```
+
+### 2. Install UE4SS
+
+1. Go to the [UE4SS experimental release](https://github.com/UE4SS-RE/RE-UE4SS/releases/tag/experimental-latest) and download the file named `UE4SS_v3.0.1-....zip`. Don't download the ones starting with `zDEV` or `zCustomGameConfigs`.
+2. Open `Spyro Reignited Trilogy\Falcon\Binaries\Win64` (the folder with `Spyro-Win64-Shipping.exe`).
+3. Extract the UE4SS zip into that folder. Afterwards it should contain:
+
+```
+Win64\
+├── dwmapi.dll                  ← must be next to the .exe
+├── Spyro-Win64-Shipping.exe
+└── ue4ss\
+    ├── UE4SS.dll
+    ├── UE4SS-settings.ini
+    └── Mods\
+```
+
+### 3. Install the mod
+
+1. Download `HighFpsSlidingAndJumpFix-<version>.zip` from the [Releases page](../../releases/latest).
+2. Extract it into the **game folder** (`Spyro Reignited Trilogy`), not into `Win64`. The zip already contains the `Falcon\Binaries\Win64\...` folders, so the mod lands in:
+
+```
+Spyro Reignited Trilogy\Falcon\Binaries\Win64\ue4ss\Mods\HighFpsSlidingAndJumpFix\
+├── enabled.txt
+├── README.txt
+└── Scripts\
+    └── main.lua
+```
+
+If Windows asks whether to merge folders, choose **Yes**.
+
+### 4. Check that it works
+
+Start the game. No window or message appears in game; that's normal. Open this file in Notepad:
+
+```
+Spyro Reignited Trilogy\Falcon\Binaries\Win64\ue4ss\UE4SS.log
+```
+
+Near the end you should see:
+
+```
+[HighFpsSlidingAndJumpFix] v1.0.0 loaded
+```
+
+## Troubleshooting
+
+- **There's no `UE4SS.log`:** UE4SS isn't loading. Make sure `dwmapi.dll` is directly in the `Win64` folder, next to `Spyro-Win64-Shipping.exe`. Some antivirus programs quarantine this file; check your antivirus history and restore it if needed.
+- **The log exists but has no `[HighFpsSlidingAndJumpFix] ... loaded` line:** check the mod's folder layout matches step 3, including `enabled.txt`.
+- **The log shows `EngineTick hook unavailable` or a Lua `error`:** you're probably on the old stable UE4SS. Install the experimental build from step 2.
+- **The game crashed after pressing Ctrl+R:** that's UE4SS's mod reload, which can crash this game. Don't use it; restart the game instead.
+- **Want the UE4SS log window visible?** Set `ConsoleEnabled = 1` in `Win64\ue4ss\UE4SS-settings.ini`.
+
+## Uninstall
+
+- **Remove this mod:** delete the `Falcon\Binaries\Win64\ue4ss\Mods\HighFpsSlidingAndJumpFix` folder.
+- **Remove UE4SS entirely:** also delete `dwmapi.dll` and the `ue4ss` folder from `Falcon\Binaries\Win64`.
+
+## Development
+
+The rest of this repository contains the tools used to find and fix these bugs. `CLAUDE.md` has the research notes.
+
+- `ue4ss/Mods/HighFpsSlidingAndJumpFix`: the mod. `VERSION` in `main.lua` sets the release version; `PROFILE = true` logs its per-frame cost.
+- `ue4ss/DevMods/SpyroFpsProbe`: per-frame movement logger used to measure the bugs.
+- `tools/`: installer, release packager, asset/Blueprint dumper, trace comparison, crash dump reader.
+
+Install UE4SS and the mods into your game from the repo:
+
+1. Extract a UE4SS experimental release into `tools\bin\ue4ss-dist\` (so `dwmapi.dll` is directly in that folder).
+2. If the game isn't in the default Steam folder, set `$env:SPYRO_GAME_DIR` to the game root.
+3. Run:
 
 ```powershell
 .\tools\Install-UE4SS.ps1
 ```
 
-After editing a Lua mod, run `.\tools\Install-UE4SS.ps1 -ModsOnly` and restart the game. Hot reload (Ctrl+R) is disabled because it can crash the game. To also deploy the movement logger used for investigating these bugs, add `-Probe`. `-Uninstall` removes UE4SS from the game.
+After editing the mod, run `.\tools\Install-UE4SS.ps1 -ModsOnly` and restart the game. Add `-Probe` to also deploy the movement logger. `-Uninstall` removes UE4SS from the game.
 
-To build the release zip for Nexus Mods (version taken from `VERSION` in `main.lua`):
+Build the release zip (named from `VERSION` in `main.lua`):
 
 ```powershell
 .\tools\Package-Release.ps1
 ```
 
-This writes `build\release\SpyroFpsFixes-<version>.zip`, which players extract into the game folder. UE4SS is not included and has to be installed separately (an experimental build is required).
+This writes `build\release\HighFpsSlidingAndJumpFix-<version>.zip` for the GitHub release.
 
-## Pak mods
+## License
 
-### Setup
-
-1. Download [repak](https://github.com/trumank/repak/releases) and put `repak.exe` in `tools\bin\` (or on PATH).
-2. If the game is not in the default Steam folder, set `$env:SPYRO_GAME_DIR` to the game root.
-
-### Making a pak mod
-
-Put files in `mods\<ModName>\` using the same paths they have in the game, starting from `Falcon\` or `Engine\`:
-
-```
-mods\FpsFixes\Falcon\Config\DefaultEngine.ini
-```
-
-Build and install:
-
-```powershell
-.\tools\Build-Mod.ps1 -Name FpsFixes -Install
-```
-
-This creates `build\FpsFixes_P.pak` and copies it to `Falcon\Content\Paks\~mods\`.
-
-Uninstall:
-
-```powershell
-.\tools\Uninstall-Mod.ps1 -Name FpsFixes
-```
+[MIT](LICENSE)

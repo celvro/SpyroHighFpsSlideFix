@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    Builds the Nexus Mods release zip for SpyroFpsFixes into build\release\.
+    Builds the Nexus Mods release zip for High FPS Sliding and Jump Fix into build\release\.
 
 .DESCRIPTION
     The zip is laid out relative to the game root, so players extract it into
-    "Spyro Reignited Trilogy\" and the mod lands in Falcon\Binaries\Win64\ue4ss\Mods\SpyroFpsFixes\
+    "Spyro Reignited Trilogy\" and the mod lands in Falcon\Binaries\Win64\ue4ss\Mods\HighFpsSlidingAndJumpFix\
     with an enabled.txt (UE4SS loads it without editing mods.txt). The version comes from the
     VERSION constant in the mod's main.lua. UE4SS itself is not included.
 
@@ -12,7 +12,7 @@
     .\tools\Package-Release.ps1
 #>
 param(
-    [string] $ModName = 'SpyroFpsFixes'
+    [string] $ModName = 'HighFpsSlidingAndJumpFix'
 )
 
 $ErrorActionPreference = 'Stop'

@@ -3,7 +3,7 @@ build/
 bin/
 obj/
 
-# Local tool binaries (repak, UAssetGUI, etc.)
+# Local tool binaries (UE4SS dist, etc.)
 tools/bin/
 
 # Never commit extracted retail game content

@@ -1,4 +1,4 @@
--- SpyroFpsFixes: runtime fixes for framerate-dependent movement bugs.
+-- High FPS Sliding and Jump Fix: runtime fixes for framerate-dependent movement bugs.
 --
 -- Braking slide fix
 --   Levels sit ~300,000 units from the world origin, where float32 positions have a 1/32 unit
@@ -42,7 +42,7 @@ local brakingParamsLogged = false
 local errorLogged = false
 
 local function log(fmt, ...)
-    print(string.format("[SpyroFpsFixes] " .. fmt .. "\n", ...))
+    print(string.format("[HighFpsSlidingAndJumpFix] " .. fmt .. "\n", ...))
 end
 
 -- Distance between adjacent float32 values at magnitude v.
