@@ -90,13 +90,13 @@ local function brakingParams(cmc)
     return friction, math.max(0, cmc.BrakingDecelerationWalking)
 end
 
-local function fixBrakingSlide(pawn, cmc, dt)
-    local accel = cmc:GetCurrentAcceleration()
-    local braking = cmc.MovementMode == MOVE_WALKING
-        and accel.X == 0 and accel.Y == 0 and accel.Z == 0
-        and not pawn:IsPlayingRootMotion()
-    local vel = cmc.Velocity
+local function fixBrakingSlide(pawn, cmc, dt, mode, vel)
+    if mode ~= MOVE_WALKING then tracked = nil return end
     local vx, vy, vz = vel.X, vel.Y, vel.Z
+    -- Standing still: nothing can slide, so skip the engine calls below.
+    if vx == 0 and vy == 0 and vz == 0 then tracked = nil return end
+    local accel = cmc:GetCurrentAcceleration()
+    local braking = accel.X == 0 and accel.Y == 0 and accel.Z == 0 and not pawn:IsPlayingRootMotion()
 
     if not braking or not tracked or dt < MIN_TICK_TIME then
         tracked = braking and { vx, vy, vz } or nil
@@ -172,9 +172,8 @@ end
 
 -- Runs before each world tick, so the values read describe the frame that just finished and any
 -- GravityScale written here applies to the next frame's move.
-local function fixJumpHeight(pawn, cmc, dt)
-    local mode = cmc.MovementMode
-    local vel = cmc.Velocity
+local function fixJumpHeight(pawn, cmc, dt, mode, vel)
+    if not jump and mode ~= MOVE_FALLING then return end
     local vz = vel.Z
     local gravity = cmc.GravityScale
 
@@ -229,16 +228,48 @@ local function fixJumpHeight(pawn, cmc, dt)
     end
 end
 
-local function tick()
+-- UEHelpers.GetPlayerController() runs FindAllOf("PlayerController") on every call, which is too
+-- expensive to do every frame, so keep the controller until it becomes invalid (level change)
+-- and only search again every CONTROLLER_RETRY_FRAMES frames while there is none.
+local CONTROLLER_RETRY_FRAMES = 30
+local cachedController = nil
+local controllerRetryIn = 0
+local cachedStatics = nil
+
+local function getPlayerController()
+    if cachedController and cachedController:IsValid() then return cachedController end
+    cachedController = nil
+    if controllerRetryIn > 0 then
+        controllerRetryIn = controllerRetryIn - 1
+        return nil
+    end
     local pc = UEHelpers.GetPlayerController()
-    if not pc:IsValid() then return end
+    if pc:IsValid() then
+        cachedController = pc
+    else
+        controllerRetryIn = CONTROLLER_RETRY_FRAMES
+    end
+    return cachedController
+end
+
+local function getGameplayStatics()
+    if not (cachedStatics and cachedStatics:IsValid()) then cachedStatics = UEHelpers.GetGameplayStatics() end
+    return cachedStatics
+end
+
+local function tick()
+    local pc = getPlayerController()
+    if not pc then return end
     local pawn = pc.Pawn
     if not pawn:IsValid() then tracked = nil jump = nil return end
     local cmc = pawn.CharacterMovement
     if not cmc:IsValid() then tracked = nil jump = nil return end
-    local dt = UEHelpers.GetGameplayStatics():GetWorldDeltaSeconds(pawn)
-    fixBrakingSlide(pawn, cmc, dt)
-    fixJumpHeight(pawn, cmc, dt)
+    local dt = getGameplayStatics():GetWorldDeltaSeconds(pawn)
+    -- Read once and share: both fixes need the mode and velocity from the frame that just finished.
+    local mode = cmc.MovementMode
+    local vel = cmc.Velocity
+    fixBrakingSlide(pawn, cmc, dt, mode, vel)
+    fixJumpHeight(pawn, cmc, dt, mode, vel)
 end
 
 local function runTick()
@@ -253,16 +284,29 @@ end
 -- has 1 ms resolution on Windows) and logs a summary every PROFILE_INTERVAL seconds.
 local profile = { frames = 0, cost = 0, maxCost = 0, timerCost = 0, frameTime = 0, windowStart = nil }
 
+local function describeTable(t)
+    local parts = {}
+    for k, v in pairs(t) do parts[#parts + 1] = tostring(k) .. "=" .. tostring(v) end
+    return "{" .. table.concat(parts, ", ") .. "}"
+end
+
 local function accurateSeconds(statics, context)
+    -- UE4SS fills out-params into the passed tables keyed by parameter name. In practice the
+    -- second out-param did not land in its own table, so accept either field from either table.
     local seconds, partial = {}, {}
     statics:GetAccurateRealTime(context, seconds, partial)
-    return seconds.Seconds + partial.PartialSeconds
+    local whole = seconds.Seconds or partial.Seconds
+    local fraction = partial.PartialSeconds or seconds.PartialSeconds
+    if type(whole) ~= "number" or type(fraction) ~= "number" then
+        error("GetAccurateRealTime out-params: seconds=" .. describeTable(seconds) .. " partial=" .. describeTable(partial))
+    end
+    return whole + fraction
 end
 
 local function profiledTick()
-    local pc = UEHelpers.GetPlayerController()
-    if not pc:IsValid() then return runTick() end
-    local statics = UEHelpers.GetGameplayStatics()
+    local pc = getPlayerController()
+    if not pc then return runTick() end
+    local statics = getGameplayStatics()
 
     -- Two back-to-back clock reads measure the clock's own cost, which is subtracted from the
     -- measured tick (that interval also contains one clock call).
