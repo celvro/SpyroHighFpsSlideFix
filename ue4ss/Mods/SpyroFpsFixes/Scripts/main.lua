@@ -23,6 +23,8 @@
 
 local UEHelpers = require("UEHelpers")
 
+local VERSION = "1.0.0" -- tools/Package-Release.ps1 names the release zip from this
+
 local MIN_TICK_TIME = 1e-6
 local BRAKE_TO_STOP_VELOCITY = 10
 local MAX_BRAKING_STEP = 1 / 33
@@ -31,6 +33,8 @@ local MOVE_FALLING = 3
 local REFERENCE_FPS = 30
 local JUMP_VZ_EPSILON = 0.05
 local EMULATE_RELEASE_ROUNDING = true -- also round early jump releases up to the 30 FPS grid
+local PROFILE = false                 -- log the fixes' per-frame cost to UE4SS.log
+local PROFILE_INTERVAL = 10           -- seconds between profile log lines
 
 local tracked = nil -- { x, y, z } unquantized velocity carried from the previous frame
 local jump = nil    -- zero-gravity jump rise being tracked or extended
@@ -237,17 +241,72 @@ local function tick()
     fixJumpHeight(pawn, cmc, dt)
 end
 
-if not EngineTickAvailable then
-    log("EngineTick hook unavailable; fixes disabled")
-    return
-end
-
-LoopInGameThreadAfterFrames(1, function()
+local function runTick()
     local ok, err = pcall(tick)
     if not ok and not errorLogged then
         errorLogged = true
         log("error: %s", tostring(err))
     end
-end)
+end
 
-log("loaded")
+-- Profiling: times each frame's fix work with the engine's high-resolution clock (os.clock only
+-- has 1 ms resolution on Windows) and logs a summary every PROFILE_INTERVAL seconds.
+local profile = { frames = 0, cost = 0, maxCost = 0, timerCost = 0, frameTime = 0, windowStart = nil }
+
+local function accurateSeconds(statics, context)
+    local seconds, partial = {}, {}
+    statics:GetAccurateRealTime(context, seconds, partial)
+    return seconds.Seconds + partial.PartialSeconds
+end
+
+local function profiledTick()
+    local pc = UEHelpers.GetPlayerController()
+    if not pc:IsValid() then return runTick() end
+    local statics = UEHelpers.GetGameplayStatics()
+
+    -- Two back-to-back clock reads measure the clock's own cost, which is subtracted from the
+    -- measured tick (that interval also contains one clock call).
+    local t0 = accurateSeconds(statics, pc)
+    local t1 = accurateSeconds(statics, pc)
+    runTick()
+    local t2 = accurateSeconds(statics, pc)
+
+    local timerCost = t1 - t0
+    local cost = math.max(0, (t2 - t1) - timerCost)
+    profile.frames = profile.frames + 1
+    profile.cost = profile.cost + cost
+    profile.maxCost = math.max(profile.maxCost, cost)
+    profile.timerCost = profile.timerCost + timerCost
+    profile.frameTime = profile.frameTime + statics:GetWorldDeltaSeconds(pc)
+    profile.windowStart = profile.windowStart or t0
+
+    if t2 - profile.windowStart >= PROFILE_INTERVAL then
+        local n = profile.frames
+        local avgFrame = profile.frameTime / n
+        log("profile: %d frames (avg frame %.2f ms), fixes avg %.3f ms (%.2f%% of frame), max %.3f ms, clock overhead avg %.3f ms",
+            n, avgFrame * 1000, profile.cost / n * 1000, profile.cost / profile.frameTime * 100,
+            profile.maxCost * 1000, profile.timerCost / n * 1000)
+        profile.frames, profile.cost, profile.maxCost, profile.timerCost, profile.frameTime = 0, 0, 0, 0, 0
+        profile.windowStart = t2
+    end
+end
+
+-- If profiling itself breaks, drop back to plain ticking so the fixes keep running.
+local profilingFailed = false
+local function profiledLoop()
+    if profilingFailed then return runTick() end
+    local ok, err = pcall(profiledTick)
+    if not ok then
+        profilingFailed = true
+        log("profiling disabled after error: %s", tostring(err))
+    end
+end
+
+if not EngineTickAvailable then
+    log("EngineTick hook unavailable; fixes disabled")
+    return
+end
+
+LoopInGameThreadAfterFrames(1, PROFILE and profiledLoop or runTick)
+
+log("v%s loaded%s", VERSION, PROFILE and " (profiling on)" or "")

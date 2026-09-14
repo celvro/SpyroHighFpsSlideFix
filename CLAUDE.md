@@ -69,6 +69,7 @@ Above ~80 FPS, Spyro keeps sliding at a constant low speed after a short step. T
 ## UE4SS (runtime Lua modding)
 
 - UE4SS experimental build `v3.0.1-1133-gb4cefa18` is staged in `tools/bin/ue4ss-dist/` (gitignored). `tools/Install-UE4SS.ps1` installs it (`dwmapi.dll` + `ue4ss/` in `Falcon\Binaries\Win64`) and deploys `ue4ss/Mods/*` (player-facing fixes) with `enabled.txt`. `ue4ss/DevMods/*` (the probe) is deployed only with `-Probe`; without it, a previously deployed probe has its `enabled.txt` removed (its traces stay in the game dir). Use `-ModsOnly` after editing Lua, and `-Uninstall` to remove everything. The installer sets engine version 4.19, turns on the external console, and **disables hot reload**. Ctrl+R crashed this UE4SS build twice: an access violation writing 0x24 in ntdll+0xFA7D, called from UE4SS.dll's engine-tick hook right after mods reinstall. Restart the game to pick up Lua changes. Crash dumps land in `%LOCALAPPDATA%\Falcon\Saved\Crashes\*\UE4Minidump.dmp`; read them with `build/DumpInfo/DumpInfo.exe <dmp>` (source in `tools/DumpInfo`), which prints the exception and module-relative stack values.
+- Profiling: set `PROFILE = true` in `SpyroFpsFixes/Scripts/main.lua`. Every 10 s it logs `profile: N frames (avg frame X ms), fixes avg Y ms (Z% of frame), max, clock overhead` to `UE4SS.log`. Timing uses `GameplayStatics:GetAccurateRealTime`: UE4SS fills plain out-params into the passed table under the parameter name, e.g. `seconds.Seconds`, and `os.clock` only has 1 ms resolution. This excludes UE4SS's own hook overhead; measure that externally by comparing frame times with and without `dwmapi.dll`.
 - UE4SS Lua is 5.4, so `math.frexp`, `math.pow` and friends don't exist. A Lua error inside a per-frame loop only logs once (the mods guard with `errorLogged`), so check `UE4SS.log` for `error:` lines before trusting a test.
 - Probe `drift` lines of ~0.15–0.2 s are normal stops: braking from full speed takes ~0.17 s. Multi-second drifts are the bug.
 - The first AOB scan fails because the exe is still unpacking; the second pass succeeds (EngineTick hook found). Log: `Falcon\Binaries\Win64\ue4ss\UE4SS.log`.
@@ -80,7 +81,8 @@ Above ~80 FPS, Spyro keeps sliding at a constant low speed after a short step. T
 - `tools/Config.ps1` — shared paths and pak settings
 - `tools/Build-Mod.ps1 -Name <ModName> [-Install]` — packs into `build/<ModName>_P.pak` and optionally copies it to `~mods`
 - `tools/Uninstall-Mod.ps1 -Name <ModName>` — removes the installed pak
-- `ue4ss/Mods/SpyroFpsFixes` — the shipped fixes (braking slide + jump height), a UE4SS Lua mod
+- `ue4ss/Mods/SpyroFpsFixes` — the shipped fixes (braking slide + jump height), a UE4SS Lua mod (`VERSION` constant in `main.lua`; player-facing `README.txt` ships in the mod folder)
+- `tools/Package-Release.ps1` — builds the Nexus zip `build/release/SpyroFpsFixes-<VERSION>.zip`, laid out relative to the game root (`Falcon/Binaries/Win64/ue4ss/Mods/SpyroFpsFixes/` + `enabled.txt`, forward-slash entries, UE4SS not included). Needs a UE4SS experimental build: `LoopInGameThreadAfterFrames` was added Dec 2025 and isn't in stable v3.0.1.
 - `ue4ss/DevMods/SpyroFpsProbe` — per-frame movement logger for investigating framerate bugs
 - `tools/Install-UE4SS.ps1 [-ModsOnly] [-Probe] [-Uninstall]` — installs UE4SS and the Lua mods
 - `tools/Compare-Segments.ps1 -Trace <csv> -Segments <ids>` — side-by-side stats for probe airborne segments

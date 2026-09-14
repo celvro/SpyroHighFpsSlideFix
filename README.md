@@ -20,6 +20,14 @@ Install:
 
 After editing a Lua mod, run `.\tools\Install-UE4SS.ps1 -ModsOnly` and restart the game. Hot reload (Ctrl+R) is disabled because it can crash the game. To also deploy the movement logger used for investigating these bugs, add `-Probe`. `-Uninstall` removes UE4SS from the game.
 
+To build the release zip for Nexus Mods (version taken from `VERSION` in `main.lua`):
+
+```powershell
+.\tools\Package-Release.ps1
+```
+
+This writes `build\release\SpyroFpsFixes-<version>.zip`, which players extract into the game folder. UE4SS is not included and has to be installed separately (an experimental build is required).
+
 ## Pak mods
 
 ### Setup
