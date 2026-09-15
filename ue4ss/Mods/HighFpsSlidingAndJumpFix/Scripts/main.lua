@@ -20,6 +20,17 @@
 --   The game was tuned at 30 FPS, where both round to 1/30 s steps, so jumps are ~5 units higher
 --   there. This keeps GravityScale at 0 after the engine restores it until the zero-gravity rise
 --   time matches what 30 FPS would produce. At 30 FPS it never extends anything.
+--
+-- Charge dust fix
+--   Every frame of a ground charge, Spyro's Blueprint (Charge_UpdateGroundEffects) deactivates the
+--   dust trail effect and spawns a new one, so each effect only emits during its first tick. Its
+--   emitters spawn 60 particles per second, and one 30 FPS tick adds up to one particle per side,
+--   but one 60+ FPS tick adds up to less than one, so no dust appears at all. Once every 1/30 s
+--   this stretches a new effect's only tick to 1/30 s (CustomTimeDilation), so it emits exactly
+--   what a 30 FPS frame's effect does, and slows the effects spawned in between to almost a
+--   standstill so they emit nothing. The next frame gives them normal time back for their
+--   remaining particles. The shallow water splash takes the same path. At 30 FPS or lower it
+--   changes nothing.
 
 local UEHelpers = require("UEHelpers")
 
@@ -33,11 +44,29 @@ local MOVE_FALLING = 3
 local REFERENCE_FPS = 30
 local JUMP_VZ_EPSILON = 0.05
 local EMULATE_RELEASE_ROUNDING = true -- also round early jump releases up to the 30 FPS grid
+local FIX_CHARGE_DUST = true          -- set false to compare against the missing charge dust
+local CHARGE_DUST_FUNCTION = "/CPS1999_Spyro/Blueprints/BP_CPS1999_Playable.BP_CPS1999_Playable_C:Charge_UpdateGroundEffects"
+local DUST_SILENT_DILATION = 1e-3     -- time scale for dust effects spawned between 30 FPS frames (0 could divide by zero)
+local HOOK_RETRY_FRAMES = 60          -- frames between looks for a (not yet loaded) hooked Blueprint
 local PROFILE = false                 -- log the fixes' per-frame cost to UE4SS.log
 local PROFILE_INTERVAL = 10           -- seconds between profile log lines
 
 local tracked = nil -- { x, y, z } unquantized velocity carried from the previous frame
 local jump = nil    -- zero-gravity jump rise being tracked or extended
+-- Spyro's Blueprint replaces Charge_GroundEffects in Charge_UpdateGroundEffects. With this UE4SS
+-- build only the "pre" callback of a Blueprint function hook runs, and it runs after the body, so
+-- one callback is registered as both: it only acts on an effect address it hasn't seen.
+local dust = {
+    pawn = nil,          -- address of the player's pawn this frame (other actors' calls are ignored)
+    frame = -1,          -- frameCounter of the last callback
+    frameStart = nil,    -- effect address when this frame started, before the Blueprint could replace it
+    handled = nil,       -- address of the newest effect already given a time scale
+    dilated = {},        -- effects with a changed CustomTimeDilation, reset on the next frame
+    sinceDue = 0,        -- seconds since the last effect that emits, so they stay 1/30 s apart
+    lastSpawnFrame = -1, -- frameCounter when a new effect was last seen (a gap means a new charge)
+    registered = false, failed = false, retryIn = 0,
+}
+local frameCounter = 0 -- engine frames; the dust hook uses it to tell frames apart
 local brakingParamsLogged = false
 local errorLogged = false
 
@@ -257,6 +286,98 @@ local function getGameplayStatics()
     return cachedStatics
 end
 
+-- Blueprints load after the mods, so look for the hooked function every HOOK_RETRY_FRAMES frames.
+-- `state` tracks the attempts (registered, failed, retryIn); `name` is the fix named in the log.
+local function registerBlueprintHook(state, path, pre, post, name)
+    if state.registered or state.failed then return end
+    if state.retryIn > 0 then
+        state.retryIn = state.retryIn - 1
+        return
+    end
+    state.retryIn = HOOK_RETRY_FRAMES
+    local fn = StaticFindObject(path)
+    if not (fn and fn:IsValid()) then return end
+    local ok, err = pcall(RegisterHook, path, pre, post)
+    if ok then
+        state.registered = true
+        log("%s hook registered", name)
+    else
+        state.failed = true
+        log("%s fix disabled: RegisterHook failed: %s", name, tostring(err))
+    end
+end
+
+-- Gives the dust effects we stretched or slowed normal time back. Runs on the next frame, after
+-- their one tick before the Blueprint deactivates them, so their particles then age normally.
+local function resetDustDilations()
+    for i = #dust.dilated, 1, -1 do
+        local effect = dust.dilated[i]
+        dust.dilated[i] = nil
+        if effect:IsValid() then effect.CustomTimeDilation = 1 end
+    end
+end
+
+-- Both hook callbacks (pre and post) run this.
+local function onDustHook(context)
+    local pawn = context:get()
+    if not dust.pawn or pawn:GetAddress() ~= dust.pawn then return end
+    if dust.frame ~= frameCounter then
+        dust.frame = frameCounter
+        resetDustDilations()
+    end
+    local current = pawn.Charge_GroundEffects
+    if not current:IsValid() then return end
+    local address = current:GetAddress()
+    -- Only an effect spawned this frame can still be changed before its first tick.
+    if address == dust.frameStart or address == dust.handled then return end
+    dust.handled = address
+
+    local period = 1 / REFERENCE_FPS
+    local continuing = dust.lastSpawnFrame == frameCounter - 1
+    dust.lastSpawnFrame = frameCounter
+    local dt = getGameplayStatics():GetWorldDeltaSeconds(pawn)
+    if dt < MIN_TICK_TIME or dt >= period - 1e-4 then return end
+    -- A new charge emits right away; after that, one effect every 1/30 s.
+    dust.sinceDue = continuing and dust.sinceDue + dt or period
+    if dust.sinceDue >= period - 1e-4 then
+        dust.sinceDue = math.max(dust.sinceDue - period, 0)
+        -- Its only tick then covers one 30 FPS frame, so every emitter spawns what it does at 30 FPS.
+        current.CustomTimeDilation = period / dt
+    else
+        current.CustomTimeDilation = DUST_SILENT_DILATION
+    end
+    dust.dilated[#dust.dilated + 1] = current
+end
+
+-- A hook error would repeat every frame, so the first one turns the fix off.
+local function disableDustFix(err)
+    dust.failed = true
+    pcall(resetDustDilations)
+    log("charge dust fix disabled after hook error: %s", tostring(err))
+end
+
+local function onDustHookGuarded(context)
+    if dust.failed then return end
+    local ok, err = pcall(onDustHook, context)
+    if not ok then disableDustFix(err) end
+end
+
+local function readDustEffectAddress(pawn)
+    local effect = pawn.Charge_GroundEffects
+    return effect and effect:IsValid() and effect:GetAddress() or nil
+end
+
+-- Runs before each world tick: remembers the pawn and its current effect for the hook callbacks.
+local function prepareChargeDust(pawn)
+    dust.pawn = pawn:GetAddress()
+    local ok, address = pcall(readDustEffectAddress, pawn)
+    dust.frameStart = ok and address or nil
+    -- Callbacks stopped (pause, level change): don't leave effects slowed down.
+    if dust.frame < frameCounter - 1 and #dust.dilated > 0 then resetDustDilations() end
+    -- Registered as both the pre and the post callback (see the dust state above).
+    registerBlueprintHook(dust, CHARGE_DUST_FUNCTION, onDustHookGuarded, onDustHookGuarded, "charge dust")
+end
+
 local function tick()
     local pc = getPlayerController()
     if not pc then return end
@@ -270,9 +391,14 @@ local function tick()
     local vel = cmc.Velocity
     fixBrakingSlide(pawn, cmc, dt, mode, vel)
     fixJumpHeight(pawn, cmc, dt, mode, vel)
+    if FIX_CHARGE_DUST and not dust.failed then
+        local ok, err = pcall(prepareChargeDust, pawn)
+        if not ok then disableDustFix(err) end
+    end
 end
 
 local function runTick()
+    frameCounter = frameCounter + 1
     local ok, err = pcall(tick)
     if not ok and not errorLogged then
         errorLogged = true
