@@ -87,7 +87,7 @@
 
 local UEHelpers = require("UEHelpers")
 
-local VERSION = "1.1.0" -- tools/Package-Release.ps1 names the release zip from this
+local VERSION = "1.2.0" -- tools/Package-Release.ps1 names the release zip from this
 
 local MIN_TICK_TIME = 1e-6
 local BRAKE_TO_STOP_VELOCITY = 10
@@ -119,7 +119,7 @@ local DRAGON_FOLLOW_RATE = 4          -- MoveUpdate lerps towards the leader by 
 local DRAGON_MESH_LIFT = 20           -- UpdatePrevActors raises the head's mesh this much around its MoveUpdate calls
 local HOOK_RETRY_FRAMES = 60          -- frames between looks for a (not yet loaded) hooked Blueprint or asset
 local HOOK_MAX_FAILURES = 200         -- failed RegisterHook calls before giving up on a level Blueprint
-local PROFILE = false              -- log the fixes' per-frame cost to UE4SS.log
+local PROFILE = false        -- log the fixes' per-frame cost to UE4SS.log
 local PROFILE_INTERVAL = 10           -- seconds between profile log lines
 
 local tracked = nil -- { x, y, z } unquantized velocity carried from the previous frame
@@ -156,6 +156,12 @@ local dragon = {
     heads = {},    -- address -> dragon head whose segments we took over, to hand back after an error
     failures = 0, failed = false, retryIn = 0,
 }
+-- Reused across calls (and dragons) so onDragonUpdate doesn't allocate a table every frame. Lua is
+-- single-threaded and each call finishes using these before the next starts, so sharing is safe; the
+-- lift/lower vectors' values never change, and the sweep result is an unread out-param either way.
+local DRAGON_LIFT_VEC = { X = 0, Y = 0, Z = DRAGON_MESH_LIFT }
+local DRAGON_LOWER_VEC = { X = 0, Y = 0, Z = -DRAGON_MESH_LIFT }
+local DRAGON_SWEEP_HIT = {}
 local frameCounter = 0 -- engine frames; the mouse hook uses it to take one sample per frame
 local lastDt = 1 / 60
 local brakingParamsLogged = false
@@ -776,7 +782,7 @@ local function onDragonUpdate(context, deltaTime)
     dragon.heads[head:GetAddress()] = head
     local delta = referenceDragonDelta(deltaTime:get())
     local mesh = head.Mesh
-    mesh:K2_AddRelativeLocation({ X = 0, Y = 0, Z = DRAGON_MESH_LIFT }, false, {}, false)
+    mesh:K2_AddRelativeLocation(DRAGON_LIFT_VEC, false, DRAGON_SWEEP_HIT, false)
     local leader = head
     local segments = head.BodySegments
     for i = 1, segments:GetArrayNum() do
@@ -796,7 +802,7 @@ local function onDragonUpdate(context, deltaTime)
             leader = segment
         end
     end
-    mesh:K2_AddRelativeLocation({ X = 0, Y = 0, Z = -DRAGON_MESH_LIFT }, false, {}, false)
+    mesh:K2_AddRelativeLocation(DRAGON_LOWER_VEC, false, DRAGON_SWEEP_HIT, false)
 end
 
 local function onDragonUpdateGuarded(context, deltaTime)
