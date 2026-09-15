@@ -157,13 +157,19 @@ local dust = {
 -- (nil while a transition blends it), and the value we wrote.
 local camera = nil
 local cameraFixFailed = false
--- Druid Energize fix: failed after an error; frames until the next level check / montage lookup.
-local druid = { failed = false, retryIn = 0 }
+-- A StaticFindObject that finds nothing scans the whole object array (~10 ms, a visible hitch), so
+-- lookups only run while `lookups` > 0: once at startup, and again for a while after NotifyOnNewObject
+-- reports the Blueprint class or montage being created. A lookup that finds its object is ~free.
+local NEW_OBJECT_LOOKUPS = 10
+-- Druid Energize fix: failed after an error; frames until the next montage lookup; lookups left.
+local druid = { failed = false, retryIn = 0, lookups = 1 }
 local dragon = {
     hooked = nil,  -- address of the UpdatePrevActors function we hooked (it is reloaded with the level)
     heads = {},    -- address -> dragon head whose segments we took over, to hand back after an error
-    failures = 0, failed = false, retryIn = 0,
+    failures = 0, failed = false, retryIn = 0, lookups = 1,
 }
+mouse.lookups = 1
+dust.lookups = 1
 -- Reused across calls (and dragons) so onDragonUpdate doesn't allocate a table every frame. Lua is
 -- single-threaded and each call finishes using these before the next starts, so sharing is safe; the
 -- lift/lower vectors' values never change, and the sweep result is an unread out-param either way.
@@ -179,6 +185,21 @@ local errorLogged = false
 
 local function log(fmt, ...)
     print(string.format("[HighFpsSlidingAndJumpFix] " .. fmt .. "\n", ...))
+end
+
+-- Spends one of `state`'s lookups every HOOK_RETRY_FRAMES frames. Returns the object when a lookup
+-- finds it (the caller decides whether to keep `state.lookups` for another try), else nil.
+local function lookUp(state, path)
+    if state.lookups <= 0 then return nil end
+    if state.retryIn > 0 then
+        state.retryIn = state.retryIn - 1
+        return nil
+    end
+    state.retryIn = HOOK_RETRY_FRAMES
+    state.lookups = state.lookups - 1
+    local object = StaticFindObject(path)
+    if object and object:IsValid() then return object end
+    return nil
 end
 
 -- Distance between adjacent float32 values at magnitude v.
@@ -507,17 +528,11 @@ local function onMouseAxisGuarded(context, axisValue)
     end
 end
 
--- Blueprints load after the mods, so look for the hooked function every HOOK_RETRY_FRAMES frames.
--- `state` tracks the attempts (registered, failed, retryIn); `name` is the fix named in the log.
+-- Blueprints load after the mods, so the hooked function is looked up once its class is created
+-- (see watchNewObjects). `state` tracks the attempts; `name` is the fix named in the log.
 local function registerBlueprintHook(state, path, pre, post, name)
     if state.registered or state.failed then return end
-    if state.retryIn > 0 then
-        state.retryIn = state.retryIn - 1
-        return
-    end
-    state.retryIn = HOOK_RETRY_FRAMES
-    local fn = StaticFindObject(path)
-    if not (fn and fn:IsValid()) then return end
+    if not lookUp(state, path) then return end
     local ok, err = pcall(RegisterHook, path, pre, post)
     if ok then
         state.registered = true
@@ -740,17 +755,14 @@ local function patchDruidMontage(montage)
     error("no Energize notify")
 end
 
--- Look for the montage every HOOK_RETRY_FRAMES frames and patch it whenever it isn't patched yet.
--- Only the druid levels' own assets reference it (LS113, LS114, LS115, LS118), so it is only found
--- on those levels, and again after one is reloaded.
+-- Only the druid levels' own assets reference the montage (LS113, LS114, LS115, LS118), so it is
+-- looked up once it is created (see watchNewObjects), each time one of those levels loads.
 local function fixDruidEnergize()
-    if druid.retryIn > 0 then
-        druid.retryIn = druid.retryIn - 1
-        return
-    end
-    druid.retryIn = HOOK_RETRY_FRAMES
-    local montage = StaticFindObject(DRUID_MONTAGE)
-    if not (montage and montage:IsValid()) then return end
+    local montage = lookUp(druid, DRUID_MONTAGE)
+    if not montage then return end
+    -- Created but not loaded yet: try again later (found lookups don't hitch).
+    if montage.Notifies:GetArrayNum() == 0 then druid.lookups = math.max(druid.lookups, 1) return end
+    druid.lookups = 0
     local triggerTime = patchDruidMontage(montage)
     if triggerTime then log("druid Energize notify moved to %.5f s", triggerTime) end
 end
@@ -825,22 +837,21 @@ local function onDragonUpdateGuarded(context, deltaTime)
 end
 
 -- The dragon Blueprint only loads with Fireworks Factory, and its function object is replaced when the
--- level loads again, so keep looking for it and hook each new one. RegisterHook can fail while the
--- level is still loading (UFunction::Func 0x0), so failures are retried too.
+-- level loads again, so each time its class is created (see watchNewObjects) it is looked up and
+-- hooked again. RegisterHook can fail while the level is still loading (UFunction::Func 0x0), so
+-- failures are retried too.
 local function registerDragonHook()
     if dragon.failed then return end
-    if dragon.retryIn > 0 then
-        dragon.retryIn = dragon.retryIn - 1
-        return
-    end
-    dragon.retryIn = HOOK_RETRY_FRAMES
-    local fn = StaticFindObject(DRAGON_UPDATE_FUNCTION)
-    if not (fn and fn:IsValid()) then return end
+    local fn = lookUp(dragon, DRAGON_UPDATE_FUNCTION)
+    if not fn then return end
     local address = fn:GetAddress()
-    if address == dragon.hooked then return end
+    if address == dragon.hooked then dragon.lookups = 0 return end
+    -- Found but not hooked: keep trying while the level finishes loading (failures are capped).
+    dragon.lookups = math.max(dragon.lookups, 1)
     local ok, err = pcall(RegisterHook, DRAGON_UPDATE_FUNCTION, onDragonUpdateGuarded)
     if ok then
         dragon.hooked = address
+        dragon.lookups = 0
         dragon.failures = 0
         log("fire dragon segment hook registered")
     else
@@ -1020,6 +1031,26 @@ if GC_MODE then
     if ok then log("collectgarbage(%q) applied to the shared Lua state", GC_MODE)
     else log("collectgarbage(%q) failed: %s", GC_MODE, tostring(err)) end
 end
+
+-- Lookups for level objects start when their class or asset is created: a StaticFindObject that
+-- finds nothing costs ~10 ms, so they must not poll. The callback only flags the state; the lookup
+-- runs from the tick (on the game thread, after loading has had a chance to finish).
+local function startLookups(state)
+    if not state then return end
+    state.lookups = NEW_OBJECT_LOOKUPS
+    state.retryIn = 0
+end
+local function onNewObject(names, object)
+    local ok, name = pcall(function() return object:GetFName():ToString() end)
+    if ok then startLookups(names[name]) end
+end
+local classes, montages = {}, {}
+if FIX_MOUSE_CHARGE_STEERING then classes["CharacterInputComponent_Spyro_C"] = mouse end
+if FIX_CHARGE_DUST then classes["BP_CPS1999_Playable_C"] = dust end
+if FIX_DRAGON_SEGMENTS then classes["BP_CBS3012_FireDragon_C"] = dragon end
+if FIX_DRUID_ENERGIZE then montages["AM_CES1035_GreenDruid_Casting_Up"] = druid end
+NotifyOnNewObject("/Script/Engine.BlueprintGeneratedClass", function(object) onNewObject(classes, object) end)
+NotifyOnNewObject("/Script/Engine.AnimMontage", function(object) onNewObject(montages, object) end)
 
 LoopInGameThreadAfterFrames(1, PROFILE and profiledLoop or runTick)
 
