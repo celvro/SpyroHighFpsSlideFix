@@ -35,6 +35,14 @@
 --   "camtransition" lines  each camera settings transition (FollowCamera:IsTransitioning() true): its
 --                          duration and m_ctrInterp at the start, after CAMTRANSITION_SAMPLES seconds
 --                          and at the end, to see how the game blends it (the camera fix skips these).
+--   "supercharge" lines    each super charge (Character.MoveState.SuperCharging tag): stage change
+--                          times, speed thresholds (t<speed>) next to the ideal MaxAcceleration-per-second
+--                          ramp, air time, then one "supercharge N stage S" line per stage with speed,
+--                          friction, acceleration and camera averages (distance, height, pitch, FOV,
+--                          yaw offset, m_ctrInterp, m_radDefault). Airborne "seg" lines that start
+--                          during a super charge add the stage, takeoff speed, jump attributes and a
+--                          gravity scale profile; "turn" lines add the stage and the slip/camera lag
+--                          predicted at 30 FPS and at this framerate.
 --   camdump_*.txt          every reflected property of Spyro's FollowCameraComponent (to find where
 --                          the active camera settings live). Dumped once while idle, once mid-charge
 --                          after the camera transition, and whenever F9 is pressed. After the charge
@@ -69,6 +77,22 @@ local CAMSTUCK_NOLOCK_OFFSET = 20 -- degrees off Spyro's back, without steering,
 local CAMSTUCK_NOLOCK_KEEP = 0.7  -- "noLock" if more than this fraction of the gap is left after CAMSTUCK_WINDOW
 local CAMSTUCK_NOLOCK_MAX_YAW_RATE = 30 -- deg/s; Spyro turning faster than this counts as steering
 local CAMSTUCK_MAX_DUMPS = 3      -- "stuck" camdumps per session
+
+local SUPERCHARGE_TAG = "Character.MoveState.SuperCharging"
+local SUPERCHARGE_STAGE_TAGS = { -- GA_Spyro_Charge's SuperChargeLevel for each stage effect's tag
+    { 3, "Character.MoveState.SuperCharging.StageThree" },
+    { 2, "Character.MoveState.SuperCharging.StageTwo" },
+    { 1, "Character.MoveState.SuperCharging.StageOne" },
+    { -1, "Character.MoveState.SuperCharging.StageAlt" },
+}
+-- t<speed> thresholds, just under the stage 0-2 (750) and stage 3 (1025) MaxWalkSpeed so rounding still reaches them.
+local SUPERCHARGE_SPEEDS = { 550, 650, 745, 850, 950, 1020 }
+local SUPERCHARGE_BASE_WALK_SPEED = 750   -- GE_Spyro_Movement_SuperCharging_S0-S2 (Alt: 850)
+local SUPERCHARGE_STAGE3_WALK_SPEED = 1025 -- GE_Spyro_Movement_SuperCharging_S3
+local GRAVITY_PROFILE_MAX = 8 -- gravity scale runs listed per airborne segment
+-- Base GroundFriction by MaxAcceleration (the fix mod may raise the live value): super charge stages 0-3,
+-- super charge Alt, normal charge.
+local BASE_FRICTION_BY_ACCEL = { [150] = 25, [500] = 12, [1000] = 8 }
 
 local CAMDUMP_CHARGE_DELAY = 0.75 -- seconds into a charge before its camera dump (and not transitioning)
 local CAMDUMP_MAX_DEPTH = 4       -- struct/array nesting levels to expand
@@ -106,6 +130,9 @@ local state = {
     camTransitionCount = 0,
     mouseHook = { registered = false, failed = false, retryIn = 0, raw = 0 / 0 }, -- raw: last InputAxis_RightStick_X argument
     dragon = { heads = {}, findIn = 0, stats = {} }, -- stats: head address -> accumulated dragon line values
+    superCharge = nil,
+    superChargeCount = 0,
+    asc = nil, -- { pawn = address, component = AbilitySystemComponent }
     optional = {}, -- per optional call: true once it has worked, false if its first call failed
     errorLogged = false,
 }
@@ -116,7 +143,8 @@ local GLIDE_SINK_SPEED = -50 -- average vz below this while Flying means gliding
 local traceFile = io.open(tracePath, "w")
 if traceFile then
     traceFile:write("time,dt,fps_cap,sim_step,air,drift,x,y,z,yaw,vx,vy,vz,input_x,input_y,accel_x,accel_y,move_mode,custom_mode,gravity_scale,floor_walkable,floor_dist,floor_nz,root_motion,pressed_jump,jump_hold_time,jump_max_hold_time,jump_force_remaining,"
-        .. "charge,turn,camlock,charging,charge_tag,max_walk_speed,stick_x,stick_y,stick_rx,input_dt,vel_yaw,cam_yaw,cam_pitch,cam_offset,cam_rate,ctrl_yaw,follow_cam_yaw,cam_transitioning,ground_friction,mouse_raw,cam_ctr_interp\n")
+        .. "charge,turn,camlock,charging,charge_tag,max_walk_speed,stick_x,stick_y,stick_rx,input_dt,vel_yaw,cam_yaw,cam_pitch,cam_offset,cam_rate,ctrl_yaw,follow_cam_yaw,cam_transitioning,ground_friction,mouse_raw,cam_ctr_interp,"
+        .. "sc,sc_stage,max_accel,jump_z_velocity,falling_lateral_friction,cam_dist,cam_height,cam_fov,cam_rad_default\n")
 end
 
 local function log(fmt, ...)
@@ -172,12 +200,15 @@ local function writeRow(r)
         r.mode, r.customMode, r.gravityScale, tostring(r.floorWalkable), r.floorDist, r.floorNz,
         tostring(r.rootMotion), tostring(r.pressedJump), num(r.jumpHoldTime), num(r.jumpMaxHoldTime), num(r.jumpForceRemaining)))
     traceFile:write(string.format(
-        "%s,%s,%s,%s,%s,%.1f,%.3f,%.3f,%.3f,%.5f,%.2f,%.3f,%.3f,%.3f,%.1f,%.3f,%.3f,%s,%.4f,%.4f,%.4f\n",
+        "%s,%s,%s,%s,%s,%.1f,%.3f,%.3f,%.3f,%.5f,%.2f,%.3f,%.3f,%.3f,%.1f,%.3f,%.3f,%s,%.4f,%.4f,%.4f,",
         csvValue(state.charge and state.charge.id or 0), csvValue(state.turn and state.turn.id or 0),
         csvValue(state.camLock and state.camLock.id or 0), tostring(r.charging), csvValue(r.chargeTag),
         num(r.maxWalkSpeed), r.stickX, r.stickY, r.stickRX, r.inputDt, r.velYaw, r.camYaw, r.camPitch,
         r.camOffset, r.camRate, r.ctrlYaw, r.followCamYaw, csvValue(r.camTransitioning), num(r.groundFriction),
         r.mouseRaw, r.camCtrInterp))
+    traceFile:write(string.format("%d,%s,%.1f,%.1f,%.2f,%.2f,%.2f,%.3f,%.1f\n",
+        state.superCharge and state.superCharge.id or 0, csvValue(r.superStage), num(r.maxAccel),
+        num(r.jumpZVelocity), num(r.fallingLateralFriction), r.camDist, r.camHeight, r.camFov, r.camRadDefault))
 end
 
 local function newStats(r)
@@ -206,9 +237,24 @@ local function updateSegment(r, grounded)
             s.id = state.segmentCount
             s.maxZ, s.maxVz, s.minVz, s.horiz = r.z, r.vz, r.vz, 0
             s.lastX, s.lastY, s.modes = s.startX, s.startY, {}
+            local takeoff = state.prevRow or r
+            s.super = takeoff.superStage or r.superStage
+            if s.super then
+                s.hspeed0, s.vz0, s.gravity = takeoff.speed or r.speed, r.vz, {}
+                s.jumpZ, s.lateralFriction, s.holdTime = num(r.jumpZVelocity), num(r.fallingLateralFriction), num(r.jumpMaxHoldTime)
+            end
             state.segment = s
         end
         addFrame(s, r)
+        if s.super then
+            -- Runs of equal gravity scale: the no-gravity jump phase, ramp assist and ramp fail effects.
+            local g, last = s.gravity, s.gravity[#s.gravity]
+            if last and math.abs(last.scale - r.gravityScale) < 1e-4 then
+                last.time = last.time + r.dt
+            elseif #g < GRAVITY_PROFILE_MAX then
+                g[#g + 1] = { scale = r.gravityScale, time = r.dt }
+            end
+        end
         s.maxZ = math.max(s.maxZ, r.z)
         s.maxVz = math.max(s.maxVz, r.vz)
         s.minVz = math.min(s.minVz, r.vz)
@@ -224,6 +270,12 @@ local function updateSegment(r, grounded)
             s.id, tostring(state.fpsCap or "?"), s.frames / s.dtSum, s.dtMin * 1000, s.dtMax * 1000,
             num(r.simStep), r.time - s.startTime, s.maxZ - s.startZ, r.z - s.startZ, s.horiz,
             s.maxVz, s.minVz, s.noGravEnd and string.format("%.3fs", s.noGravEnd) or "n/a", table.concat(modes, "+"))
+        if s.super then
+            local profile = {}
+            for _, run in ipairs(s.gravity) do profile[#profile + 1] = string.format("%.2fx%.3fs", run.scale, run.time) end
+            log("seg %d supercharge stage=%d hspeed0=%.1f vz0=%.1f jumpZVelocity=%.0f jumpMaxHoldTime=%.3f fallingLateralFriction=%.1f landSpeed=%.1f gravity=%s",
+                s.id, s.super, s.hspeed0, s.vz0, s.jumpZ, s.holdTime, s.lateralFriction, r.speed, table.concat(profile, " "))
+        end
         state.segment = nil
         if traceFile then traceFile:flush() end
     end
@@ -311,6 +363,20 @@ local function updateRise(r)
     end
 end
 
+-- Degrees velocity trails a facing turning at yawRate: per frame CalcVelocity keeps (1 - friction * dt)
+-- of the angle, and MaxAcceleration along the facing keeps 1 / (1 + accel * dt / speed) of the rest.
+local function slipModel(yawRate, friction, accel, speed, dt)
+    if not (speed > 0 and dt > 0) then return 0 / 0 end
+    local keep = (1 - math.min(friction * dt, 1)) / (1 + accel * dt / speed)
+    return yawRate * dt * keep / (1 - keep)
+end
+
+-- Degrees the camera trails a steady turn with FInterpTo centering at ctrInterp (ignores the 180 deg/s cap).
+local function camLagModel(yawRate, ctrInterp, dt)
+    local f = math.min(ctrInterp * dt, 1)
+    return f > 0 and yawRate * dt * (1 - f) / f or 0 / 0
+end
+
 local function finishTurn()
     local t = state.turn
     state.turn = nil
@@ -318,12 +384,17 @@ local function finishTurn()
     local dir = sign(t.yaw) -- +1 turning towards increasing yaw
     local velYawRate = math.abs(t.velYaw) / t.avgTime
     local speed = t.speed / t.avgTime
-    log("turn %s cap=%s avgFps=%.1f dur=%.3fs stick=%.2f yawRate=%.1f velYawRate=%.1f camYawRate=%.1f radius=%.1f speed=%.1f accelAngle=%+.2f slip=%+.2f groundFriction=%.2f camLag=%+.1f camLagMax=%.1f camLagEnd=%+.1f ctrInterp=%.3f",
+    local yawRate = math.abs(t.yaw) / t.avgTime
+    local friction, accel, dt = t.friction / t.avgTime, t.maxAccel / t.avgTime, t.dtSum / t.frames
+    local baseFriction = BASE_FRICTION_BY_ACCEL[math.floor(accel + 0.5)] or friction
+    log("turn %s cap=%s avgFps=%.1f dur=%.3fs stick=%.2f yawRate=%.1f velYawRate=%.1f camYawRate=%.1f radius=%.1f speed=%.1f accelAngle=%+.2f slip=%+.2f groundFriction=%.2f camLag=%+.1f camLagMax=%.1f camLagEnd=%+.1f ctrInterp=%.3f super=%s maxAccel=%.0f slipModel30=%.2f slipModelHere=%.2f camLagModelHere=%.1f",
         t.id, tostring(state.fpsCap or "?"), avgFps(t), t.lastTime - t.startTime, t.stick / t.avgTime,
-        math.abs(t.yaw) / t.avgTime, velYawRate, dir * t.camYaw / t.avgTime,
+        yawRate, velYawRate, dir * t.camYaw / t.avgTime,
         velYawRate > 0 and speed / math.rad(velYawRate) or math.huge, speed,
-        dir * t.accelAngle / t.avgTime, dir * t.slip / t.avgTime, t.friction / t.avgTime,
-        -dir * t.camLag / t.avgTime, t.camLagMax, -dir * t.camLagEnd, t.ctrInterp)
+        dir * t.accelAngle / t.avgTime, dir * t.slip / t.avgTime, friction,
+        -dir * t.camLag / t.avgTime, t.camLagMax, -dir * t.camLagEnd, t.ctrInterp,
+        tostring(t.super), accel, slipModel(yawRate, baseFriction, accel, speed, 1 / 30),
+        slipModel(yawRate, friction, accel, speed, dt), camLagModel(yawRate, t.ctrInterp, dt))
 end
 
 -- A grounded run of full-lock steering while charging.
@@ -340,16 +411,18 @@ local function updateTurn(r, prev)
         t.id = string.format("%d.%d", c.id, c.turnCount)
         t.lastTime, t.camLagEnd = r.time, r.camOffset
         t.avgTime, t.yaw, t.velYaw, t.camYaw, t.speed, t.stick, t.accelAngle, t.slip, t.camLag, t.camLagMax = 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-        t.friction = 0
+        t.friction, t.maxAccel, t.super = 0, 0, r.superStage
         state.turn = t
         return
     end
-    addFrame(t, r)
     t.lastTime, t.camLagEnd, t.ctrInterp = r.time, r.camOffset, r.camCtrInterp
     if r.time - t.startTime <= TURN_WARMUP then return end
     local step = r.time - prev.time
     if step <= 0 then return end
+    addFrame(t, r) -- only averaged frames, so avgFps and the models' dt match the averages
     t.avgTime = t.avgTime + step
+    t.maxAccel = t.maxAccel + num(r.maxAccel) * step
+    if r.superStage and not t.super then t.super = r.superStage end
     t.yaw = t.yaw + angleDiff(r.yaw, prev.yaw)
     t.velYaw = t.velYaw + angleDiff(r.velYaw, prev.velYaw)
     t.camYaw = t.camYaw + angleDiff(r.camYaw, prev.camYaw)
@@ -556,6 +629,153 @@ local function updateCamTransition(r, prev)
             tostring(r.charging), t.before, t.firstValue, table.concat(t.samples, " "), r.camCtrInterp)
         state.camTransition = nil
     end
+end
+
+local function finishSuperCharge(r)
+    local sc = state.superCharge
+    state.superCharge = nil
+    local stages = {}
+    for _, s in ipairs(sc.stageOrder) do stages[#stages + 1] = string.format("%d@%.3f", s.stage, s.at) end
+    local speeds = {}
+    for _, thr in ipairs(SUPERCHARGE_SPEEDS) do
+        local t = sc.tSpeed[thr]
+        if t then
+            -- Ideal: speed grows by MaxAcceleration per second from the start (or from stage 3 above 750).
+            local ideal
+            if not (sc.accel and sc.accel > 0) then
+                ideal = nil
+            elseif thr <= SUPERCHARGE_BASE_WALK_SPEED then
+                ideal = sc.startSpeed < thr and (thr - sc.startSpeed) / sc.accel or nil
+            elseif sc.fastAt then
+                ideal = sc.fastAt + math.max(thr - sc.fastSpeed, 0) / sc.accel
+            end
+            speeds[#speeds + 1] = string.format("t%d=%.3fs(ideal %s)", thr, t, ideal and string.format("%.3f", ideal) or "n/a")
+        end
+    end
+    log("supercharge %d cap=%s avgFps=%.1f dt=%.1f-%.1fms dur=%.3fs startSpeed=%.1f attrDelay=%s stage3SpeedAt=%s speedMax=%.1f air=%.3fs airSegments=%d stages=%s %s detectedBy=%s",
+        sc.id, tostring(state.fpsCap or "?"), avgFps(sc), sc.dtMin * 1000, sc.dtMax * 1000, r.time - sc.origin,
+        sc.startSpeed, sc.attrDelay and string.format("%.3fs", sc.attrDelay) or "n/a",
+        sc.fastAt and string.format("%.3fs", sc.fastAt) or "n/a",
+        sc.maxSpeed, sc.airTime, sc.airSegments, table.concat(stages, ","), table.concat(speeds, " "), sc.detectedBy)
+    for _, entry in ipairs(sc.stageOrder) do
+        local st = sc.stats[entry.stage]
+        local g = st.groundTime
+        local function avg(key) return g > 0 and st[key] / g or 0 / 0 end
+        log("supercharge %d stage %d: time=%.3fs grounded=%.3fs speedAvg=%.1f speedMax=%.1f accelObserved=%s groundFriction=%.2f maxAccel=%.0f maxWalkSpeed=%.0f camDist=%.1f camHeight=%.1f camPitch=%.2f camFov=%.2f camOffsetAbs=%.1f ctrInterp=%.3f radDefault=%.1f",
+            sc.id, entry.stage, st.time, g, avg("speed"), st.maxSpeed,
+            -- Speed gained per second on grounded frames below MaxWalkSpeed (compare with maxAccel).
+            st.accelTime > 0 and string.format("%.1f", st.accelGain / st.accelTime) or "n/a",
+            avg("friction"), avg("maxAccel"), avg("maxWalk"), avg("camDist"), avg("camHeight"), avg("camPitch"),
+            avg("camFov"), avg("camOffset"), avg("ctrInterp"), avg("radDefault"))
+    end
+    if traceFile then traceFile:flush() end
+end
+
+-- One super charge, from the first frame with a super charge stage until it ends.
+local function updateSuperCharge(r, prev)
+    local sc = state.superCharge
+    if r.superStage == nil then
+        if sc then finishSuperCharge(r) end
+        return
+    end
+    if not sc then
+        state.superChargeCount = state.superChargeCount + 1
+        local start = prev or r -- as for t400: this frame already moved with the super charge attributes
+        sc = newStats(r)
+        sc.id, sc.origin, sc.startSpeed, sc.maxSpeed, sc.detectedBy = state.superChargeCount, start.time, start.speed, r.speed, r.superDetectedBy
+        sc.stageOrder, sc.stats, sc.tSpeed, sc.airTime, sc.airSegments = {}, {}, {}, 0, 0
+        state.superCharge = sc
+    end
+    local elapsed = r.time - sc.origin
+    -- Speed timing starts at the last frame before the super charge MaxWalkSpeed, which may lag the tag.
+    if not sc.accel and num(r.maxWalkSpeed) >= SUPERCHARGE_BASE_WALK_SPEED - 1 then
+        local start = (prev and prev.time < r.time) and prev or r
+        sc.accel, sc.speedOrigin, sc.startSpeed = num(r.maxAccel), start.time, start.speed
+        sc.attrDelay = start.time - sc.origin
+    end
+    local stage = r.superStage
+    local st = sc.stats[stage]
+    if not st then
+        st = { time = 0, groundTime = 0, maxSpeed = 0, speed = 0, friction = 0, maxAccel = 0, maxWalk = 0, camDist = 0,
+               camHeight = 0, camPitch = 0, camFov = 0, camOffset = 0, ctrInterp = 0, radDefault = 0, accelGain = 0, accelTime = 0 }
+        sc.stats[stage] = st
+        sc.stageOrder[#sc.stageOrder + 1] = { stage = stage, at = elapsed }
+    end
+    if sc.speedOrigin and not sc.fastAt and num(r.maxWalkSpeed) >= SUPERCHARGE_STAGE3_WALK_SPEED - 1 then
+        local start = (prev and prev.time < r.time) and prev or r
+        sc.fastAt, sc.fastSpeed = start.time - sc.speedOrigin, start.speed
+    end
+    if not prev or prev.time >= r.time then return end
+    local step = r.time - prev.time
+    addFrame(sc, r)
+    sc.maxSpeed = math.max(sc.maxSpeed, r.speed)
+    st.time = st.time + step
+    st.maxSpeed = math.max(st.maxSpeed, r.speed)
+    if not isGrounded(r.mode) then
+        sc.airTime = sc.airTime + step
+        if isGrounded(prev.mode) then sc.airSegments = sc.airSegments + 1 end
+    else
+        st.groundTime = st.groundTime + step
+        local function add(key, v) if v == v then st[key] = st[key] + v * step end end -- skips NaN
+        add("speed", r.speed)
+        add("friction", num(r.groundFriction))
+        add("maxAccel", num(r.maxAccel))
+        add("maxWalk", num(r.maxWalkSpeed))
+        add("camDist", r.camDist)
+        add("camHeight", r.camHeight)
+        add("camPitch", r.camPitch)
+        add("camFov", r.camFov)
+        add("camOffset", math.abs(r.camOffset))
+        add("ctrInterp", r.camCtrInterp)
+        add("radDefault", r.camRadDefault)
+        if isGrounded(prev.mode) and prev.speed < num(r.maxWalkSpeed) - 1 and r.speed < num(r.maxWalkSpeed) - 1 then
+            st.accelGain = st.accelGain + (r.speed - prev.speed)
+            st.accelTime = st.accelTime + step
+        end
+    end
+    for _, thr in ipairs(SUPERCHARGE_SPEEDS) do
+        if sc.speedOrigin and not sc.tSpeed[thr] and r.speed >= thr and prev.speed < thr then
+            local f = (thr - prev.speed) / (r.speed - prev.speed)
+            sc.tSpeed[thr] = prev.time + step * f - sc.speedOrigin
+        end
+    end
+end
+
+-- The super charge stage (-1 Alt, 0-3) or nil when not super charging, and how it was detected.
+-- Prefers the gameplay tags GA_Spyro_Charge applies; falls back on the movement attributes of
+-- GE_Spyro_Movement_SuperCharging_S0-S3 / _Alt (stages 0-2 share them, so those read as 0).
+local function superChargeStage(pawn, r)
+    local asc = tryCall("GetAbilitySystemComponent", function()
+        local address = pawn:GetAddress()
+        if state.asc and state.asc.pawn == address and state.asc.component:IsValid() then return state.asc.component end
+        local lib = StaticFindObject("/Script/GameplayAbilities.Default__AbilitySystemBlueprintLibrary")
+        local component = lib:GetAbilitySystemComponent(pawn)
+        if not (component and component:IsValid()) then error("no AbilitySystemComponent") end
+        state.asc = { pawn = address, component = component }
+        return component
+    end)
+    if asc then
+        local stage = tryCall("HasMatchingGameplayTag", function()
+            local function has(tag)
+                local v = asc:HasMatchingGameplayTag({ TagName = FName(tag) })
+                if type(v) ~= "boolean" then error("returned " .. tostring(v)) end
+                return v
+            end
+            if not has(SUPERCHARGE_TAG) then return false end
+            for _, entry in ipairs(SUPERCHARGE_STAGE_TAGS) do
+                if has(entry[2]) then return entry[1] end
+            end
+            return 0
+        end)
+        if stage ~= nil then return stage ~= false and stage or nil, "tag" end
+    end
+    local accel, walk = num(r.maxAccel), num(r.maxWalkSpeed)
+    if accel == 150 and walk >= SUPERCHARGE_BASE_WALK_SPEED then return walk >= SUPERCHARGE_STAGE3_WALK_SPEED - 1 and 3 or 0, "attributes" end
+    if accel == 500 and walk == 850 then return -1, "attributes" end
+    local prev = state.prevRow
+    -- Jumps swap the movement effect; stay in the super charge until he lands.
+    if prev and prev.superStage and not isGrounded(r.mode) then return prev.superStage, "attributes" end
+    return nil, "attributes"
 end
 
 local function describeValue(v)
@@ -819,6 +1039,7 @@ local function sample()
     local floor = cmc.CurrentFloor
     local camManager = pc.PlayerCameraManager
     local camRot = camManager:IsValid() and camManager:GetCameraRotation() or nil
+    local camLoc = camManager:IsValid() and camManager:GetCameraLocation() or nil
     local ctrlRot = pc:GetControlRotation()
     -- Raw axes from the Blueprint input component that steers the charge (see CLAUDE.md).
     local sticks = tryCall("CharacterInputComponent_Spyro axes", function()
@@ -838,6 +1059,9 @@ local function sample()
         simStep = cmc.MaxSimulationTimeStep,
         maxWalkSpeed = cmc.MaxWalkSpeed,
         groundFriction = cmc.GroundFriction, -- the charge turn slip fix raises this while charging
+        maxAccel = cmc.MaxAcceleration,
+        jumpZVelocity = cmc.JumpZVelocity,
+        fallingLateralFriction = cmc.FallingLateralFriction,
         floorWalkable = floor.bWalkableFloor,
         floorDist = floor.FloorDist,
         floorNz = floor.HitResult.ImpactNormal.Z,
@@ -851,6 +1075,10 @@ local function sample()
 
         camYaw = camRot and camRot.Yaw or 0 / 0,
         camPitch = camRot and camRot.Pitch or 0 / 0,
+        camDist = camLoc and math.sqrt((camLoc.X - loc.X) ^ 2 + (camLoc.Y - loc.Y) ^ 2 + (camLoc.Z - loc.Z) ^ 2) or 0 / 0,
+        camHeight = camLoc and camLoc.Z - loc.Z or 0 / 0,
+        camFov = num(tryCall("PlayerCameraManager:GetFOVAngle", function() return camManager:GetFOVAngle() end)),
+        camRadDefault = num(tryCall("FollowCamera.m_radDefault", function() return pawn.FollowCamera.m_radDefault end)),
         ctrlYaw = ctrlRot.Yaw,
         followCamYaw = num(tryCall("FollowCamera:GetCameraYaw", function() return pawn.FollowCamera:GetCameraYaw() end)),
         camTransitioning = tryCall("FollowCamera:IsTransitioning", function() return pawn.FollowCamera:IsTransitioning() end),
@@ -872,6 +1100,7 @@ local function sample()
         return { effect:GetAddress(), effect.CustomTimeDilation }
     end) or {}
     r.dustAddress, r.dustDilation = dust[1], dust[2]
+    r.superStage, r.superDetectedBy = superChargeStage(pawn, r)
     if r.chargeTag ~= nil then
         r.charging = r.chargeTag
     else
@@ -900,6 +1129,7 @@ local function sample()
     updateDrift(r, grounded)
     updateSegment(r, grounded)
     updateRise(r)
+    updateSuperCharge(r, prev)
     updateCharge(r, prev)
     updateCamTransition(r, prev)
     updateCamDump(pawn, r)
