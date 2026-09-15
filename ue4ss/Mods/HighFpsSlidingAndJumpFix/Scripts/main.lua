@@ -1,14 +1,16 @@
 -- High FPS Sliding and Jump Fix: runtime fixes for framerate-dependent movement bugs.
 --
--- Braking slide fix
+-- Walking velocity fix (sliding and acceleration)
 --   Levels sit ~300,000 units from the world origin, where float32 positions have a 1/32 unit
 --   spacing. UE 4.19's PhysWalking resets Velocity to (actual displacement / dt) after every
---   move, so velocity is quantized to multiples of (1/32)/dt. Above ~80 FPS a frame's braking
---   removes less than half of that step, the rounded move restores the old speed, and Spyro
---   slides forever at a constant low speed.
---   While walking with zero acceleration, this keeps the unquantized braked velocity (same
---   formula as UCharacterMovementComponent::ApplyVelocityBraking) and writes it back whenever
---   the engine's value only differs by quantization. At low framerates this is a no-op.
+--   move, so velocity is quantized to multiples of (1/32)/dt: 4.5 at 144 FPS, 0.94 at 30.
+--     * braking: above ~80 FPS a frame's braking removes less than half of that step, the
+--       rounded move restores the old speed, and Spyro slides forever at a constant low speed.
+--     * accelerating: a frame's 1000 * dt (6.9 at 144 FPS) of acceleration lands on 4.5 or 9, so
+--       speeding up (e.g. starting a charge) runs at ~650 or ~1300 per second instead of 1000.
+--   While walking without root motion, this keeps the unquantized velocity (same formula as
+--   UCharacterMovementComponent::CalcVelocity) and writes it back whenever the engine's value
+--   only differs by quantization. At low framerates the difference is negligible.
 --
 -- Jump height fix
 --   A jump (ground, water, charge) sets Z velocity and applies GE_SpyroJumpNoGravity, which
@@ -21,6 +23,33 @@
 --   there. This keeps GravityScale at 0 after the engine restores it until the zero-gravity rise
 --   time matches what 30 FPS would produce. At 30 FPS it never extends anything.
 --
+-- Charge turn slip fix
+--   While charging, Spyro's facing turns at a framerate-independent rate (131 deg/s at full lock).
+--   Each walking frame, CalcVelocity pulls velocity towards the facing by GroundFriction * dt of the
+--   angle, and adding MaxAcceleration * dt along the facing closes a bit more. Velocity keeps
+--   R = (1 - friction * dt) / (1 + accel * dt / speed) of its lag per frame, so a steady turn
+--   leaves it w * dt * R / (1 - R) behind the facing. That is 9.4 deg at 30 FPS but 12.1 at
+--   144 FPS, so Spyro looks like he turns wider. While charging on the ground this raises
+--   GroundFriction until that steady lag matches 30 FPS (friction 8 -> 10.7 at 144 FPS).
+--   At 30 FPS or lower it changes nothing.
+--
+-- Mouse charge steering fix
+--   With keyboard and mouse, the charge steers from the mouse X axis, which is the mouse movement
+--   of that frame (CharacterInputComponent_Spyro.GetChargeMovementValueOnPC). Each frame turns
+--   6 * atan(min(0.5 * mouse, 1) * 0.7) deg/s, so the same hand movement split over 4.8x more
+--   frames turns Spyro far less at 144 FPS. While charging (or charge jumping) with the mouse,
+--   this replaces the stored axis value with the mouse movement of the last 1/30 s, which is
+--   what 30 FPS sees. Mouse camera look doesn't use this value and is unaffected.
+--   At 30 FPS or lower it changes nothing.
+--
+-- Camera centering fix
+--   The follow camera swings in behind Spyro with FInterpTo at speed m_ctrInterp (5 normally,
+--   3.5 while charging), moving min(speed * dt, 1) of the remaining yaw each frame. Behind a
+--   steadily turning Spyro it trails w * dt * (1 - f) / f with f = speed * dt: 33.0 deg at 30 FPS
+--   but 36.5 at 144 during a full-lock charge turn, and it recenters ~5% slower. This raises
+--   m_ctrInterp so the steady trail matches 30 FPS (3.5 -> 3.86, 5 -> 5.76 at 144 FPS), leaving
+--   it alone while a camera settings transition is blending it. At 30 FPS or lower it changes nothing.
+--
 -- Charge dust fix
 --   Every frame of a ground charge, Spyro's Blueprint (Charge_UpdateGroundEffects) deactivates the
 --   dust trail effect and spawns a new one, so each effect only emits during its first tick. Its
@@ -31,10 +60,22 @@
 --   standstill so they emit nothing. The next frame gives them normal time back for their
 --   remaining particles. The shallow water splash takes the same path. At 30 FPS or lower it
 --   changes nothing.
+--
+-- Green druid Energize fix
+--   The green druids (e.g. Alpine Ridge's stairs, door and walkway) move their mechanism from an
+--   Energize anim notify in their cast montage. AM_CES1035_GreenDruid_Casting_Up is 0.5 s long and
+--   starts blending out at 0.25 s; that ends the druid's cast state, and the next state's montage
+--   interrupts it, so later notifies never fire. Its Energize notify sits at 0.25089 s, so it only
+--   fires when one frame steps from before 0.25 to past 0.25089: always at 30 FPS (0.233 -> 0.267),
+--   never at 60, 120 or 144 FPS, which land exactly on 0.25. The druid only switches between its up
+--   and down casts inside that notify, so it then repeats the up cast forever and the mechanism
+--   never moves again. This moves the notify to 0.24986 s, where the casting-down montage
+--   (AM_..._Casting_Out) has its own, which fires at every framerate. At 30 FPS it fires on the same
+--   frame as before. It only acts where the montage is loaded, i.e. on the levels with green druids.
 
 local UEHelpers = require("UEHelpers")
 
-local VERSION = "1.0.0" -- tools/Package-Release.ps1 names the release zip from this
+local VERSION = "1.1.0" -- tools/Package-Release.ps1 names the release zip from this
 
 local MIN_TICK_TIME = 1e-6
 local BRAKE_TO_STOP_VELOCITY = 10
@@ -44,15 +85,35 @@ local MOVE_FALLING = 3
 local REFERENCE_FPS = 30
 local JUMP_VZ_EPSILON = 0.05
 local EMULATE_RELEASE_ROUNDING = true -- also round early jump releases up to the 30 FPS grid
+local FIX_WALKING_ACCELERATION = true -- set false to only fix braking (the original sliding fix)
+local FIX_CHARGE_TURN_SLIP = true     -- set false to compare against the unfixed charge turn
+local FIX_MOUSE_CHARGE_STEERING = true -- set false to compare against the unfixed mouse charge steering
+local FIX_CAMERA_CENTERING = true     -- set false to compare against the unfixed camera centering
 local FIX_CHARGE_DUST = true          -- set false to compare against the missing charge dust
+local CHARGE_MIN_WALK_SPEED = 350     -- charging sets MaxWalkSpeed 458.5, charge jumping 358; running is 268.5
+local CHARGE_MIN_SPEED = 50           -- slower than this, acceleration dominates the turn; leave friction alone
+local MOUSE_AXIS_FUNCTION = "/CharacterCommon/Components/CharacterInputComponent/CharacterInputComponent_Spyro.CharacterInputComponent_Spyro_C:InputAxis_RightStick_X"
+local MOUSE_HISTORY = 64              -- mouse samples kept; must cover 1/30 s at the highest framerate
 local CHARGE_DUST_FUNCTION = "/CPS1999_Spyro/Blueprints/BP_CPS1999_Playable.BP_CPS1999_Playable_C:Charge_UpdateGroundEffects"
 local DUST_SILENT_DILATION = 1e-3     -- time scale for dust effects spawned between 30 FPS frames (0 could divide by zero)
-local HOOK_RETRY_FRAMES = 60          -- frames between looks for a (not yet loaded) hooked Blueprint
+local FIX_DRUID_ENERGIZE = true       -- set false to compare against druids that stop energizing
+local DRUID_MONTAGE = "/CES1035_GreenDruid/Animations/Montages/AM_CES1035_GreenDruid_Casting_Up.AM_CES1035_GreenDruid_Casting_Up"
+local DRUID_NOTIFY_TIME = 0.25089103  -- the montage's Energize notify time (skip the fix if the asset differs)
+local DRUID_FIXED_NOTIFY_TIME = 0.24986279 -- AM_CES1035_GreenDruid_Casting_Out's Energize notify time
+local HOOK_RETRY_FRAMES = 60          -- frames between looks for a (not yet loaded) hooked Blueprint or asset
 local PROFILE = false                 -- log the fixes' per-frame cost to UE4SS.log
 local PROFILE_INTERVAL = 10           -- seconds between profile log lines
 
 local tracked = nil -- { x, y, z } unquantized velocity carried from the previous frame
 local jump = nil    -- zero-gravity jump rise being tracked or extended
+local slip = nil    -- { base, written }: GroundFriction without our override, and the value we wrote
+local mouse = {
+    values = {}, dts = {}, head = 0, count = 0, -- ring buffer of per-frame mouse X samples
+    frame = -1,        -- frameCounter of the newest sample
+    active = false,    -- replace the axis value this frame (charging with mouse steering)
+    component = nil,   -- CharacterInputComponent_Spyro seen by the hook
+    registered = false, failed = false, retryIn = 0,
+}
 -- Spyro's Blueprint replaces Charge_GroundEffects in Charge_UpdateGroundEffects. With this UE4SS
 -- build only the "pre" callback of a Blueprint function hook runs, and it runs after the body, so
 -- one callback is registered as both: it only acts on an effect address it hasn't seen.
@@ -66,8 +127,17 @@ local dust = {
     lastSpawnFrame = -1, -- frameCounter when a new effect was last seen (a gap means a new charge)
     registered = false, failed = false, retryIn = 0,
 }
-local frameCounter = 0 -- engine frames; the dust hook uses it to tell frames apart
+-- { address, base, written }: the FollowCameraComponent, its m_ctrInterp without our override
+-- (nil while a transition blends it), and the value we wrote.
+local camera = nil
+local cameraFixFailed = false
+-- Druid Energize fix: failed after an error; frames until the next level check / montage lookup.
+local druid = { failed = false, retryIn = 0 }
+local frameCounter = 0 -- engine frames; the mouse hook uses it to take one sample per frame
+local lastDt = 1 / 60
 local brakingParamsLogged = false
+local chargeQueryFailed = false
+local chargeQueryErrorLogged = false
 local errorLogged = false
 
 local function log(fmt, ...)
@@ -119,25 +189,82 @@ local function brakingParams(cmc)
     return friction, math.max(0, cmc.BrakingDecelerationWalking)
 end
 
-local function fixBrakingSlide(pawn, cmc, dt, mode, vel)
+-- FVector::IsExceedingMaxSpeed's 1% tolerance, on horizontal velocity.
+local function exceedsSpeed(vx, vy, maxSpeed)
+    maxSpeed = math.max(0, maxSpeed)
+    return vx * vx + vy * vy > maxSpeed * maxSpeed * 1.01
+end
+
+-- Mirrors UCharacterMovementComponent::CalcVelocity (UE 4.19) for walking under player input
+-- (no path following, RVO or fluid friction). PhysWalking zeroes Z beforehand, so this is 2D.
+local function calcWalkingVelocity(cmc, vx, vy, ax, ay, dt)
+    local zeroAccel = ax == 0 and ay == 0
+    local accelSize = math.sqrt(ax * ax + ay * ay)
+    local maxInputSpeed = 0
+    if not zeroAccel then
+        local maxAccel = cmc.MaxAcceleration
+        local analogModifier = maxAccel > 1e-8 and math.min(accelSize / maxAccel, 1) or 0
+        maxInputSpeed = cmc.MaxWalkSpeed * analogModifier
+    end
+    maxInputSpeed = math.max(maxInputSpeed, cmc.MinAnalogWalkSpeed)
+
+    local overMax = exceedsSpeed(vx, vy, maxInputSpeed)
+    if zeroAccel or overMax then
+        local friction, deceleration = brakingParams(cmc)
+        if not brakingParamsLogged then
+            brakingParamsLogged = true
+            log("braking params: friction=%.3f deceleration=%.3f", friction, deceleration)
+        end
+        local ox, oy = vx, vy
+        vx, vy = applyBraking(vx, vy, 0, dt, friction, deceleration)
+        -- Don't let braking take us below max speed if we started above it.
+        if overMax and vx * vx + vy * vy < maxInputSpeed * maxInputSpeed and ax * ox + ay * oy > 0 then
+            local scale = maxInputSpeed / math.sqrt(ox * ox + oy * oy)
+            vx, vy = ox * scale, oy * scale
+        end
+    else
+        -- Friction limits how fast velocity can change direction towards the acceleration.
+        local blend = math.min(dt * math.max(0, cmc.GroundFriction), 1)
+        local size = math.sqrt(vx * vx + vy * vy)
+        vx = vx - (vx - ax / accelSize * size) * blend
+        vy = vy - (vy - ay / accelSize * size) * blend
+    end
+
+    if not zeroAccel then
+        local newMaxInputSpeed = exceedsSpeed(vx, vy, maxInputSpeed) and math.sqrt(vx * vx + vy * vy) or maxInputSpeed
+        vx, vy = vx + ax * dt, vy + ay * dt
+        local sizeSq = vx * vx + vy * vy
+        if newMaxInputSpeed < 1e-4 then
+            vx, vy = 0, 0
+        elseif sizeSq > newMaxInputSpeed * newMaxInputSpeed then
+            local scale = newMaxInputSpeed / math.sqrt(sizeSq)
+            vx, vy = vx * scale, vy * scale
+        end
+    end
+    return vx, vy
+end
+
+local STILL = { 0, 0, 0 } -- tracked velocity while standing; never modified
+
+local function fixWalkingVelocity(pawn, cmc, dt, mode, vel)
     if mode ~= MOVE_WALKING then tracked = nil return end
     local vx, vy, vz = vel.X, vel.Y, vel.Z
-    -- Standing still: nothing can slide, so skip the engine calls below.
-    if vx == 0 and vy == 0 and vz == 0 then tracked = nil return end
+    -- Standing still: skip the engine calls below. A move that starts here is predicted from zero.
+    if vx == 0 and vy == 0 and vz == 0 then
+        tracked = FIX_WALKING_ACCELERATION and STILL or nil
+        return
+    end
     local accel = cmc:GetCurrentAcceleration()
-    local braking = accel.X == 0 and accel.Y == 0 and accel.Z == 0 and not pawn:IsPlayingRootMotion()
+    local braking = accel.X == 0 and accel.Y == 0 and accel.Z == 0
+    local handled = (braking or FIX_WALKING_ACCELERATION) and not pawn:IsPlayingRootMotion()
 
-    if not braking or not tracked or dt < MIN_TICK_TIME then
-        tracked = braking and { vx, vy, vz } or nil
+    if not handled or not tracked or dt < MIN_TICK_TIME then
+        tracked = handled and { vx, vy, vz } or nil
         return
     end
 
-    local friction, deceleration = brakingParams(cmc)
-    if not brakingParamsLogged then
-        brakingParamsLogged = true
-        log("braking params: friction=%.3f deceleration=%.3f", friction, deceleration)
-    end
-    local bx, by, bz = applyBraking(tracked[1], tracked[2], tracked[3], dt, friction, deceleration)
+    local bx, by = calcWalkingVelocity(cmc, tracked[1], tracked[2], accel.X, accel.Y, dt)
+    local bz = 0
 
     -- Largest velocity error a rounded move can introduce this frame, with a little slack.
     local loc = pawn:K2_GetActorLocation()
@@ -257,6 +384,200 @@ local function fixJumpHeight(pawn, cmc, dt, mode, vel)
     end
 end
 
+-- IGetIsCharging (Blueprint) checks the Character.MoveState.Charging gameplay tag.
+local function isCharging(pawn)
+    local out = {}
+    local ret = pawn:IGetIsCharging(out)
+    if type(out.IsCharging) == "boolean" then return out.IsCharging end
+    if type(ret) == "boolean" then return ret end
+    error("IGetIsCharging returned no IsCharging value")
+end
+
+-- GroundFriction that leaves velocity the same steady angle behind a steadily turning facing at
+-- this dt as `friction` does at 30 FPS. Per frame velocity keeps R = keepFriction * keepAccel of
+-- that angle, and a facing turning at w per second leaves it w * dt * R / (1 - R) behind.
+local function referenceFriction(friction, accel, speed, dt)
+    local refDt = 1 / REFERENCE_FPS
+    local keepRef = (1 - math.min(friction * refDt, 1)) / (1 + accel * refDt / speed)
+    local ratio = keepRef / (1 - keepRef) * refDt / dt -- R / (1 - R) that gives the 30 FPS lag
+    local keep = ratio / (1 + ratio)
+    return (1 - keep * (1 + accel * dt / speed)) / dt
+end
+
+-- Runs before each world tick, so a GroundFriction written here applies to the next frame's move;
+-- that frame is assumed to be as long as the one that just finished.
+local function fixChargeTurnSlip(cmc, dt, vel, charging)
+    local speed = charging and math.sqrt(vel.X * vel.X + vel.Y * vel.Y) or 0
+    charging = charging and speed >= CHARGE_MIN_SPEED
+    if not charging and not slip then return end
+
+    -- Something else wrote GroundFriction (an effect changing the attribute): that is the new base.
+    if slip and cmc.GroundFriction ~= slip.written then slip = nil end
+    if not charging then
+        if slip then cmc.GroundFriction = slip.base end
+        slip = nil
+        return
+    end
+    local base = slip and slip.base or cmc.GroundFriction
+    cmc.GroundFriction = math.max(base, referenceFriction(base, cmc.MaxAcceleration, speed, dt))
+    slip = slip or { base = base }
+    slip.written = cmc.GroundFriction -- read back: the property stores a float
+end
+
+-- Mouse X movement over the last 1/30 s, from the per-frame samples (the oldest frame in the
+-- window counts in proportion to how much of it falls inside).
+local function mouseReferenceValue()
+    local window = 1 / REFERENCE_FPS
+    local sum, covered = 0, 0
+    for i = 0, mouse.count - 1 do
+        local index = (mouse.head - i - 1) % MOUSE_HISTORY + 1
+        local dt = mouse.dts[index]
+        if covered + dt >= window then
+            return sum + mouse.values[index] * (window - covered) / dt
+        end
+        sum, covered = sum + mouse.values[index], covered + dt
+    end
+    return sum
+end
+
+-- Hooked around InputAxis_RightStick_X, where the Blueprint stores the axis value for this frame.
+-- It takes one raw sample per frame and, while mouse steering a charge, replaces the stored value.
+local function onMouseAxis(context, axisValue)
+    local raw = axisValue:get()
+    if mouse.frame ~= frameCounter then
+        mouse.frame = frameCounter
+        mouse.head = mouse.head % MOUSE_HISTORY + 1
+        mouse.values[mouse.head], mouse.dts[mouse.head] = raw, lastDt
+        mouse.count = math.min(mouse.count + 1, MOUSE_HISTORY)
+        mouse.component = context:get()
+    end
+    if not mouse.active then return end
+    local component = context:get()
+    -- Only after the Blueprint stored this frame's value (it skips that while right-stick input is disabled).
+    if component.InputAxisRightStickX == raw then
+        component.InputAxisRightStickX = mouseReferenceValue()
+    end
+end
+
+-- A hook error would repeat every frame, so the first one turns the fix off.
+local function onMouseAxisGuarded(context, axisValue)
+    if mouse.failed then return end
+    local ok, err = pcall(onMouseAxis, context, axisValue)
+    if not ok then
+        mouse.failed = true
+        mouse.active = false
+        log("mouse charge steering fix disabled after hook error: %s", tostring(err))
+    end
+end
+
+-- Blueprints load after the mods, so look for the hooked function every HOOK_RETRY_FRAMES frames.
+-- `state` tracks the attempts (registered, failed, retryIn); `name` is the fix named in the log.
+local function registerBlueprintHook(state, path, pre, post, name)
+    if state.registered or state.failed then return end
+    if state.retryIn > 0 then
+        state.retryIn = state.retryIn - 1
+        return
+    end
+    state.retryIn = HOOK_RETRY_FRAMES
+    local fn = StaticFindObject(path)
+    if not (fn and fn:IsValid()) then return end
+    local ok, err = pcall(RegisterHook, path, pre, post)
+    if ok then
+        state.registered = true
+        log("%s hook registered", name)
+    else
+        state.failed = true
+        log("%s fix disabled: RegisterHook failed: %s", name, tostring(err))
+    end
+end
+
+local function registerMouseHook()
+    -- Registered as both the pre and the post callback: whichever runs after the Blueprint stored
+    -- the value replaces it (onMouseAxis checks the stored value first).
+    registerBlueprintHook(mouse, MOUSE_AXIS_FUNCTION, onMouseAxisGuarded, onMouseAxisGuarded, "mouse charge steering")
+end
+
+-- CharacterInputComponent_Spyro.IsKeyboardMouseAndUsingMouseCheckingXAxis, the same test the
+-- Blueprint uses to steer the charge with the mouse: keyboard/mouse input, mouse steering enabled
+-- in the settings, and no keyboard steering this frame.
+local function usingMouseSteering()
+    local component = mouse.component
+    if mouse.failed or not (component and component:IsValid()) then return false end
+    local ok, result = pcall(function()
+        local out = {}
+        local ret = component:IsKeyboardMouseAndUsingMouseCheckingXAxis(out)
+        if type(out["Is Using"]) == "boolean" then return out["Is Using"] end
+        if type(ret) == "boolean" then return ret end
+        error("IsKeyboardMouseAndUsingMouseCheckingXAxis returned no Is Using value")
+    end)
+    if ok then return result end
+    mouse.failed = true
+    log("mouse charge steering fix disabled: %s", tostring(result))
+    return false
+end
+
+-- Both charge fixes only act above 30 FPS while charging: the slip fix on the ground, mouse
+-- steering also during charge jumps (the Blueprint steers those the same way).
+local function fixCharge(pawn, cmc, dt, mode, vel)
+    local charging = (mode == MOVE_WALKING or mode == MOVE_FALLING) and dt >= MIN_TICK_TIME
+        and dt < 1 / REFERENCE_FPS - 1e-4 and cmc.MaxWalkSpeed >= CHARGE_MIN_WALK_SPEED
+    if charging then
+        -- Pawns other than Spyro may not implement IGetIsCharging: treat them as not charging.
+        local ok, result = pcall(isCharging, pawn)
+        if not ok and not chargeQueryErrorLogged then
+            chargeQueryErrorLogged = true
+            log("IGetIsCharging failed (treated as not charging): %s", tostring(result))
+        end
+        charging = ok and result
+    end
+    if FIX_CHARGE_TURN_SLIP then fixChargeTurnSlip(cmc, dt, vel, charging and mode == MOVE_WALKING) end
+    mouse.active = FIX_MOUSE_CHARGE_STEERING and charging and usingMouseSteering()
+end
+
+-- FInterpTo speed that leaves the same steady lag behind a steadily moving target at this dt as
+-- `speed` does at 30 FPS. Each frame keeps (1 - speed * dt) of the gap, and a target moving at w
+-- per second stays w * dt * (1 - f) / f ahead, with f = speed * dt.
+local function referenceInterpSpeed(speed, dt)
+    if speed <= 0 then return speed end
+    local refDt = 1 / REFERENCE_FPS
+    local refStep = math.min(speed * refDt, 1)
+    local ratio = (1 - refStep) / refStep * refDt / dt -- (1 - f) / f that gives the 30 FPS lag
+    return 1 / ((1 + ratio) * dt)
+end
+
+local function readFollowCamera(pawn)
+    return pawn.FollowCamera
+end
+
+-- Runs before each world tick, so m_ctrInterp written here applies to the next frame's camera update.
+local function fixCameraCentering(pawn, dt)
+    -- Pawns other than Spyro (e.g. Spyro 3's other playable characters) may have no follow camera.
+    local ok, component = pcall(readFollowCamera, pawn)
+    if not (ok and component and component:IsValid()) then camera = nil return end
+    local address = component:GetAddress()
+    if camera and camera.address ~= address then camera = nil end -- new pawn or camera
+    local current = component.m_ctrInterp
+
+    -- A camera settings push, pop or transition changed the value: find the new base below.
+    if camera and camera.written and current ~= camera.written then camera = nil end
+
+    if dt < MIN_TICK_TIME or dt >= 1 / REFERENCE_FPS - 1e-4 then
+        if camera and camera.written then component.m_ctrInterp = camera.base end
+        camera = nil
+        return
+    end
+    if not (camera and camera.written) then
+        -- Only asked when the value changed under us (or at start), so this is rarely called.
+        if component:IsTransitioning() then
+            camera = { address = address }
+            return
+        end
+        camera = { address = address, base = current }
+    end
+    component.m_ctrInterp = referenceInterpSpeed(camera.base, dt)
+    camera.written = component.m_ctrInterp -- read back: the property stores a float
+end
+
 -- UEHelpers.GetPlayerController() runs FindAllOf("PlayerController") on every call, which is too
 -- expensive to do every frame, so keep the controller until it becomes invalid (level change)
 -- and only search again every CONTROLLER_RETRY_FRAMES frames while there is none.
@@ -284,27 +605,6 @@ end
 local function getGameplayStatics()
     if not (cachedStatics and cachedStatics:IsValid()) then cachedStatics = UEHelpers.GetGameplayStatics() end
     return cachedStatics
-end
-
--- Blueprints load after the mods, so look for the hooked function every HOOK_RETRY_FRAMES frames.
--- `state` tracks the attempts (registered, failed, retryIn); `name` is the fix named in the log.
-local function registerBlueprintHook(state, path, pre, post, name)
-    if state.registered or state.failed then return end
-    if state.retryIn > 0 then
-        state.retryIn = state.retryIn - 1
-        return
-    end
-    state.retryIn = HOOK_RETRY_FRAMES
-    local fn = StaticFindObject(path)
-    if not (fn and fn:IsValid()) then return end
-    local ok, err = pcall(RegisterHook, path, pre, post)
-    if ok then
-        state.registered = true
-        log("%s hook registered", name)
-    else
-        state.failed = true
-        log("%s fix disabled: RegisterHook failed: %s", name, tostring(err))
-    end
 end
 
 -- Gives the dust effects we stretched or slowed normal time back. Runs on the next frame, after
@@ -378,22 +678,93 @@ local function prepareChargeDust(pawn)
     registerBlueprintHook(dust, CHARGE_DUST_FUNCTION, onDustHookGuarded, onDustHookGuarded, "charge dust")
 end
 
+-- Moves the druid montage's Energize notify (see the header). Notify extraction reads the trigger
+-- time live as the notify's time (LinkValue) plus TriggerTimeOffset, so only the offset changes.
+-- Returns the new trigger time, or nil if this montage object is already patched.
+local function patchDruidMontage(montage)
+    local notifies = montage.Notifies
+    for i = 1, notifies:GetArrayNum() do
+        local notify = notifies[i]
+        if notify.NotifyName:ToString() == "Energize" then
+            local time = notify.LinkValue
+            if math.abs(time - DRUID_NOTIFY_TIME) > 1e-4 then
+                error(string.format("unexpected Energize notify time %.5f", time))
+            end
+            local offset = DRUID_FIXED_NOTIFY_TIME - time
+            if math.abs(notify.TriggerTimeOffset - offset) < 1e-6 then return nil end
+            notify.TriggerTimeOffset = offset
+            local triggerTime = time + notify.TriggerTimeOffset -- read back
+            if math.abs(triggerTime - DRUID_FIXED_NOTIFY_TIME) > 1e-6 then
+                error(string.format("TriggerTimeOffset write didn't stick (trigger time %.5f)", triggerTime))
+            end
+            return triggerTime
+        end
+    end
+    error("no Energize notify")
+end
+
+-- Look for the montage every HOOK_RETRY_FRAMES frames and patch it whenever it isn't patched yet.
+-- Only the druid levels' own assets reference it (LS113, LS114, LS115, LS118), so it is only found
+-- on those levels, and again after one is reloaded.
+local function fixDruidEnergize()
+    if druid.retryIn > 0 then
+        druid.retryIn = druid.retryIn - 1
+        return
+    end
+    druid.retryIn = HOOK_RETRY_FRAMES
+    local montage = StaticFindObject(DRUID_MONTAGE)
+    if not (montage and montage:IsValid()) then return end
+    local triggerTime = patchDruidMontage(montage)
+    if triggerTime then log("druid Energize notify moved to %.5f s", triggerTime) end
+end
+
 local function tick()
     local pc = getPlayerController()
     if not pc then return end
+    if FIX_DRUID_ENERGIZE and not druid.failed then
+        local ok, err = pcall(fixDruidEnergize)
+        if not ok then
+            druid.failed = true
+            log("druid Energize fix disabled after error: %s", tostring(err))
+        end
+    end
     local pawn = pc.Pawn
-    if not pawn:IsValid() then tracked = nil jump = nil return end
+    if not pawn:IsValid() then tracked = nil jump = nil slip = nil camera = nil mouse.active = false return end
     local cmc = pawn.CharacterMovement
-    if not cmc:IsValid() then tracked = nil jump = nil return end
+    if not cmc:IsValid() then tracked = nil jump = nil slip = nil camera = nil mouse.active = false return end
     local dt = getGameplayStatics():GetWorldDeltaSeconds(pawn)
-    -- Read once and share: both fixes need the mode and velocity from the frame that just finished.
+    lastDt = dt
+    -- Read once and share: all fixes need the mode and velocity from the frame that just finished.
     local mode = cmc.MovementMode
     local vel = cmc.Velocity
-    fixBrakingSlide(pawn, cmc, dt, mode, vel)
+    fixWalkingVelocity(pawn, cmc, dt, mode, vel)
     fixJumpHeight(pawn, cmc, dt, mode, vel)
+    if FIX_MOUSE_CHARGE_STEERING then registerMouseHook() end
     if FIX_CHARGE_DUST and not dust.failed then
         local ok, err = pcall(prepareChargeDust, pawn)
         if not ok then disableDustFix(err) end
+    end
+    if (FIX_CHARGE_TURN_SLIP or FIX_MOUSE_CHARGE_STEERING) and not chargeQueryFailed then
+        local ok, err = pcall(fixCharge, pawn, cmc, dt, mode, vel)
+        if not ok then
+            -- Don't retry a broken charge query every frame, and don't leave friction raised.
+            chargeQueryFailed = true
+            mouse.active = false
+            if slip then pcall(function() cmc.GroundFriction = slip.base end) end
+            slip = nil
+            log("charge fixes disabled after error: %s", tostring(err))
+        end
+    end
+    if FIX_CAMERA_CENTERING and not cameraFixFailed then
+        local ok, err = pcall(fixCameraCentering, pawn, dt)
+        if not ok then
+            cameraFixFailed = true
+            if camera and camera.written then
+                pcall(function() pawn.FollowCamera.m_ctrInterp = camera.base end)
+            end
+            camera = nil
+            log("camera centering fix disabled after error: %s", tostring(err))
+        end
     end
 end
 

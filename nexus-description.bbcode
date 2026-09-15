@@ -1,0 +1,173 @@
+[center][size=6][b]Spyro High FPS Sliding and Jump Fix[/b][/size]
+[size=3]Play Spyro Reignited Trilogy at high framerates and have it play exactly like it does at 30 FPS: same jumps, same stops, same charge, same camera, and wizards that keep working.[/size][/center]
+[line]
+[size=5][b]Disclaimer: AI-generated code[/b][/size]
+[b]All of the code in this mod was written by AI[/b] (Claude Opus 5), under my direction. That includes the Lua mod itself and every tool used to investigate the bugs. My part was directing the work and testing everything in game.
+The bugs were measured with frame-by-frame recordings of the game, and I tested the fixes in game at 30 and 144 FPS. Even so, please keep in mind that no human wrote this code by hand. Bug reports are welcome in the Posts or Bugs tab.
+[line]
+[size=5][b]What it fixes[/b][/size]
+Spyro Reignited Trilogy was made for 30 FPS. At higher framerates the game quietly plays differently:
+[list]
+[*][b]Sliding:[/b] above about 80 FPS, Spyro keeps sliding slowly after you let go of the stick.[/*]
+[*][b]Jump height:[/b] jumps and the hover at the end of a glide don't go as high, so some ledges and glides are out of reach.[/*]
+[*][b]Speeding up:[/b] Spyro picks up speed unevenly, quicker in some directions and slower in others.[/*]
+[*][b]Charge turning:[/b] Spyro swings wider in charge turns.[/*]
+[*][b]Mouse charge steering:[/b] the same mouse movement turns a charging Spyro much less.[/*]
+[*][b]Camera during charges:[/b] the camera falls further behind Spyro when he turns.[/*]
+[*][b]Charge dust:[/b] the dust cloud behind a charge is gone at 60 FPS and above.[/*]
+[*][b]Wizards in Alpine Ridge:[/b] the wizards stop moving their stairs, doors and walkways after one spell.[/*]
+[/list]
+With this mod, all of these behave [b]the same as at 30 FPS[/b], at any framerate.
+[b]At 30 FPS the mod changes nothing.[/b]
+[line]
+[size=5][b]Before and after[/b][/size]
+Every number below was recorded in game with a frame-by-frame logger, at 30 FPS and at 144 FPS with and without the mod. The goal is for "144 FPS with the mod" to match "30 FPS".
+
+[size=4][b]Sliding[/b][/size]
+How long Spyro takes to stop after you let go of the stick:
+[list]
+[*]30 FPS: [b]under 0.2 seconds[/b][/*]
+[*]144 FPS without the mod: [color=#ff6666][b]seconds, or until something stops him[/b][/color][/*]
+[*]144 FPS with the mod: [color=#6aa84f][b]0.1 to 0.2 seconds[/b][/color][/*]
+[/list]
+[size=4][b]Jump height[/b][/size]
+How high each jump peaks (game units):
+[list]
+[*]Full jump: 30 FPS [b]84.6[/b] · without the mod [color=#ff6666][b]79.7[/b][/color] · with the mod [color=#6aa84f][b]84.7[/b][/color][/*]
+[*]Charge jump: 30 FPS [b]74.5[/b] · without the mod [color=#ff6666][b]68.7 to 70.4[/b][/color] · with the mod [color=#6aa84f][b]74.6[/b][/color][/*]
+[*]Hover at the end of a glide: 30 FPS [b]48.9[/b] · without the mod [color=#ff6666][b]42.5[/b][/color] · with the mod [color=#6aa84f][b]49.0[/b][/color][/*]
+[/list]
+[size=4][b]Speeding up[/b][/size]
+[list]
+[*]Speed gained per second: 30 FPS [b]1000[/b] · without the mod [color=#ff6666][b]about 650 or 1300[/b][/color], depending on direction · with the mod [color=#6aa84f][b]1000[/b][/color][/*]
+[*]Charge from standing still to speed 400: 30 FPS [b]0.40 s[/b] · with the mod [color=#6aa84f][b]0.40 s[/b][/color][/*]
+[*]Top running and charging speeds were already the same at every framerate.[/*]
+[/list]
+[size=4][b]Charge turning[/b][/size]
+In a full charge turn, how far the direction Spyro actually moves lags behind the way he faces:
+[list]
+[*]30 FPS: [b]9.4°[/b][/*]
+[*]144 FPS without the mod: [color=#ff6666][b]12.1° to 12.5°[/b][/color][/*]
+[*]144 FPS with the mod: [color=#6aa84f][b]9.4° to 9.5°[/b][/color][/*]
+[/list]
+[size=4][b]Mouse charge steering[/b][/size]
+Turn speed when moving the mouse at the same slow, steady speed:
+[list]
+[*]30 FPS: [b]181° per second[/b][/*]
+[*]144 FPS without the mod: [color=#ff6666][b]about 42° per second[/b][/color] (calculated from the recorded steering formula)[/*]
+[*]144 FPS with the mod: [color=#6aa84f][b]180° per second[/b][/color] (60 FPS: 180°)[/*]
+[/list]
+Fast mouse flicks hit the game's turn limit (210° per second) either way.
+[size=4][b]Camera during charges[/b][/size]
+How far the camera trails behind Spyro in a full charge turn:
+[list]
+[*]30 FPS: [b]33.0°[/b][/*]
+[*]144 FPS without the mod: [color=#ff6666][b]36.5°[/b][/color][/*]
+[*]144 FPS with the mod: [color=#6aa84f][b]33.0°[/b][/color][/*]
+[/list]
+[size=4][b]Charge dust[/b][/size]
+Dust bursts per second behind a ground charge:
+[list]
+[*]30 FPS: [b]30[/b][/*]
+[*]144 FPS without the mod: [color=#ff6666][b]0[/b][/color] (no dust at all)[/*]
+[*]144 FPS with the mod: [color=#6aa84f][b]29 to 31[/b][/color][/*]
+[/list]
+[size=4][b]Wizards in Alpine Ridge[/b][/size]
+Wizard spells that actually moved the stairs, doors or walkways:
+[list]
+[*]30 FPS: [b]all of them[/b][/*]
+[*]144 FPS without the mod: [color=#ff6666][b]at most the first one[/b][/color], then none (apart from the odd lucky one)[/*]
+[*]144 FPS with the mod: [color=#6aa84f][b]all of them[/b][/color] (78 out of 78 recorded)[/*]
+[/list]
+[spoiler]
+[b]Why these happen, in plain words[/b]
+
+The game does its work in steps, one per frame. At 30 FPS each step is 1/30 of a second long; at 144 FPS the steps are almost five times shorter. Many small calculations were only ever tuned for the long steps, so shorter steps add up to slightly different results.
+
+[b]Sliding[/b]
+Levels are placed very far from the center of the game world, where the engine can only store positions in steps of 1/32 of a unit. The game works out Spyro's walking speed from how far he actually moved. At high framerates, the tiny bit of braking in each short step gets rounded away, so his speed never drops. The mod keeps track of the braking the game intended and applies it.
+
+[b]Speeding up[/b]
+The same rounding also changes how fast Spyro speeds up: each short step's gain gets rounded up or down depending on the direction he's going. The mod applies the speed-up the game intended.
+
+[b]Jump height[/b]
+A jump switches gravity off for 0.233 seconds, but gravity can only come back on at the end of a frame. That usually adds one extra frame of rising, which is 33 ms at 30 FPS but only 7 ms at 144 FPS. The mod keeps gravity off exactly as long as it would be at 30 FPS, and corrects the last partial frame so the jump peaks at the same height.
+
+[b]Charge turning[/b]
+Each frame, the game pulls Spyro's movement a little towards the way he faces. Many small pulls don't add up to the same as a few big ones, so his path trails further behind at high framerates. The mod adjusts the pull strength during charges so it adds up to the 30 FPS result.
+
+[b]Mouse charge steering[/b]
+While charging, the game treats the mouse movement of each frame like how far a stick is pushed. At 144 FPS the same hand movement is split into five times smaller pieces, so it looks like the stick is barely pushed and Spyro hardly turns. The mod gives the game the mouse movement of the last 1/30 of a second instead, just like a 30 FPS frame sees.
+
+[b]Camera during charges[/b]
+The camera closes part of the gap to Spyro each frame. Like the charge turning, many small steps don't add up to the same as a few big ones. The mod adjusts the camera's catch-up speed so it trails Spyro by the same angle as at 30 FPS.
+
+[b]Charge dust[/b]
+The game replaces the dust cloud behind a charge with a brand new one every frame, and each one only gets a single frame to make dust. A 30 FPS frame is long enough for one burst; a 60+ FPS frame isn't, so no dust appears at all. The mod gives one new cloud every 1/30 of a second a full 30 FPS frame's worth of time, and keeps the ones in between quiet.
+
+[b]Wizards[/b]
+The wizards move their stairs, doors and walkways at one exact moment in their spell animation, and they take turns between two spells. In one of them, that moment comes 0.9 ms after the animation starts to end. At 30 FPS one frame jumps past both at once, so the spell works. At 60, 120 and 144 FPS a frame lands exactly on the end first, so the spell is cut off before it can work. The wizard only switches to his other spell when a spell works, so he keeps repeating the broken one. The mod moves that moment 1 ms earlier, to the same moment as in the other spell, which works at every framerate.[/spoiler]
+[line]
+[size=5][b]Requirements[/b][/size]
+[list]
+[*]Spyro Reignited Trilogy ([b]Steam[/b] version, the only one tested)[/*]
+[*][url=https://github.com/UE4SS-RE/RE-UE4SS/releases/tag/experimental-latest]UE4SS experimental build[/url], tested with [b]v3.0.1-1133-gb4cefa18[/b][/*]
+[/list]
+[color=#ff6666][b]The older "stable" UE4SS v3.0.1 release will not work.[/b][/color] You need the experimental build.
+[line]
+[size=5][b]Installation[/b][/size]
+[b]1. Find the game folder[/b]
+In Steam, right-click [b]Spyro Reignited Trilogy[/b] → [b]Manage[/b] → [b]Browse local files[/b]. Usually:
+[code]C:\Program Files (x86)\Steam\steamapps\common\Spyro Reignited Trilogy[/code]
+[b]2. Install UE4SS[/b]
+[list=1]
+[*]From the [url=https://github.com/UE4SS-RE/RE-UE4SS/releases/tag/experimental-latest]UE4SS experimental release[/url], download the file named [b]UE4SS_v3.0.1-....zip[/b]. Don't download the ones starting with zDEV or zCustomGameConfigs.[/*]
+[*]Extract it into [b]Falcon\Binaries\Win64[/b], the folder that contains [b]Spyro-Win64-Shipping.exe[/b].[/*]
+[*]Check that [b]dwmapi.dll[/b] is now directly next to [b]Spyro-Win64-Shipping.exe[/b], with a [b]ue4ss[/b] folder beside it.[/*]
+[*][b][color=#3d85c6]LINUX ONLY[/color] - [/b]In Steam launch options add WINEDLLOVERRIDES="dwmapi.dll=n,b"[/*]
+[/list]
+[b]3. Install this mod[/b]
+Extract the mod zip into the [b]game folder[/b] (Spyro Reignited Trilogy), [u]not[/u] into Win64. The zip already contains the right folders, so the mod ends up in:
+[code]Spyro Reignited Trilogy\Falcon\Binaries\Win64\ue4ss\Mods\HighFpsSlidingAndJumpFix\[/code]
+If Windows asks whether to merge folders, choose Yes.
+[b]4. Check that it works[/b]
+Start the game. No window or message appears in game; that's normal. Open this file in Notepad:
+[code]Spyro Reignited Trilogy\Falcon\Binaries\Win64\ue4ss\UE4SS.log[/code]
+Near the end you should see a line like this (the number is the mod version):
+[code][HighFpsSlidingAndJumpFix] v1.1.0 loaded[/code]
+[line]
+[size=5][b]Troubleshooting[/b][/size]
+[list]
+[*][b]No UE4SS.log file:[/b] UE4SS isn't loading. Make sure [b]dwmapi.dll[/b] is directly next to [b]Spyro-Win64-Shipping.exe[/b]. Some antivirus programs quarantine this file, so check your antivirus history.[/*]
+[*][b]Log exists, but no "loaded" line:[/b] check that the mod folder matches step 3, including [b]enabled.txt[/b].[/*]
+[*][b]Log shows "EngineTick hook unavailable" or a Lua error:[/b] you're probably on the old stable UE4SS. Install the experimental build.[/*]
+[*][b]Log shows "... fix disabled":[/b] one of the fixes switched itself off to stay safe; the others keep working. Please post that log line in the Bugs tab.[/*]
+[*][b]Game crashed after pressing Ctrl+R:[/b] that's UE4SS's mod reload, which can crash this game. Restart the game instead.[/*]
+[*][b]Want to see the UE4SS log window?[/b] Set [b]ConsoleEnabled = 1[/b] in [b]Win64\ue4ss\UE4SS-settings.ini[/b].[/*]
+[/list]
+[line]
+[size=5][b]Uninstall[/b][/size]
+[list]
+[*][b]Remove this mod:[/b] delete [b]Falcon\Binaries\Win64\ue4ss\Mods\HighFpsSlidingAndJumpFix[/b].[/*]
+[*][b]Remove UE4SS entirely:[/b] also delete [b]dwmapi.dll[/b] and the [b]ue4ss[/b] folder from [b]Falcon\Binaries\Win64[/b].[/*]
+[/list]
+[line]
+[size=5][b]Notes[/b][/size]
+[list]
+[*][b]Performance:[/b] all fixes together measured about 0.1 ms per frame at 144 FPS (0.08 to 0.15 ms, 1 to 2% of a frame).[/*]
+[*][b]Short hops:[/b] tapping jump is also matched to 30 FPS, which rounds the release up to the next 1/30 of a second. At high framerates, short hops can hang in the air up to 33 ms longer than they did before.[/*]
+[*][b]Camera after a turn:[/b] the camera matches 30 FPS exactly while Spyro turns, but swings back behind him 5 to 8% faster than at 30 FPS once the turn ends. Matching both at once isn't possible.[/*]
+[*][b]Not covered:[/b] how fast Spyro speeds up while swimming or flying.[/*]
+[*][b]Wizards elsewhere:[/b] the wizard fix also applies to the same spell in the other Magic Crafters levels, but was only tested in Alpine Ridge.[/*]
+[*][b]Not yet tested:[/b] non-Steam versions of the game.[/*]
+[*][b]Compatibility:[/b] other UE4SS Lua mods should work alongside it. Mods that change Spyro's movement, jumps, charge or camera may conflict.[/*]
+[/list]
+[line]
+[size=5][b]Source and license[/b][/size]
+Source code, research notes and the investigation tools: [url=https://github.com/celvro/SpyroHighFpsSlideFix]GitHub[/url]
+Released under the [b]MIT License[/b].
+[size=5][b]Credits[/b][/size]
+[list]
+[*][url=https://github.com/UE4SS-RE/RE-UE4SS]UE4SS[/url] team, for the mod loader[/*]
+[*]Code written by Claude[/*]
+[/list]
