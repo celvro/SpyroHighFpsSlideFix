@@ -121,6 +121,14 @@ local HOOK_RETRY_FRAMES = 60          -- frames between looks for a (not yet loa
 local HOOK_MAX_FAILURES = 200         -- failed RegisterHook calls before giving up on a level Blueprint
 local PROFILE = false        -- log the fixes' per-frame cost to UE4SS.log
 local PROFILE_INTERVAL = 10           -- seconds between profile log lines
+-- GC spike investigation (see CLAUDE.md "Frame spikes / Lua GC investigation"): only sampled while
+-- PROFILE is also on. GC_COLLECTION_KB is a per-frame collectgarbage("count") drop big enough to
+-- count as "a collection landed in this frame" rather than ordinary allocate/free noise.
+local GC_PROFILE = false
+local GC_COLLECTION_KB = 5
+-- Switches the shared Lua state's collector at load, to A/B against the default incremental one.
+-- "generational" is the only other mode Lua 5.4 offers; nil/false leaves whatever UE4SS started with.
+local GC_MODE = nil
 
 local tracked = nil -- { x, y, z } unquantized velocity carried from the previous frame
 local jump = nil    -- zero-gravity jump rise being tracked or extended
@@ -913,6 +921,11 @@ end
 -- Profiling: times each frame's fix work with the engine's high-resolution clock (os.clock only
 -- has 1 ms resolution on Windows) and logs a summary every PROFILE_INTERVAL seconds.
 local profile = { frames = 0, cost = 0, maxCost = 0, timerCost = 0, frameTime = 0, windowStart = nil }
+-- GC investigation counters, folded into the same window. gcMinDelta is the most negative
+-- collectgarbage("count") change seen in one frame (the biggest apparent collection); maxCostGcDelta
+-- is that same delta but specifically on the frame that had the window's maxCost, to see whether the
+-- worst-cost frame is also the frame a collection landed in.
+local gcProfile = { collections = 0, minDelta = nil, maxCostGcDelta = nil, totalDelta = 0 }
 
 local function describeTable(t)
     local parts = {}
@@ -942,17 +955,31 @@ local function profiledTick()
     -- measured tick (that interval also contains one clock call).
     local t0 = accurateSeconds(statics, pc)
     local t1 = accurateSeconds(statics, pc)
+    local gcBefore = GC_PROFILE and collectgarbage("count") or nil
     runTick()
+    local gcAfter = GC_PROFILE and collectgarbage("count") or nil
     local t2 = accurateSeconds(statics, pc)
 
     local timerCost = t1 - t0
     local cost = math.max(0, (t2 - t1) - timerCost)
     profile.frames = profile.frames + 1
     profile.cost = profile.cost + cost
+    local isNewMax = cost > profile.maxCost
     profile.maxCost = math.max(profile.maxCost, cost)
     profile.timerCost = profile.timerCost + timerCost
     profile.frameTime = profile.frameTime + statics:GetWorldDeltaSeconds(pc)
     profile.windowStart = profile.windowStart or t0
+
+    if GC_PROFILE then
+        -- KB allocated this frame minus KB the collector reclaimed; negative means a collection ran
+        -- and outpaced whatever we allocated (Lua's automatic collector runs synchronously inside
+        -- whichever allocation crosses its threshold, so a big one shows up as extra cost above).
+        local delta = gcAfter - gcBefore
+        gcProfile.totalDelta = gcProfile.totalDelta + delta
+        if delta <= -GC_COLLECTION_KB then gcProfile.collections = gcProfile.collections + 1 end
+        gcProfile.minDelta = gcProfile.minDelta and math.min(gcProfile.minDelta, delta) or delta
+        if isNewMax then gcProfile.maxCostGcDelta = delta end
+    end
 
     if t2 - profile.windowStart >= PROFILE_INTERVAL then
         local n = profile.frames
@@ -960,6 +987,13 @@ local function profiledTick()
         log("profile: %d frames (avg frame %.2f ms), fixes avg %.3f ms (%.2f%% of frame), max %.3f ms, clock overhead avg %.3f ms",
             n, avgFrame * 1000, profile.cost / n * 1000, profile.cost / profile.frameTime * 100,
             profile.maxCost * 1000, profile.timerCost / n * 1000)
+        if GC_PROFILE then
+            log("gc: %d frame(s) with a >=%.0f KB drop (%.2f/s), heap now %.1f KB, avg delta %.3f KB/frame, biggest drop %.1f KB, delta on max-cost frame %s",
+                gcProfile.collections, GC_COLLECTION_KB, gcProfile.collections / (avgFrame * n),
+                collectgarbage("count"), gcProfile.totalDelta / n, gcProfile.minDelta or 0,
+                gcProfile.maxCostGcDelta and string.format("%.1f KB", gcProfile.maxCostGcDelta) or "n/a")
+            gcProfile.collections, gcProfile.minDelta, gcProfile.maxCostGcDelta, gcProfile.totalDelta = 0, nil, nil, 0
+        end
         profile.frames, profile.cost, profile.maxCost, profile.timerCost, profile.frameTime = 0, 0, 0, 0, 0
         profile.windowStart = t2
     end
@@ -981,6 +1015,12 @@ if not EngineTickAvailable then
     return
 end
 
+if GC_MODE then
+    local ok, err = pcall(collectgarbage, GC_MODE)
+    if ok then log("collectgarbage(%q) applied to the shared Lua state", GC_MODE)
+    else log("collectgarbage(%q) failed: %s", GC_MODE, tostring(err)) end
+end
+
 LoopInGameThreadAfterFrames(1, PROFILE and profiledLoop or runTick)
 
-log("v%s loaded%s", VERSION, PROFILE and " (profiling on)" or "")
+log("v%s loaded%s%s", VERSION, PROFILE and " (profiling on)" or "", GC_PROFILE and " (GC profiling on)" or "")
