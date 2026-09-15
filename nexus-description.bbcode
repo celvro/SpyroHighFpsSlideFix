@@ -1,5 +1,5 @@
-[center][size=6][b]Spyro High FPS Sliding and Jump Fix[/b][/size]
-[size=3]Play Spyro Reignited Trilogy at high framerates and have it play exactly like it does at 30 FPS: same jumps, same stops, same charge, same camera, and wizards that keep working.[/size][/center]
+[center][size=6][b]Spyro High FPS Gameplay Fixes[/b][/size]
+[size=3]Play Spyro Reignited Trilogy at high framerates and have it play exactly like it does at 30 FPS: same jumps, same stops, same charge, same camera, wizards that keep working, and fire dragons you can actually hit.[/size][/center]
 [line]
 [size=5][b]Disclaimer: AI-generated code[/b][/size]
 [b]All of the code in this mod was written by AI[/b] (Claude Opus 5), under my direction. That includes the Lua mod itself and every tool used to investigate the bugs. My part was directing the work and testing everything in game.
@@ -16,6 +16,7 @@ Spyro Reignited Trilogy was made for 30 FPS. At higher framerates the game quiet
 [*][b]Camera during charges:[/b] the camera falls further behind Spyro when he turns.[/*]
 [*][b]Charge dust:[/b] the dust cloud behind a charge is gone at 60 FPS and above.[/*]
 [*][b]Wizards in Alpine Ridge:[/b] the wizards stop moving their stairs, doors and walkways after one spell.[/*]
+[*][b]Fire dragons in Fireworks Factory:[/b] the dragons' body sections bunch up right behind the head, which makes them much harder to hit.[/*]
 [/list]
 With this mod, all of these behave [b]the same as at 30 FPS[/b], at any framerate.
 [b]At 30 FPS the mod changes nothing.[/b]
@@ -79,6 +80,14 @@ Wizard spells that actually moved the stairs, doors or walkways:
 [*]144 FPS without the mod: [color=#ff6666][b]at most the first one[/b][/color], then none (apart from the odd lucky one)[/*]
 [*]144 FPS with the mod: [color=#6aa84f][b]all of them[/b][/color] (78 out of 78 recorded)[/*]
 [/list]
+[size=4][b]Fire dragons in Fireworks Factory[/b][/size]
+Average gap between the dragons' body sections while they fly (game units):
+[list]
+[*]30 FPS: [b]58 to 64[/b][/*]
+[*]144 FPS without the mod: [color=#ff6666][b]13[/b][/color] (the whole body squeezed up behind the head)[/*]
+[*]144 FPS with the mod: [color=#6aa84f][b]58 to 60[/b][/color][/*]
+[/list]
+The dragons' flying speed and how quickly lost body sections grow back were already the same at every framerate.
 [spoiler]
 [b]Why these happen, in plain words[/b]
 
@@ -106,7 +115,10 @@ The camera closes part of the gap to Spyro each frame. Like the charge turning, 
 The game replaces the dust cloud behind a charge with a brand new one every frame, and each one only gets a single frame to make dust. A 30 FPS frame is long enough for one burst; a 60+ FPS frame isn't, so no dust appears at all. The mod gives one new cloud every 1/30 of a second a full 30 FPS frame's worth of time, and keeps the ones in between quiet.
 
 [b]Wizards[/b]
-The wizards move their stairs, doors and walkways at one exact moment in their spell animation, and they take turns between two spells. In one of them, that moment comes 0.9 ms after the animation starts to end. At 30 FPS one frame jumps past both at once, so the spell works. At 60, 120 and 144 FPS a frame lands exactly on the end first, so the spell is cut off before it can work. The wizard only switches to his other spell when a spell works, so he keeps repeating the broken one. The mod moves that moment 1 ms earlier, to the same moment as in the other spell, which works at every framerate.[/spoiler]
+The wizards move their stairs, doors and walkways at one exact moment in their spell animation, and they take turns between two spells. In one of them, that moment comes 0.9 ms after the animation starts to end. At 30 FPS one frame jumps past both at once, so the spell works. At 60, 120 and 144 FPS a frame lands exactly on the end first, so the spell is cut off before it can work. The wizard only switches to his other spell when a spell works, so he keeps repeating the broken one. The mod moves that moment 1 ms earlier, to the same moment as in the other spell, which works at every framerate.
+
+[b]Fire dragons[/b]
+Each frame, every body section moves part of the way towards the section in front of it. The game treats every frame as at least 1/30 of a second long for this, so at 144 FPS each section gets a full 30 FPS pull almost five times as often. The sections catch up far too quickly and end up squeezed behind the head. The mod gives each section a smaller pull at high framerates, sized so it trails the section ahead by the same distance as at 30 FPS.[/spoiler]
 [line]
 [size=5][b]Requirements[/b][/size]
 [list]
@@ -129,7 +141,7 @@ In Steam, right-click [b]Spyro Reignited Trilogy[/b] → [b]Manage[/b] → [b]Br
 [b]3. Install this mod[/b]
 Extract the mod zip into the [b]game folder[/b] (Spyro Reignited Trilogy), [u]not[/u] into Win64. The zip already contains the right folders, so the mod ends up in:
 [code]Spyro Reignited Trilogy\Falcon\Binaries\Win64\ue4ss\Mods\HighFpsSlidingAndJumpFix\[/code]
-If Windows asks whether to merge folders, choose Yes.
+The folder keeps the mod's original name, so a new version replaces an older one. If Windows asks whether to merge folders, choose Yes.
 [b]4. Check that it works[/b]
 Start the game. No window or message appears in game; that's normal. Open this file in Notepad:
 [code]Spyro Reignited Trilogy\Falcon\Binaries\Win64\ue4ss\UE4SS.log[/code]
@@ -154,7 +166,7 @@ Near the end you should see a line like this (the number is the mod version):
 [line]
 [size=5][b]Notes[/b][/size]
 [list]
-[*][b]Performance:[/b] all fixes together measured about 0.1 ms per frame at 144 FPS (0.08 to 0.15 ms, 1 to 2% of a frame).[/*]
+[*][b]Performance:[/b] all fixes together measured about 0.1 ms per frame at 144 FPS (0.08 to 0.15 ms, 1 to 2% of a frame), and about 0.3 ms per frame in Fireworks Factory, where the dragons are (about 4% of a frame).[/*]
 [*][b]Short hops:[/b] tapping jump is also matched to 30 FPS, which rounds the release up to the next 1/30 of a second. At high framerates, short hops can hang in the air up to 33 ms longer than they did before.[/*]
 [*][b]Camera after a turn:[/b] the camera matches 30 FPS exactly while Spyro turns, but swings back behind him 5 to 8% faster than at 30 FPS once the turn ends. Matching both at once isn't possible.[/*]
 [*][b]Not covered:[/b] how fast Spyro speeds up while swimming or flying.[/*]

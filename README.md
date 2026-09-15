@@ -1,4 +1,4 @@
-# High FPS Sliding and Jump Fix for Spyro Reignited Trilogy
+# High FPS Gameplay Fixes for Spyro Reignited Trilogy
 
 Spyro Reignited Trilogy was tuned for 30 FPS. At higher framerates Spyro handles differently, and some jumps and glides become impossible. This mod makes the game play the same at any framerate as it does at 30 FPS.
 
@@ -51,8 +51,8 @@ Win64\
 
 ### 3. Install the mod
 
-1. Download `HighFpsSlidingAndJumpFix-<version>.zip` from the [Releases page](../../releases/latest).
-2. Extract it into the **game folder** (`Spyro Reignited Trilogy`), not into `Win64`. The zip already contains the `Falcon\Binaries\Win64\...` folders, so the mod lands in:
+1. Download `HighFpsGameplayFixes-<version>.zip` from the [Releases page](../../releases/latest). Versions up to 1.2.1 were named `HighFpsSlidingAndJumpFix-<version>.zip`.
+2. Extract it into the **game folder** (`Spyro Reignited Trilogy`), not into `Win64`. The zip already contains the `Falcon\Binaries\Win64\...` folders, so the mod lands in the folder below. It keeps the mod's original name, so a new version replaces an older one:
 
 ```
 Spyro Reignited Trilogy\Falcon\Binaries\Win64\ue4ss\Mods\HighFpsSlidingAndJumpFix\
@@ -117,7 +117,7 @@ Build the release zip (named from `VERSION` in `main.lua`):
 .\tools\Package-Release.ps1
 ```
 
-This writes `build\release\HighFpsSlidingAndJumpFix-<version>.zip` for the GitHub release.
+This writes `build\release\HighFpsGameplayFixes-<version>.zip` for the GitHub release. The mod folder inside stays `HighFpsSlidingAndJumpFix` so updates overwrite older installs.
 
 ## License
 

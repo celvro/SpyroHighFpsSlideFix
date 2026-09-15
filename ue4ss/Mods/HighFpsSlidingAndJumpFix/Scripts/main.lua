@@ -1,4 +1,6 @@
--- High FPS Sliding and Jump Fix: runtime fixes for framerate-dependent movement bugs.
+-- High FPS Gameplay Fixes: runtime fixes for framerate-dependent gameplay bugs.
+-- The folder and log prefix keep the original name (HighFpsSlidingAndJumpFix) so updates replace
+-- older installs instead of loading alongside them.
 --
 -- Walking velocity fix (sliding and acceleration)
 --   Levels sit ~300,000 units from the world origin, where float32 positions have a 1/32 unit
