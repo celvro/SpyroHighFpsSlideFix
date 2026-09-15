@@ -27,6 +27,9 @@ Fixes (numbers were recorded in game at 30 FPS and at 144 FPS, before and after 
     Dust bursts per second:  30 FPS 30  |  144 FPS before 0  |  after 29-31
 - Wizards (Alpine Ridge): the wizards stop moving their stairs, doors and walkways, after one spell at most.
     Spells that moved something:  30 FPS all  |  144 FPS before at most the first, then only the odd lucky one  |  after all (78 of 78)
+- Fire dragons (Fireworks Factory): the dragons' body sections bunch up behind the head, which makes them
+  much harder to hit.
+    Average gap between body sections:  30 FPS 58-64  |  144 FPS before 13  |  after 58-60
 
 Requirements
 - UE4SS experimental build (https://github.com/UE4SS-RE/RE-UE4SS/releases/tag/experimental-latest).
