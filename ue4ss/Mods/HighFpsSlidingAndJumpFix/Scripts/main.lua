@@ -103,6 +103,17 @@
 --   bunched up behind the head. This keeps the segments' bAlive off, which turns the Blueprint's
 --   calls into no-ops, and repeats the same calls with a delta whose steady trail matches 30 FPS.
 --   At 30 FPS or lower it passes the Blueprint's own delta, so nothing changes.
+--
+-- Flame breath stray lines fix
+--   Spyro's flame breath (PS_VFX_Flame_Breath, and _Rage) has a muzzle emitter,
+--   hard_flames_velocity_muzzle, of thin sprites up to ~240 units long that are aligned to their
+--   movement (PSA_Velocity) but only move ~9 units/s. The renderer takes that direction from each
+--   frame's change in position: ~0.3 units at 30 FPS, but only ~0.02 at 320 FPS, too small for a
+--   stable direction, so a few of the sprites flip to point straight up or sideways and show as long
+--   lines sticking out of the flame. Particle captures showed the emitter simulating identically at
+--   both framerates; switching it off removed the lines, and at 30 FPS the flame looks the same
+--   without it. Above ~35 FPS this switches the emitter off in both flame templates (new breaths pick
+--   it up) and turns it back on at 30 FPS, so 30 FPS is unchanged.
 
 local UEHelpers = require("UEHelpers")
 
@@ -142,6 +153,13 @@ local DRAGON_UPDATE_FUNCTION = "/CBS3012_FireDragon/Blueprints/BP_CBS3012_FireDr
 local DRAGON_MIN_DELTA = 0.033        -- UpdatePrevActors passes FMax(DeltaTime, 0.033) to MoveUpdate
 local DRAGON_FOLLOW_RATE = 4          -- MoveUpdate lerps towards the leader by this * delta, twice
 local DRAGON_MESH_LIFT = 20           -- UpdatePrevActors raises the head's mesh this much around its MoveUpdate calls
+local FIX_FLAME_MUZZLE_LINES = true   -- set false to compare against the stray lines in the flame breath
+local FLAME_TEMPLATE_PATHS = {
+    "/VFX_Spryo/Shared/Particles/Characters/Spyro/FlameThrower/PS_VFX_Flame_Breath.PS_VFX_Flame_Breath",
+    "/VFX_Spryo/Shared/Particles/Characters/Spyro/FlameThrower/PS_VFX_Flame_Breath_Rage.PS_VFX_Flame_Breath_Rage",
+}
+local FLAME_MUZZLE_EMITTER = "hard_flames_velocity_muzzle"
+local FLAME_MUZZLE_MAX_FRAME_TIME = 1 / 35 -- average frames shorter than this hide the emitter (30 FPS keeps it)
 local HOOK_RETRY_FRAMES = 60          -- frames between looks for a (not yet loaded) hooked Blueprint or asset
 local HOOK_MAX_FAILURES = 200         -- failed RegisterHook calls before giving up on a level Blueprint
 local PROFILE = false        -- log the fixes' per-frame cost to UE4SS.log
@@ -197,6 +215,12 @@ local dragon = {
     heads = {},    -- address -> dragon head whose segments we took over, to hand back after an error
     failures = 0, failed = false, retryIn = 0, lookups = 1,
 }
+-- Flame breath lines fix, per template: object and { lod, original bEnabled } of its muzzle emitter, and
+-- whether that emitter is hidden. Keyed by the template's object name for NotifyOnNewObject.
+local flame = { failed = false, avgDt = nil, templates = {} }
+for _, path in ipairs(FLAME_TEMPLATE_PATHS) do
+    flame.templates[path:match("%.([^.]+)$")] = { path = path, lookups = 1, retryIn = 0, object = nil, lods = nil, hidden = nil }
+end
 mouse.lookups = 1
 dust.lookups = 1
 -- Reused across calls (and dragons) so onDragonUpdate doesn't allocate a table every frame. Lua is
@@ -847,6 +871,54 @@ local function fixDruidEnergize()
     if triggerTime then log("druid Energize notify moved to %.5f s", triggerTime) end
 end
 
+-- Hides the flame breath's hard muzzle emitter above ~35 FPS and restores it below (see the header).
+-- Changing the template's LOD only affects flame components created afterwards, i.e. the next breath.
+local function fixFlameMuzzleLines(dt)
+    if dt >= MIN_TICK_TIME then flame.avgDt = flame.avgDt and (flame.avgDt * 0.9 + dt * 0.1) or dt end
+    if not flame.avgDt then return end
+    local hide = flame.avgDt < FLAME_MUZZLE_MAX_FRAME_TIME
+    for name, t in pairs(flame.templates) do
+        if t.object and not t.object:IsValid() then t.object, t.lods, t.hidden = nil, nil, nil end
+        if not t.object then
+            local template = lookUp(t, t.path)
+            if template then
+                local emitters = template.Emitters
+                -- Created but not loaded yet: try again later (found lookups don't hitch).
+                if emitters:GetArrayNum() == 0 then
+                    t.lookups = math.max(t.lookups, 1)
+                else
+                    t.lookups = 0
+                    t.object, t.lods = template, {}
+                    for i = 1, emitters:GetArrayNum() do
+                        local emitter = emitters[i]
+                        if emitter:IsValid() and emitter.EmitterName:ToString() == FLAME_MUZZLE_EMITTER then
+                            local lods = emitter.LODLevels
+                            for j = 1, lods:GetArrayNum() do
+                                table.insert(t.lods, { lod = lods[j], original = lods[j].bEnabled })
+                            end
+                        end
+                    end
+                    if #t.lods == 0 then log("flame muzzle lines fix: %s has no %s emitter", name, FLAME_MUZZLE_EMITTER) end
+                end
+            end
+        end
+        if t.object and t.hidden ~= hide and #t.lods > 0 then
+            for _, entry in ipairs(t.lods) do entry.lod.bEnabled = (not hide) and entry.original end
+            t.hidden = hide
+            log("flame muzzle lines fix: %s emitter %s in %s", FLAME_MUZZLE_EMITTER, hide and "hidden" or "restored", name)
+        end
+    end
+end
+
+-- Puts every found flame template's muzzle emitter back (after an error).
+local function restoreFlameMuzzle()
+    for _, t in pairs(flame.templates) do
+        if t.object and t.lods then
+            for _, entry in ipairs(t.lods) do pcall(function() entry.lod.bEnabled = entry.original end) end
+        end
+    end
+end
+
 -- Seconds a segment trails its leader per unit of leader speed at 30 FPS (see the header).
 local DRAGON_KEEP_30 = (1 - DRAGON_FOLLOW_RATE / REFERENCE_FPS) ^ 2
 local DRAGON_TRAIL_30 = DRAGON_KEEP_30 / (1 - DRAGON_KEEP_30) / REFERENCE_FPS
@@ -966,6 +1038,14 @@ local function tick()
     if not cmc:IsValid() then tracked = nil jump = nil slip = nil camera = nil switch = nil mouse.active = false return end
     local dt = getGameplayStatics():GetWorldDeltaSeconds(pawn)
     lastDt = dt
+    if FIX_FLAME_MUZZLE_LINES and not flame.failed then
+        local ok, err = pcall(fixFlameMuzzleLines, dt)
+        if not ok then
+            flame.failed = true
+            restoreFlameMuzzle()
+            log("flame muzzle lines fix disabled after error: %s", tostring(err))
+        end
+    end
     -- Read once and share: all fixes need the mode and velocity from the frame that just finished.
     local mode = cmc.MovementMode
     local vel = cmc.Velocity
@@ -1135,13 +1215,15 @@ local function onNewObject(names, object)
     local ok, name = pcall(function() return object:GetFName():ToString() end)
     if ok then startLookups(names[name]) end
 end
-local classes, montages = {}, {}
+local classes, montages, particleSystems = {}, {}, {}
+if FIX_FLAME_MUZZLE_LINES then particleSystems = flame.templates end
 if FIX_MOUSE_CHARGE_STEERING then classes["CharacterInputComponent_Spyro_C"] = mouse end
 if FIX_CHARGE_DUST then classes["BP_CPS1999_Playable_C"] = dust end
 if FIX_DRAGON_SEGMENTS then classes["BP_CBS3012_FireDragon_C"] = dragon end
 if FIX_DRUID_ENERGIZE then montages["AM_CES1035_GreenDruid_Casting_Up"] = druid end
 NotifyOnNewObject("/Script/Engine.BlueprintGeneratedClass", function(object) onNewObject(classes, object) end)
 NotifyOnNewObject("/Script/Engine.AnimMontage", function(object) onNewObject(montages, object) end)
+NotifyOnNewObject("/Script/Engine.ParticleSystem", function(object) onNewObject(particleSystems, object) end)
 
 LoopInGameThreadAfterFrames(1, PROFILE and profiledLoop or runTick)
 

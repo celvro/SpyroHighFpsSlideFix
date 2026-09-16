@@ -13,6 +13,7 @@ Spyro Reignited Trilogy was tuned for 30 FPS. At higher framerates Spyro handles
 - **Charge dust:** the dust cloud behind a charge disappears at 60 FPS and above.
 - **Alpine Ridge wizards:** the wizards stop moving their stairs, doors and walkways.
 - **Fireworks Factory dragons:** the segments are much too short, making them extremely hard to hit.
+- **Flame breath:** long stray flame streaks stick out of Spyro's flame, pointing up or sideways.
 
 `ue4ss/Mods/HighFpsSlidingAndJumpFix/README.txt` and `nexus-description.bbcode` list the recorded before/after numbers for each fix.
 

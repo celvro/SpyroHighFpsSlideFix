@@ -43,6 +43,25 @@
 --                          during a super charge add the stage, takeoff speed, jump attributes and a
 --                          gravity scale profile; "turn" lines add the stage and the slip/camera lag
 --                          predicted at 30 FPS and at this framerate.
+--   "thief" log lines      once a second per chasing or moving thief (actors with a ChaseSpeedManager, e.g. the
+--                          Gnorc egg thieves): speed (from position) and velocity next to the MaxWalkSpeed the
+--                          manager sets, % of time at it, observed acceleration vs MaxAcceleration, distance
+--                          to Spyro vs the desired distance, chase time, enemy state and predicted laughs.
+--   thieves_<timestamp>.csv one row per frame per active thief.
+--   "flame" log lines      each flame breath (PS_VFX_Flame_Breath or _Rage component active): the particle
+--                          system's world bounds measured along Spyro's facing: reach (farthest forward from
+--                          the component), halfWidth (half the extent across, and its sideways centre),
+--                          halfHeight, and the SP_Flames_* trace parameters the native flame actor sets.
+--                          Bounds are a world axis-aligned box, so the across extent also picks up some of the
+--                          flame's length unless Spyro faces along a world axis; "aligned" repeats the numbers
+--                          for frames within FLAME_ALIGNED_DEG of one. Compare breaths with the same heading.
+--                          "tail" is the widest the lingering particles got in FLAME_TAIL after deactivation.
+--   flames_<timestamp>.csv one row per frame per active (or lingering) flame.
+--   F10                    rescan for flame particle components (if a flame isn't picked up automatically)
+--   K                      flame experiment: cycle normal / noHardMuzzle / velocity30 on the flame's
+--                          hard muzzle emitter (see FLAME_EXPERIMENTS; logged)
+--                          The world bounds turned out unusable (empty emitters stretch them to the world
+--                          origin, and otherwise particle size padding dominates), so judge the experiment by eye.
 --   camdump_*.txt          every reflected property of Spyro's FollowCameraComponent (to find where
 --                          the active camera settings live). Dumped once while idle, once mid-charge
 --                          after the camera transition, and whenever F9 is pressed. After the charge
@@ -68,6 +87,40 @@ local HOOK_RETRY_FRAMES = 60
 local DRAGON_CLASS = "BP_CBS3012_FireDragon_C" -- Fireworks Factory's segmented fire dragons
 local DRAGON_REPORT_INTERVAL = 1.0 -- seconds of game time per dragon line
 local DRAGON_MIN_SPEED = 100       -- slower head frames are left out of the lag average
+-- Chasing thieves (Gnorc egg thieves and their S2/S3 counterparts) get their MaxWalkSpeed from this component.
+local THIEF_SPEED_MANAGER_CLASSES = { ChaseSpeedManager_C = true, ChaseSpeedManager_S3_C = true }
+local THIEF_REPORT_INTERVAL = 1.0 -- seconds of game time per thief line
+local THIEF_MOVING_SPEED = 1      -- thieves slower than this that aren't chasing are left out
+local THIEF_LAUGH_DROP = 150      -- ChaseSpeedManager laughs when Spyro's horizontal speed drops more than this in one tick
+local THIEF_LAUGH_COOLDOWN = 3    -- seconds (the laugh's Delay)
+-- Flame breath effects SpyroFlameBreathActor (FireAttackActorTrace_C) spawns; see "flame" lines.
+local FLAME_TEMPLATES = { PS_VFX_Flame_Breath = "flame", PS_VFX_Flame_Breath_Rage = "rage" }
+local FLAME_PARAMETERS = { "SP_Flames_C", "SP_Flames_L1", "SP_Flames_R1", "SP_Flames_L2", "SP_Flames_R2" }
+local FLAME_PENDING_FRAMES = 30 -- frames a new ParticleSystemComponent may take to get its template
+local FLAME_TAIL = 1.0          -- seconds a deactivated flame's lingering particles stay in the CSV and the tail max
+local FLAME_ALIGNED_DEG = 5     -- headings within this of a world axis count as "aligned" (world AABB ~ flame box)
+local FLAME_TEMPLATE_PATHS = {
+    "/VFX_Spryo/Shared/Particles/Characters/Spyro/FlameThrower/PS_VFX_Flame_Breath.PS_VFX_Flame_Breath",
+    "/VFX_Spryo/Shared/Particles/Characters/Spyro/FlameThrower/PS_VFX_Flame_Breath_Rage.PS_VFX_Flame_Breath_Rage",
+}
+-- K experiment modes. Cause (particle capture and experiments 2026-09-16): hard_flames_velocity_muzzle is a
+-- local-space, velocity-aligned (PSA_Velocity) sprite emitter moving only ~9 units/s, so at high FPS a frame
+-- moves its particles ~0.02 units. The sprite direction comes from that per-frame move, which becomes
+-- unstable, and the long thin sprites point straight up or sideways. Switching the emitter off removes them.
+--   noHardMuzzle: the emitter's LOD bEnabled off
+--   velocity30:   its StartVelocity scaled by (1/30)/dt so a frame moves it as far as at 30 FPS (candidate fix;
+--                 the particles drift ~k times farther forward than the ~2 units they drift at 30 FPS)
+local FLAME_EXPERIMENTS = { "normal", "noHardMuzzle", "velocity30" }
+local FLAME_HARD_MUZZLE_EMITTER = "hard_flames_velocity_muzzle"
+local FLAME_VELOCITY_RESCALE = 0.05 -- velocity30 re-applies when the scale for the current FPS differs this much
+-- Particle module classes whose default object address (and so vtable) is logged at startup, for disassembly.
+local PARTICLE_MODULE_CDOS = { "ParticleModule", "ParticleModuleAttractorPoint", "ParticleModuleAccelerationDrag",
+                               "ParticleModuleAccelerationConstant", "ParticleModuleVelocityInheritParent",
+                               "ParticleModuleVelocity", "ParticleModuleSize", "ParticleModuleLifetime" }
+-- FindAllOf scans the whole object array, so it only runs for a while after NotifyOnNewObject reports
+-- the class loading (or the pawn changes): NEW_OBJECT_LOOKUPS lookups, LOOKUP_INTERVAL seconds apart.
+local NEW_OBJECT_LOOKUPS = 15
+local LOOKUP_INTERVAL = 1.0
 
 local CAMSTUCK_MIN_OFFSET = 45    -- degrees the camera must trail Spyro to count as stuck
 local CAMSTUCK_GROWTH = 5         -- degrees the gap must grow over CAMSTUCK_WINDOW
@@ -106,7 +159,10 @@ local CAMDUMP_SKIP_TYPES = {
 }
 
 local modDir = debug.getinfo(1, "S").source:match("^@(.*)[/\\]Scripts[/\\]main%.lua$") or "."
-local tracePath = string.format("%s\\trace_%s.csv", modDir, os.date("%Y%m%d_%H%M%S"))
+local traceStamp = os.date("%Y%m%d_%H%M%S")
+local tracePath = string.format("%s\\trace_%s.csv", modDir, traceStamp)
+local thiefTracePath = string.format("%s\\thieves_%s.csv", modDir, traceStamp) -- created with the first active thief
+local flameTracePath = string.format("%s\\flames_%s.csv", modDir, traceStamp) -- created with the first flame
 
 local state = {
     fpsCap = nil,
@@ -129,7 +185,13 @@ local state = {
     camTransition = nil,
     camTransitionCount = 0,
     mouseHook = { registered = false, failed = false, retryIn = 0, raw = 0 / 0 }, -- raw: last InputAxis_RightStick_X argument
-    dragon = { heads = {}, findIn = 0, stats = {} }, -- stats: head address -> accumulated dragon line values
+    dragon = { heads = {}, lookups = 1, nextLookup = 0, classSeen = false, stats = {} }, -- stats: head address -> accumulated dragon line values
+    -- managers: ChaseSpeedManager components; entries: thief address -> { prevLoc, lastLaugh, stats }
+    thief = { managers = {}, lookups = 1, nextLookup = 0, classSeen = false, entries = {}, errorLogged = false },
+    -- pending: new ParticleSystemComponents whose template isn't known yet ({ component, frames });
+    -- tracked: component address -> { component, kind, breath }; scan: FindAllOf rescan requested (startup, F10)
+    flame = { pending = {}, tracked = {}, count = 0, scan = true, errorLogged = false },
+    pawnAddress = nil,
     superCharge = nil,
     superChargeCount = 0,
     asc = nil, -- { pawn = address, component = AbilitySystemComponent }
@@ -196,8 +258,10 @@ local function writeRow(r)
         "%.5f,%.5f,%s,%.5f,%d,%d,%.3f,%.3f,%.3f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f,%.2f,%d,%d,%.4f,%s,%.3f,%.4f,%s,%s,%.4f,%.4f,%.4f,",
         r.time, r.dt, tostring(state.fpsCap or ""), num(r.simStep),
         state.segment and state.segment.id or 0, state.drift and state.drift.id or 0,
-        r.x, r.y, r.z, r.yaw, r.vx, r.vy, r.vz, r.inputX, r.inputY, r.accelX, r.accelY,
-        r.mode, r.customMode, r.gravityScale, tostring(r.floorWalkable), r.floorDist, r.floorNz,
+        -- num(): a property read during a pawn change once came back as light userdata.
+        num(r.x), num(r.y), num(r.z), num(r.yaw), num(r.vx), num(r.vy), num(r.vz), num(r.inputX), num(r.inputY),
+        num(r.accelX), num(r.accelY), num(r.mode), num(r.customMode), num(r.gravityScale), tostring(r.floorWalkable),
+        num(r.floorDist), num(r.floorNz),
         tostring(r.rootMotion), tostring(r.pressedJump), num(r.jumpHoldTime), num(r.jumpMaxHoldTime), num(r.jumpForceRemaining)))
     traceFile:write(string.format(
         "%s,%s,%s,%s,%s,%.1f,%.3f,%.3f,%.3f,%.5f,%.2f,%.3f,%.3f,%.3f,%.1f,%.3f,%.3f,%s,%.4f,%.4f,%.4f,",
@@ -927,6 +991,13 @@ local function registerMouseHook()
     end
 end
 
+-- True when a FindAllOf lookup for `s` should run now (see NEW_OBJECT_LOOKUPS).
+local function lookupDue(s, time)
+    if s.lookups <= 0 or time < s.nextLookup then return false end
+    s.lookups, s.nextLookup = s.lookups - 1, time + LOOKUP_INTERVAL
+    return true
+end
+
 local function vecDist(a, b)
     local dx, dy, dz = a.X - b.X, a.Y - b.Y, a.Z - b.Z
     return math.sqrt(dx * dx + dy * dy + dz * dz), math.sqrt(dx * dx + dy * dy)
@@ -953,12 +1024,7 @@ end
 -- the fire dragon segment fix. Sampled before the world tick, so all positions are from the same frame.
 local function updateDragons(time, dt)
     local d = state.dragon
-    if d.findIn <= 0 then
-        d.findIn = HOOK_RETRY_FRAMES
-        d.heads = FindAllOf(DRAGON_CLASS) or {}
-    else
-        d.findIn = d.findIn - 1
-    end
+    if lookupDue(d, time) then d.heads = FindAllOf(DRAGON_CLASS) or {} end
     if dt <= 0 then return end
     for _, head in ipairs(d.heads) do
         if head:IsValid() and not head.bIsDead then
@@ -1017,6 +1083,385 @@ local function updateDragons(time, dt)
     end
 end
 
+local thiefFile = nil
+
+local function newThiefStats(time)
+    return { start = time, frames = 0, dtSum = 0, activeTime = 0, speedSum = 0, speedMax = 0, velSpeedSum = 0,
+             maxWalkSum = 0, maxWalkMin = math.huge, maxWalkMax = 0, maxAccel = 0 / 0, atMaxTime = 0,
+             desiredSpeedSum = 0, desiredDistSum = 0, distSum = 0, spyroSpeedSum = 0, chaseTime = 0 / 0, chasingTime = 0,
+             accelGain = 0, accelTime = 0, laughs = 0, states = {} }
+end
+
+local function logThief(name, s)
+    local t = s.activeTime
+    local function avg(key) return s[key] / t end
+    local topState, topTime = "?", -1
+    for stateName, stateTime in pairs(s.states) do
+        if stateTime > topTime then topState, topTime = stateName, stateTime end
+    end
+    log("thief %s cap=%s avgFps=%.1f active=%.2fs chasing=%.2fs chaseTime=%.1fs state=%s speed=%.1f (velocity %.1f, max %.1f) maxWalkSpeed=%.1f (%.1f-%.1f) atMaxWalkSpeed=%.0f%% desiredSpeed=%.1f accelObserved=%s maxAccel=%.0f distance=%.1f desiredDistance=%.1f spyroSpeed=%.1f laughs=%d",
+        name, tostring(state.fpsCap or "?"), s.frames / s.dtSum, t, s.chasingTime, s.chaseTime, topState,
+        avg("speedSum"), avg("velSpeedSum"), s.speedMax, avg("maxWalkSum"), s.maxWalkMin, s.maxWalkMax,
+        100 * s.atMaxTime / t, avg("desiredSpeedSum"),
+        -- Speed gained per second on grounded frames that sped up below MaxWalkSpeed (compare with maxAccel).
+        s.accelTime > 0 and string.format("%.1f", s.accelGain / s.accelTime) or "n/a",
+        s.maxAccel, avg("distSum"), avg("desiredDistSum"), avg("spyroSpeedSum"), s.laughs)
+end
+
+-- Per chasing thief (anything with a ChaseSpeedManager): its speed next to the MaxWalkSpeed the manager
+-- sets. The manager's tick: DesiredDistance lerps 300 -> 120 over 40 s of ChaseTime, DesiredSpeed =
+-- MapRangeClamped(DesiredDistance - distance to Spyro, -50..50 -> 290..700), MaxWalkSpeed =
+-- Lerp(MaxWalkSpeed, DesiredSpeed, dt * 0.7). It laughs (sound only, 3 s cooldown) when Spyro's
+-- horizontal speed dropped by more than 150 since its last tick, which is per frame, so "laughs" counts
+-- those drops. Sampled before the world tick, like the dragons.
+local function updateThieves(r, prev)
+    local th = state.thief
+    if lookupDue(th, r.time) then
+        th.managers = {}
+        for className in pairs(THIEF_SPEED_MANAGER_CLASSES) do
+            for _, manager in ipairs(FindAllOf(className) or {}) do th.managers[#th.managers + 1] = manager end
+        end
+    end
+    local dt = prev and r.time - prev.time or 0
+    if dt <= 0 then return end
+    for _, manager in ipairs(th.managers) do
+        local thief = manager:IsValid() and manager:GetOwner() or nil
+        if thief and thief:IsValid() then
+            local address = thief:GetAddress()
+            local loc = thief:K2_GetActorLocation()
+            local e = th.entries[address]
+            if not e or r.time < e.stats.start then -- new thief, or a reloaded world reusing the address
+                e = { prevLoc = loc, lastLaugh = -math.huge, stats = newThiefStats(r.time), name = thief:GetFName():ToString() }
+                th.entries[address] = e
+            else
+                local cmc = thief.CharacterMovement
+                local vel = cmc.Velocity
+                local speed = math.sqrt((loc.X - e.prevLoc.X) ^ 2 + (loc.Y - e.prevLoc.Y) ^ 2) / dt
+                local velSpeed = math.sqrt(vel.X * vel.X + vel.Y * vel.Y)
+                local prevSpeed = e.prevSpeed
+                e.prevLoc, e.prevSpeed = loc, speed
+                local chasing = manager.ChaseIsOn == true
+                local s = e.stats
+                if chasing or speed > THIEF_MOVING_SPEED then
+                    local maxWalk, mode = num(cmc.MaxWalkSpeed), cmc.MovementMode
+                    local desiredSpeed, desiredDist = num(manager.CurrentDesiredSpeed), num(manager.CurrentDesiredDistance)
+                    local distance = math.sqrt((loc.X - r.x) ^ 2 + (loc.Y - r.y) ^ 2 + (loc.Z - r.z) ^ 2)
+                    local stateName = tryCall("thief FalconEnemy:BP_GetCurrentStateName", function()
+                        return thief.FalconEnemy:BP_GetCurrentStateName():ToString()
+                    end) or "?"
+                    s.frames, s.dtSum = s.frames + 1, s.dtSum + dt
+                    s.activeTime = s.activeTime + dt
+                    s.speedSum = s.speedSum + speed * dt
+                    s.speedMax = math.max(s.speedMax, speed)
+                    s.velSpeedSum = s.velSpeedSum + velSpeed * dt
+                    s.maxWalkSum = s.maxWalkSum + maxWalk * dt
+                    s.maxWalkMin, s.maxWalkMax = math.min(s.maxWalkMin, maxWalk), math.max(s.maxWalkMax, maxWalk)
+                    s.maxAccel = num(cmc.MaxAcceleration)
+                    if speed >= maxWalk - 1 then s.atMaxTime = s.atMaxTime + dt end
+                    s.desiredSpeedSum = s.desiredSpeedSum + desiredSpeed * dt
+                    s.desiredDistSum = s.desiredDistSum + desiredDist * dt
+                    s.distSum = s.distSum + distance * dt
+                    s.spyroSpeedSum = s.spyroSpeedSum + r.speed * dt
+                    s.states[stateName] = (s.states[stateName] or 0) + dt
+                    if chasing then
+                        s.chasingTime = s.chasingTime + dt
+                        s.chaseTime = num(manager.ChaseTime)
+                        if prev.speed - r.speed > THIEF_LAUGH_DROP and r.time - e.lastLaugh >= THIEF_LAUGH_COOLDOWN then
+                            e.lastLaugh = r.time
+                            s.laughs = s.laughs + 1
+                        end
+                    end
+                    if isGrounded(mode) and prevSpeed and speed > prevSpeed and speed < maxWalk - 1 then
+                        s.accelGain = s.accelGain + (speed - prevSpeed)
+                        s.accelTime = s.accelTime + dt
+                    end
+                    if not thiefFile then
+                        thiefFile = io.open(thiefTracePath, "w")
+                        if thiefFile then
+                            thiefFile:write("time,dt,fps_cap,thief,x,y,z,speed,vel_speed,vz,move_mode,max_walk_speed,max_accel,chase_on,chase_time,desired_distance,desired_speed,distance,spyro_speed,state\n")
+                        end
+                    end
+                    if thiefFile then
+                        thiefFile:write(string.format("%.5f,%.5f,%s,%s,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%.3f,%.1f,%s,%.3f,%.2f,%.2f,%.2f,%.3f,%s\n",
+                            r.time, dt, tostring(state.fpsCap or ""), e.name, loc.X, loc.Y, loc.Z, speed, velSpeed, vel.Z,
+                            mode, maxWalk, s.maxAccel, tostring(chasing), num(manager.ChaseTime), desiredDist, desiredSpeed,
+                            distance, r.speed, stateName))
+                    end
+                end
+                if r.time - s.start >= THIEF_REPORT_INTERVAL then
+                    if s.activeTime > 0 then
+                        logThief(e.name, s)
+                        if thiefFile then thiefFile:flush() end
+                    end
+                    e.stats = newThiefStats(r.time)
+                end
+            end
+        end
+    end
+end
+
+local flameFile = nil
+
+local function describeOut(t)
+    local parts = {}
+    for k, v in pairs(t) do
+        local x = type(v) ~= "number" and (pcall(function() return v.X end) and v.X) or nil
+        table.insert(parts, string.format("%s=%s%s", tostring(k), tostring(v), x and string.format(" (X %s)", tostring(x)) or ""))
+    end
+    return "{" .. table.concat(parts, ", ") .. "}"
+end
+
+-- An FVector out-param: UE4SS may store it under the parameter name in any of the passed tables, or
+-- write X/Y/Z into the table passed for it.
+local function outVector(tables, own, key)
+    for _, t in ipairs(tables) do
+        local v = t[key]
+        if v ~= nil and type(v.X) == "number" then return v end
+    end
+    if type(own.X) == "number" then return own end
+    return nil
+end
+
+-- A component's world bounds (origin, extent, sphere radius) from KismetSystemLibrary:GetComponentBounds.
+local function componentBounds(ksl, component)
+    local o, e, sr = {}, {}, {}
+    local ret = ksl:GetComponentBounds(component, o, e, sr)
+    local tables = { o, e, sr }
+    local origin, extent = outVector(tables, o, "Origin"), outVector(tables, e, "BoxExtent")
+    local radius = sr.SphereRadius or o.SphereRadius or e.SphereRadius
+    if not origin or not extent then
+        error(string.format("GetComponentBounds out-params: return=%s origin=%s extent=%s radius=%s",
+            tostring(ret), describeOut(o), describeOut(e), describeOut(sr)))
+    end
+    return origin, extent, num(radius)
+end
+
+local function trackFlameComponent(component)
+    if not component:IsValid() then return true end
+    local template = component.Template
+    if not template:IsValid() then return false end
+    local kind = FLAME_TEMPLATES[template:GetFName():ToString()]
+    local address = component:GetAddress()
+    if kind and not state.flame.tracked[address] then
+        state.flame.tracked[address] = { component = component, kind = kind }
+        -- The address lets tools/Capture-FlameParticles.ps1 read the component's particles from memory.
+        log("flame component found: %s (%s) at 0x%X", component:GetFullName(), kind, address)
+    end
+    return true
+end
+
+-- SP_Flames_* parameter values (name -> value) from the component's InstanceParameters.
+local function flameParameters(component)
+    local values = {}
+    local params = component.InstanceParameters
+    for i = 1, params:GetArrayNum() do
+        local p = params[i]
+        values[p.Name:ToString()] = p.Scalar
+    end
+    return values
+end
+
+local function newFlameBreath(r, kind)
+    state.flame.count = state.flame.count + 1
+    local b = { id = state.flame.count, kind = kind, start = r.time, yaw = r.yaw, frames = 0, dtSum = 0, speedSum = 0,
+                reachMax = 0, widthSum = 0, widthMax = 0, centerSum = 0, heightSum = 0, heightMax = 0,
+                alignedFrames = 0, alignedReachMax = 0, alignedWidthSum = 0, alignedWidthMax = 0, tailWidthMax = 0,
+                paramSum = {}, paramMin = {}, paramFrames = 0 }
+    for _, name in ipairs(FLAME_PARAMETERS) do b.paramSum[name], b.paramMin[name] = 0, math.huge end
+    return b
+end
+
+local function logFlameBreath(b)
+    local n = math.max(b.frames, 1)
+    local params = {}
+    for _, name in ipairs(FLAME_PARAMETERS) do
+        local short = name:sub(#"SP_Flames_" + 1)
+        if b.paramFrames > 0 then
+            table.insert(params, string.format("%s %.3f (min %.3f)", short, b.paramSum[name] / b.paramFrames, b.paramMin[name]))
+        end
+    end
+    local aligned = b.alignedFrames > 0
+        and string.format("aligned %d frames: reach %.1f, halfWidth avg %.1f max %.1f", b.alignedFrames, b.alignedReachMax,
+            b.alignedWidthSum / b.alignedFrames, b.alignedWidthMax)
+        or "aligned 0 frames"
+    log("flame %d %s: fps %.1f, active %.3f s, yaw %.1f, speed %.1f, reach %.1f, halfWidth avg %.1f max %.1f (centre %+.1f), halfHeight avg %.1f max %.1f, tail halfWidth max %.1f; %s; params %s",
+        b.id, b.kind, b.dtSum > 0 and b.frames / b.dtSum or 0 / 0, b.activeTime or (b.dtSum), b.yaw, b.speedSum / n,
+        b.reachMax, b.widthSum / n, b.widthMax, b.centerSum / n, b.heightSum / n, b.heightMax, b.tailWidthMax, aligned,
+        #params > 0 and table.concat(params, ", ") or "unavailable")
+    if flameFile then flameFile:flush() end
+end
+
+-- Spyro's flame breath: the particle system component's world bounds, measured along his facing, and the
+-- trace parameters that set its emitters' lifetimes. One "flame" line per activation.
+local function updateFlames(r, dt)
+    local f = state.flame
+    if dt > 0 then f.dtAvg = f.dtAvg and (f.dtAvg * 0.95 + dt * 0.05) or dt end
+    for i = #f.pending, 1, -1 do
+        local e = f.pending[i]
+        e.frames = e.frames + 1
+        if trackFlameComponent(e.component) or e.frames >= FLAME_PENDING_FRAMES then table.remove(f.pending, i) end
+    end
+    if f.scan then
+        f.scan = false
+        for _, component in ipairs(FindAllOf("ParticleSystemComponent") or {}) do trackFlameComponent(component) end
+    end
+
+    local ksl = UEHelpers.GetKismetSystemLibrary()
+    local yawRad = math.rad(r.yaw)
+    local c, s = math.cos(yawRad), math.sin(yawRad)
+    local aligned = math.min(math.abs(c), math.abs(s)) <= math.sin(math.rad(FLAME_ALIGNED_DEG))
+    for address, t in pairs(f.tracked) do
+      local ok, err = pcall(function()
+        local component = t.component
+        if not component:IsValid() then
+            if t.breath then logFlameBreath(t.breath) end
+            f.tracked[address] = nil
+        else
+            local active = component:IsActive()
+            local b = t.breath
+            if active and (not b or b.activeTime) then
+                if b then logFlameBreath(b) end
+                b = newFlameBreath(r, t.kind)
+                t.breath = b
+            end
+            if b and not active and not b.activeTime then b.activeTime = r.time - b.start end
+            if b and b.activeTime and r.time - b.start - b.activeTime > FLAME_TAIL then
+                logFlameBreath(b)
+                t.breath, b = nil, nil
+            end
+            if b and dt > 0 then
+                local loc = component:K2_GetComponentLocation()
+                -- Without bounds (logged once as unavailable) the parameters are still recorded; sizes read 0.
+                local bounds = tryCall("GetComponentBounds", function() return { componentBounds(ksl, component) } end)
+                    or { loc, { X = 0, Y = 0, Z = 0 }, 0 / 0 }
+                local origin, extent, radius = bounds[1], bounds[2], bounds[3]
+                local dx, dy = origin.X - loc.X, origin.Y - loc.Y
+                local forwardCenter, lateralCenter = dx * c + dy * s, -dx * s + dy * c
+                local forwardHalf = math.abs(c) * extent.X + math.abs(s) * extent.Y
+                local lateralHalf = math.abs(s) * extent.X + math.abs(c) * extent.Y
+                local reach = forwardCenter + forwardHalf
+                local values = tryCall("ParticleSystemComponent.InstanceParameters", function() return flameParameters(component) end) or {}
+                if active then
+                    b.frames, b.dtSum = b.frames + 1, b.dtSum + dt
+                    b.speedSum = b.speedSum + r.speed
+                    b.reachMax = math.max(b.reachMax, reach)
+                    b.widthSum, b.widthMax = b.widthSum + lateralHalf, math.max(b.widthMax, lateralHalf)
+                    b.centerSum = b.centerSum + lateralCenter
+                    b.heightSum, b.heightMax = b.heightSum + extent.Z, math.max(b.heightMax, extent.Z)
+                    if aligned then
+                        b.alignedFrames = b.alignedFrames + 1
+                        b.alignedReachMax = math.max(b.alignedReachMax, reach)
+                        b.alignedWidthSum = b.alignedWidthSum + lateralHalf
+                        b.alignedWidthMax = math.max(b.alignedWidthMax, lateralHalf)
+                    end
+                    if values.SP_Flames_C then
+                        b.paramFrames = b.paramFrames + 1
+                        for _, name in ipairs(FLAME_PARAMETERS) do
+                            -- A parameter can be missing on some frames; count it at its default of 1.
+                            local v = type(values[name]) == "number" and values[name] or 1
+                            b.paramSum[name] = b.paramSum[name] + v
+                            b.paramMin[name] = math.min(b.paramMin[name], v)
+                        end
+                    end
+                else
+                    b.tailWidthMax = math.max(b.tailWidthMax, lateralHalf)
+                end
+                if not flameFile then
+                    flameFile = io.open(flameTracePath, "w")
+                    if flameFile then
+                        flameFile:write("time,dt,fps_cap,breath,kind,active,spyro_speed,yaw,comp_x,comp_y,comp_z,origin_x,origin_y,origin_z,extent_x,extent_y,extent_z,radius,"
+                            .. "forward_center,lateral_center,forward_half,lateral_half,reach,aligned,p_c,p_l1,p_r1,p_l2,p_r2\n")
+                    end
+                end
+                if flameFile then
+                    flameFile:write(string.format("%.5f,%.5f,%s,%d,%s,%s,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%s,%.4f,%.4f,%.4f,%.4f,%.4f\n",
+                        r.time, dt, tostring(state.fpsCap or ""), b.id, b.kind, tostring(active), r.speed, r.yaw,
+                        loc.X, loc.Y, loc.Z, origin.X, origin.Y, origin.Z, extent.X, extent.Y, extent.Z, radius,
+                        forwardCenter, lateralCenter, forwardHalf, lateralHalf, reach, tostring(aligned),
+                        num(values.SP_Flames_C), num(values.SP_Flames_L1), num(values.SP_Flames_R1),
+                        num(values.SP_Flames_L2), num(values.SP_Flames_R2)))
+                end
+            end
+        end
+      end)
+      if not ok and not f.componentErrorLogged then
+          f.componentErrorLogged = true
+          log("flame component error: %s", tostring(err))
+      end
+    end
+end
+
+-- Applies the K experiment to hard_flames_velocity_muzzle in the loaded flame templates (see FLAME_EXPERIMENTS);
+-- other modes restore the asset's own values. New flame components pick the settings up when created, so
+-- judge the next breath after switching. Returns the velocity scale applied (1 outside velocity30).
+local function applyFlameExperiment(quiet)
+    local f = state.flame
+    local mode = FLAME_EXPERIMENTS[f.experiment or 1]
+    f.original = f.original or {} -- "address.property[index]" -> original value
+    local scale = 1
+    if mode == "velocity30" and f.dtAvg and f.dtAvg > 0 then scale = math.max(1, (1 / 30) / f.dtAvg) end
+    local changed, templates, emitters = 0, 0, 0
+    local function set(obj, key, get, put, value)
+        key = string.format("%X.%s", obj:GetAddress(), key)
+        if f.original[key] == nil then f.original[key] = get() end
+        if value == nil then value = f.original[key] end
+        if get() ~= value then
+            put(value)
+            changed = changed + 1
+        end
+    end
+    for _, path in ipairs(FLAME_TEMPLATE_PATHS) do
+        local template = StaticFindObject(path)
+        if template and template:IsValid() then
+            templates = templates + 1
+            local list = template.Emitters
+            for i = 1, list:GetArrayNum() do
+                local emitter = list[i]
+                if emitter.EmitterName:ToString() == FLAME_HARD_MUZZLE_EMITTER then
+                    emitters = emitters + 1
+                    local lods = emitter.LODLevels
+                    for j = 1, lods:GetArrayNum() do
+                        local lod = lods[j]
+                        set(lod, "bEnabled", function() return lod.bEnabled end, function(v) lod.bEnabled = v end,
+                            mode == "noHardMuzzle" and false or nil)
+                        local modules = lod.Modules
+                        for k = 1, modules:GetArrayNum() do
+                            local module = modules[k]
+                            if module:IsValid() and module:GetClass():GetFName():ToString() == "ParticleModuleVelocity" then
+                                -- Cooked distributions are read from the lookup table (Distribution is null).
+                                local values = module.StartVelocity.Table.Values
+                                for n = 1, values:GetArrayNum() do
+                                    local key = "StartVelocity[" .. n .. "]"
+                                    local original = f.original[string.format("%X.%s", module:GetAddress(), key)]
+                                    if original == nil then original = values[n] end
+                                    set(module, key, function() return values[n] end, function(v) values[n] = v end,
+                                        original * scale)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    f.appliedScale = scale
+    if not quiet or changed > 0 then
+        log("flame experiment %d: %s (%d templates loaded, %d hard muzzle emitters, velocity scale %.2f, %d values changed)",
+            f.experiment or 1, mode, templates, emitters, scale, changed)
+    end
+end
+
+local function logParticleModuleAddresses()
+    for _, name in ipairs(PARTICLE_MODULE_CDOS) do
+        local cdo = StaticFindObject(string.format("/Script/Engine.Default__%s", name))
+        if cdo and cdo:IsValid() then
+            log("particle module CDO %s at 0x%X", name, cdo:GetAddress())
+        else
+            log("particle module CDO %s not found", name)
+        end
+    end
+end
+
 -- Stuck camera repro (J / H, see CLAUDE.md "Stuck charge camera"). Centering latches its speed from the
 -- camera gap on the charge's first centering frame, and sticks if Spyro then turns away from the camera
 -- faster than that speed before the gap passes the switch check. Armed: every frame until a charge starts,
@@ -1069,6 +1514,22 @@ end
 
 local function sample()
     registerMouseHook()
+    if not state.flame.cdosLogged then
+        state.flame.cdosLogged = true
+        tryCall("particle module CDO addresses", logParticleModuleAddresses)
+    end
+    if state.flame.experimentRequested then
+        state.flame.experimentRequested = false
+        tryCall("flame experiment", function() applyFlameExperiment(false) end)
+    end
+    -- velocity30 follows the framerate (e.g. after F5/F8).
+    local flame = state.flame
+    if FLAME_EXPERIMENTS[flame.experiment or 1] == "velocity30" and flame.dtAvg then
+        local want = math.max(1, (1 / 30) / flame.dtAvg)
+        if math.abs(want - (flame.appliedScale or 1)) > FLAME_VELOCITY_RESCALE * want then
+            tryCall("flame experiment", function() applyFlameExperiment(true) end)
+        end
+    end
     local pc = UEHelpers.GetPlayerController()
     if not pc:IsValid() then return end
     local pawn = pc.Pawn
@@ -1194,6 +1655,25 @@ local function sample()
         state.dragon.errorLogged = true
         log("fire dragon stats error: %s", tostring(dragonErr))
     end
+    -- A new pawn (level load, respawn) may come with new thieves or dragons; look again if their class has loaded.
+    local pawnAddress = pawn:GetAddress()
+    if pawnAddress ~= state.pawnAddress then
+        state.pawnAddress = pawnAddress
+        for _, target in ipairs({ state.dragon, state.thief }) do
+            if target.classSeen then target.lookups, target.nextLookup = NEW_OBJECT_LOOKUPS, 0 end
+        end
+        state.flame.scan = true
+    end
+    local thiefOk, thiefErr = pcall(updateThieves, r, prev)
+    if not thiefOk and not state.thief.errorLogged then
+        state.thief.errorLogged = true
+        log("thief stats error: %s", tostring(thiefErr))
+    end
+    local flameOk, flameErr = pcall(updateFlames, r, prev and r.time - prev.time or 0)
+    if not flameOk and not state.flame.errorLogged then
+        state.flame.errorLogged = true
+        log("flame stats error: %s", tostring(flameErr))
+    end
     writeRow(r)
     state.wasGrounded = grounded
     state.prevRow = r
@@ -1217,8 +1697,30 @@ RegisterKeyBind(Key.F6, function() setFpsCap(60) end)
 RegisterKeyBind(Key.F7, function() setFpsCap(120) end)
 RegisterKeyBind(Key.F8, function() setFpsCap(0) end)
 RegisterKeyBind(Key.F9, function() state.camDump.requested = true end)
+RegisterKeyBind(Key.F10, function() state.flame.scan = true end)
+-- Not F11 (the game toggles fullscreen) and nothing the game's DefaultInput.ini binds.
 RegisterKeyBind(Key.J, function() ExecuteInGameThread(function() armCamRepro(33) end) end)
 RegisterKeyBind(Key.H, function() ExecuteInGameThread(function() armCamRepro(12) end) end)
+RegisterKeyBind(Key.K, function()
+    local f = state.flame
+    f.experiment = (f.experiment or 1) % #FLAME_EXPERIMENTS + 1
+    f.experimentRequested = true
+end)
+
+-- Flame breath components may be created at any time; their template is checked from the tick (see updateFlames).
+NotifyOnNewObject("/Script/Engine.ParticleSystemComponent", function(object)
+    local pending = state.flame.pending
+    if #pending < 1000 then table.insert(pending, { component = object, frames = 0 }) end
+end)
+
+-- Level Blueprint classes load with their level; look for their instances for a while afterwards.
+NotifyOnNewObject("/Script/Engine.BlueprintGeneratedClass", function(object)
+    local ok, name = pcall(function() return object:GetFName():ToString() end)
+    if not ok then return end
+    local target = name == DRAGON_CLASS and state.dragon or THIEF_SPEED_MANAGER_CLASSES[name] and state.thief or nil
+    if not target then return end
+    target.lookups, target.nextLookup, target.classSeen = NEW_OBJECT_LOOKUPS, 0, true
+end)
 
 if not EngineTickAvailable then
     log("EngineTick hook unavailable; per-frame sampling disabled")

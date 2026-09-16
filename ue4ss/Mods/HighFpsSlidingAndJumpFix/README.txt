@@ -37,6 +37,11 @@ Fixes (numbers were recorded in game at 30 FPS and at 144 FPS, before and after 
 - Fire dragons (Fireworks Factory): the dragons' body sections bunch up behind the head, which makes them
   much harder to hit.
     Average gap between body sections:  30 FPS 58-64  |  144 FPS before 13  |  after 58-60
+- Flame breath: at high FPS one or two long, thin flame streaks can stick out of Spyro's flame, pointing
+  straight up, sideways or diagonally (more often the higher the framerate). They come from a small effect at
+  Spyro's mouth whose streaks can't keep their direction when frames are very short. Above 35 FPS the mod turns
+  that effect off; at 30 FPS the flame looks the same with or without it, and the mod leaves it on.
+    Stray streaks per flame:  30 FPS none  |  320 FPS before up to 2  |  with the effect off none
 
 Requirements
 - UE4SS experimental build (https://github.com/UE4SS-RE/RE-UE4SS/releases/tag/experimental-latest).
