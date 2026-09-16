@@ -117,7 +117,7 @@
 
 local UEHelpers = require("UEHelpers")
 
-local VERSION = "1.2.1" -- tools/Package-Release.ps1 names the release zip from this
+local VERSION = "1.3.0" -- tools/Package-Release.ps1 names the release zip from this
 
 local MIN_TICK_TIME = 1e-6
 local BRAKE_TO_STOP_VELOCITY = 10
