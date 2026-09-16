@@ -5,7 +5,8 @@ Spyro Reignited Trilogy was made for 30 FPS. At higher framerates Spyro jumps lo
 charges and steers differently, and some things in the levels stop working. This mod makes the game
 play the same at any framerate as it does at 30 FPS.
 
-The mod changes nothing at 30 FPS.
+The mod changes nothing at 30 FPS, except for the camera lock fix below, which fixes a bug the game
+has at every framerate.
 
 Fixes (numbers were recorded in game at 30 FPS and at 144 FPS, before and after the fix)
 - Sliding: above ~80 FPS Spyro keeps sliding slowly after you let go of the stick.
@@ -23,6 +24,12 @@ Fixes (numbers were recorded in game at 30 FPS and at 144 FPS, before and after 
     Mouse moved about 50 units per second:  30 FPS 181 deg/s  |  144 FPS before about 42 deg/s (calculated)  |  after 180 deg/s
 - Camera during charges: the camera falls further behind Spyro in charge turns.
     Camera angle behind Spyro in a full turn:  30 FPS 33.0 deg  |  144 FPS before 36.5 deg  |  after 33.0 deg
+- Camera lock in charges (also fixed at 30 FPS): if a charge starts with the camera a little to one side of
+  Spyro and he then turns away from it, the camera can get stuck swinging slowly beside or behind him until he
+  turns a full circle or the charge ends. The game does this at every framerate, but at high FPS a much smaller
+  camera angle is enough to trigger it.
+    Full turn after starting 12 deg off:  30 FPS locks on  |  144 FPS before stuck  |  after locks on (33 deg behind)
+    Full turn after starting 33 deg off:  30 FPS before stuck  |  144 FPS before stuck  |  after locks on at both
 - Charge dust: the dust cloud behind a charge doesn't appear at all at 60 FPS or more.
     Dust bursts per second:  30 FPS 30  |  144 FPS before 0  |  after 29-31
 - Wizards (Alpine Ridge): the wizards stop moving their stairs, doors and walkways, after one spell at most.

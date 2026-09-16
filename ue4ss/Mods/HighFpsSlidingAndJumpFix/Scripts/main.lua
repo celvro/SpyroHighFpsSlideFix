@@ -52,6 +52,23 @@
 --   m_ctrInterp so the steady trail matches 30 FPS (3.5 -> 3.86, 5 -> 5.76 at 144 FPS), leaving
 --   it alone while a camera settings transition is blending it. At 30 FPS or lower it changes nothing.
 --
+-- Camera centering switch and stuck camera fixes
+--   Native FollowCameraComponent centering (exe VA 0x141EF6515-0x141EF6853) runs in two phases each
+--   time centering starts. First it latches scale = min(|gap| / 90, 1) and turns the camera by
+--   scale * (180 deg/s * dt * sign(gap) + Spyro's yaw change this frame). Once |gap| <= |Spyro's yaw
+--   change this frame| * m_ctrDecelAngleTurnModifier (5) + scale * m_ctrDecelAngle (20), it blends
+--   into FInterpTo at m_ctrInterp until centering stops.
+--     * switch: the turn term uses the per-frame yaw change, so in a full-lock turn it is 21.8 deg at
+--       30 FPS but 4.5 at 144 FPS. This scales m_ctrDecelAngleTurnModifier by (1/30) / dt so the
+--       switch happens at the same gap as at 30 FPS. At 30 FPS or lower it changes nothing.
+--     * stuck camera (at any framerate): if centering starts with a small gap, the latched speed is
+--       tiny (5.4 deg -> 11 deg/s), and if Spyro turns away faster than that the gap grows and never
+--       gets under the threshold; the camera crawls until the gap wraps through 0 (Spyro turns a full
+--       circle) or centering stops. When the gap has grown GROWTH deg since its minimum, this sets
+--       the turn modifier very high for one frame, which passes the check while Spyro is turning.
+--       The property is only read by that check, so the override does nothing while centering is
+--       off or already interpolating. This one also changes 30 FPS.
+--
 -- Charge dust fix
 --   Every frame of a ground charge, Spyro's Blueprint (Charge_UpdateGroundEffects) deactivates the
 --   dust trail effect and spawns a new one, so each effect only emits during its first tick. Its
@@ -103,6 +120,12 @@ local FIX_WALKING_ACCELERATION = true -- set false to only fix braking (the orig
 local FIX_CHARGE_TURN_SLIP = true     -- set false to compare against the unfixed charge turn
 local FIX_MOUSE_CHARGE_STEERING = true -- set false to compare against the unfixed mouse charge steering
 local FIX_CAMERA_CENTERING = true     -- set false to compare against the unfixed camera centering
+local FIX_CAMERA_CENTERING_SWITCH = true -- set false to compare against the per-frame centering switch threshold
+local FIX_STUCK_CAMERA = true         -- set false to compare against the camera getting stuck while centering
+local STUCK_CAMERA_GROWTH = 8         -- gap growth (deg) since its minimum that counts as the camera falling behind
+local STUCK_CAMERA_RELEASE = 1e6      -- turn modifier that passes the centering switch check whenever Spyro turns
+local STUCK_CAMERA_LOG_GAP = 45       -- log releases while charging at gaps of at least this (deg; a full-lock trail is 33); nil to stop logging
+local DEFAULT_TURN_MODIFIER = 5       -- m_ctrDecelAngleTurnModifier, if the first value we see is our own override
 local FIX_CHARGE_DUST = true          -- set false to compare against the missing charge dust
 local CHARGE_MIN_WALK_SPEED = 350     -- charging sets MaxWalkSpeed 458.5, charge jumping 358; running is 268.5
 local CHARGE_MIN_SPEED = 50           -- slower than this, acceleration dominates the turn; leave friction alone
@@ -159,6 +182,10 @@ local dust = {
 -- (nil while a transition blends it), and the value we wrote.
 local camera = nil
 local cameraFixFailed = false
+-- { address, base, written, minGap }: the FollowCameraComponent, its m_ctrDecelAngleTurnModifier
+-- without our changes, the value we wrote, and the smallest camera gap since the last release.
+local switch = nil
+local switchFixFailed = false
 -- A StaticFindObject that finds nothing scans the whole object array (~10 ms, a visible hitch), so
 -- lookups only run while `lookups` > 0: once at startup, and again for a while after NotifyOnNewObject
 -- reports the Blueprint class or montage being created. A lookup that finds its object is ~free.
@@ -632,6 +659,50 @@ local function fixCameraCentering(pawn, dt)
     camera.written = component.m_ctrInterp -- read back: the property stores a float
 end
 
+local function wrapDegrees(a)
+    a = a % 360
+    if a > 180 then a = a - 360 end
+    return a
+end
+
+-- m_ctrDecelAngleTurnModifier is a component property only (not in FollowCameraSettings), so camera
+-- settings pushes, pops and transitions don't blend it; a change we didn't make is a new base.
+local function fixCameraCenteringSwitch(pc, pawn, dt)
+    local ok, component = pcall(readFollowCamera, pawn)
+    if not (ok and component and component:IsValid()) then switch = nil return end
+    local address = component:GetAddress()
+    if switch and switch.address ~= address then switch = nil end
+    local current = component.m_ctrDecelAngleTurnModifier
+    if not switch then
+        switch = { address = address, base = current < STUCK_CAMERA_RELEASE / 2 and current or DEFAULT_TURN_MODIFIER }
+    elseif current ~= switch.written and current < STUCK_CAMERA_RELEASE / 2 then
+        switch.base = current
+    end
+
+    local value = switch.base
+    if FIX_CAMERA_CENTERING_SWITCH and dt >= MIN_TICK_TIME and dt < 1 / REFERENCE_FPS - 1e-4 then
+        value = switch.base / (REFERENCE_FPS * dt)
+    end
+    if FIX_STUCK_CAMERA then
+        local gap = math.abs(wrapDegrees(pawn:K2_GetActorRotation().Yaw - pc:GetControlRotation().Yaw))
+        if not switch.minGap or gap < switch.minGap then switch.minGap = gap end
+        if gap - switch.minGap >= STUCK_CAMERA_GROWTH then
+            value = STUCK_CAMERA_RELEASE
+            -- Most releases happen while centering is off or already interpolating and do nothing;
+            -- only log the ones that look like a stuck charge camera.
+            if STUCK_CAMERA_LOG_GAP and gap >= STUCK_CAMERA_LOG_GAP then
+                local chargeOk, charging = pcall(isCharging, pawn)
+                if chargeOk and charging then
+                    log("stuck camera release: gap %.1f deg, grew from %.1f", gap, switch.minGap)
+                end
+            end
+            switch.minGap = gap
+        end
+    end
+    if value ~= current then component.m_ctrDecelAngleTurnModifier = value end
+    switch.written = component.m_ctrDecelAngleTurnModifier -- read back: the property stores a float
+end
+
 -- UEHelpers.GetPlayerController() runs FindAllOf("PlayerController") on every call, which is too
 -- expensive to do every frame, so keep the controller until it becomes invalid (level change)
 -- and only search again every CONTROLLER_RETRY_FRAMES frames while there is none.
@@ -883,9 +954,9 @@ local function tick()
         end
     end
     local pawn = pc.Pawn
-    if not pawn:IsValid() then tracked = nil jump = nil slip = nil camera = nil mouse.active = false return end
+    if not pawn:IsValid() then tracked = nil jump = nil slip = nil camera = nil switch = nil mouse.active = false return end
     local cmc = pawn.CharacterMovement
-    if not cmc:IsValid() then tracked = nil jump = nil slip = nil camera = nil mouse.active = false return end
+    if not cmc:IsValid() then tracked = nil jump = nil slip = nil camera = nil switch = nil mouse.active = false return end
     local dt = getGameplayStatics():GetWorldDeltaSeconds(pawn)
     lastDt = dt
     -- Read once and share: all fixes need the mode and velocity from the frame that just finished.
@@ -918,6 +989,17 @@ local function tick()
             end
             camera = nil
             log("camera centering fix disabled after error: %s", tostring(err))
+        end
+    end
+    if (FIX_CAMERA_CENTERING_SWITCH or FIX_STUCK_CAMERA) and not switchFixFailed then
+        local ok, err = pcall(fixCameraCenteringSwitch, pc, pawn, dt)
+        if not ok then
+            switchFixFailed = true
+            if switch and switch.written then
+                pcall(function() pawn.FollowCamera.m_ctrDecelAngleTurnModifier = switch.base end)
+            end
+            switch = nil
+            log("camera centering switch and stuck camera fixes disabled after error: %s", tostring(err))
         end
     end
 end

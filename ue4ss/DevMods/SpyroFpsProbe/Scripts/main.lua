@@ -1017,6 +1017,56 @@ local function updateDragons(time, dt)
     end
 end
 
+-- Stuck camera repro (J / H, see CLAUDE.md "Stuck charge camera"). Centering latches its speed from the
+-- camera gap on the charge's first centering frame, and sticks if Spyro then turns away from the camera
+-- faster than that speed before the gap passes the switch check. Armed: every frame until a charge starts,
+-- Spyro is turned to face `gap` degrees right of the camera. Once charging: he is turned right at the
+-- full-lock charge rate for CAM_REPRO_TURN_TIME, as if steering full right. Press charge without the stick.
+local CAM_REPRO_TURN_RATE = 130.8 -- deg/s, full stick lock during a charge
+local CAM_REPRO_TURN_TIME = 3
+local CAM_REPRO_ARMED_TIMEOUT = 10
+
+local function armCamRepro(gap)
+    if state.camRepro then
+        state.camRepro = nil
+        log("camrepro cancelled")
+        return
+    end
+    state.camRepro = { gap = gap, phase = "armed", t = 0 }
+    log("camrepro armed: gap %.0f deg right of the camera; press charge (no stick) within %d s", gap, CAM_REPRO_ARMED_TIMEOUT)
+end
+
+local function setYaw(pawn, yaw)
+    local rot = pawn:K2_GetActorRotation()
+    pawn:K2_SetActorRotation({ Pitch = rot.Pitch, Yaw = yaw, Roll = rot.Roll }, false)
+end
+
+local function updateCamRepro(pawn, r)
+    local c = state.camRepro
+    if not c then return end
+    c.t = c.t + r.dt
+    if c.phase == "armed" then
+        if r.charging then
+            c.phase, c.t = "turning", 0
+            log("camrepro charge started: gap %.1f deg (camera %.1f, Spyro %.1f); turning right for %.1f s",
+                angleDiff(r.yaw, r.camYaw), r.camYaw, r.yaw, CAM_REPRO_TURN_TIME)
+        elseif c.t > CAM_REPRO_ARMED_TIMEOUT then
+            state.camRepro = nil
+            log("camrepro timed out without a charge")
+            return
+        else
+            setYaw(pawn, r.camYaw + c.gap)
+            return
+        end
+    end
+    if not r.charging or c.t >= CAM_REPRO_TURN_TIME then
+        log("camrepro done after %.2f s: gap %.1f deg, camera rate %.1f deg/s", c.t, angleDiff(r.yaw, r.camYaw), r.camRate)
+        state.camRepro = nil
+        return
+    end
+    setYaw(pawn, r.yaw + CAM_REPRO_TURN_RATE * r.dt)
+end
+
 local function sample()
     registerMouseHook()
     local pc = UEHelpers.GetPlayerController()
@@ -1133,6 +1183,11 @@ local function sample()
     updateCharge(r, prev)
     updateCamTransition(r, prev)
     updateCamDump(pawn, r)
+    local reproOk, reproErr = pcall(updateCamRepro, pawn, r)
+    if not reproOk then
+        state.camRepro = nil
+        log("camrepro error: %s", tostring(reproErr))
+    end
     -- The first call succeeds on every level without dragons, so log errors here rather than via tryCall.
     local dragonOk, dragonErr = pcall(updateDragons, r.time, prev and r.time - prev.time or 0)
     if not dragonOk and not state.dragon.errorLogged then
@@ -1162,6 +1217,8 @@ RegisterKeyBind(Key.F6, function() setFpsCap(60) end)
 RegisterKeyBind(Key.F7, function() setFpsCap(120) end)
 RegisterKeyBind(Key.F8, function() setFpsCap(0) end)
 RegisterKeyBind(Key.F9, function() state.camDump.requested = true end)
+RegisterKeyBind(Key.J, function() ExecuteInGameThread(function() armCamRepro(33) end) end)
+RegisterKeyBind(Key.H, function() ExecuteInGameThread(function() armCamRepro(12) end) end)
 
 if not EngineTickAvailable then
     log("EngineTick hook unavailable; per-frame sampling disabled")
