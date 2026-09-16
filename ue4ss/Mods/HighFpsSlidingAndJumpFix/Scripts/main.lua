@@ -336,13 +336,20 @@ local STILL = { 0, 0, 0 } -- tracked velocity while standing; never modified
 local function fixWalkingVelocity(pawn, cmc, dt, mode, vel)
     if mode ~= MOVE_WALKING then tracked = nil return end
     local vx, vy, vz = vel.X, vel.Y, vel.Z
-    -- Standing still: skip the engine calls below. A move that starts here is predicted from zero.
-    if vx == 0 and vy == 0 and vz == 0 then
-        tracked = FIX_WALKING_ACCELERATION and STILL or nil
+    local stopped = vx == 0 and vy == 0 and vz == 0
+    -- Standing still without input: skip the engine calls below. A move that starts here is predicted from zero.
+    if stopped and not FIX_WALKING_ACCELERATION then
+        tracked = nil
         return
     end
     local accel = cmc:GetCurrentAcceleration()
     local braking = accel.X == 0 and accel.Y == 0 and accel.Z == 0
+    -- Zero velocity with input still has to be predicted: above ~250 FPS the first frame's move
+    -- (MaxAcceleration * dt^2) rounds to nothing, the engine resets velocity to 0, and Spyro never starts moving.
+    if stopped and braking then
+        tracked = STILL
+        return
+    end
     local handled = (braking or FIX_WALKING_ACCELERATION) and not pawn:IsPlayingRootMotion()
 
     if not handled or not tracked or dt < MIN_TICK_TIME then

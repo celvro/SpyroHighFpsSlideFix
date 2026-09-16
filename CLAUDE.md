@@ -75,6 +75,7 @@ Above ~80 FPS, Spyro keeps sliding at a constant low speed after a short step. T
     - Charge speedMax is 458.5 at 144 FPS (it was 461+ from quantization overshoot).
     - Stops after running are still normal: `drift` lines of 0.10–0.19 s.
   - Swimming/flying (PhysFlying also resets velocity from displacement) are not covered.
+- **Stuck from a standstill at high FPS (reported 2026-09-16 at 320 FPS: Spyro turns but doesn't move; fixed and verified at 320 FPS).** The first frame's move from rest is MaxAcceleration·dt² per unit of heading: 0.048 at 144 FPS but 0.0098 at 320. That's under half the 1/32 spacing, so it rounds to 0 and velocity resets to 0 every frame. With full input it starts at ~253 FPS; with partial stick it happens at lower rates (e.g. 30% stick at ~140 FPS). Whether the unmodded game does it too is untested (the player suspects it may not have, so it isn't listed in the READMEs or Nexus description). `fixWalkingVelocity` returned early at zero velocity to save engine calls, so it never predicted from rest. Now it returns early only when acceleration is also zero.
 
 ## Charge turning / camera bug (confirmed; slip, mouse steering and camera centering fixes verified)
 
