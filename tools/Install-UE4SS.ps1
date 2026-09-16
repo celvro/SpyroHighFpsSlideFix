@@ -45,8 +45,8 @@ if (-not $ModsOnly) {
     $settings = Join-Path $gameUe4ss 'UE4SS-settings.ini'
     $ini = Get-Content $settings -Raw
     $ini = $ini -replace '(?m)^ConsoleEnabled = .*$', 'ConsoleEnabled = 1'
-    # Hot reload (Ctrl+R) crashes this UE4SS build intermittently; restart the game instead.
-    $ini = $ini -replace '(?m)^EnableHotReloadSystem = .*$', 'EnableHotReloadSystem = 0'
+    # Hot reload (Ctrl+R) occasionally crashes this UE4SS build; restart the game if it does.
+    $ini = $ini -replace '(?m)^EnableHotReloadSystem = .*$', 'EnableHotReloadSystem = 1'
     $ini = $ini -replace '(?m)^MajorVersion = .*$', 'MajorVersion = 4'
     $ini = $ini -replace '(?m)^MinorVersion = .*$', 'MinorVersion = 19'
     Set-Content $settings $ini -NoNewline
