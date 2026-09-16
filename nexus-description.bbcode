@@ -14,12 +14,14 @@ Spyro Reignited Trilogy was made for 30 FPS. At higher framerates the game quiet
 [*][b]Charge turning:[/b] Spyro swings wider in charge turns.[/*]
 [*][b]Mouse charge steering:[/b] the same mouse movement turns a charging Spyro much less.[/*]
 [*][b]Camera during charges:[/b] the camera falls further behind Spyro when he turns.[/*]
+[*][b]Camera lock in charges:[/b] the camera can get stuck swinging slowly beside or behind a charging Spyro instead of locking on behind him. The game does this at every framerate, but at high framerates it happens far more easily.[/*]
 [*][b]Charge dust:[/b] the dust cloud behind a charge is gone at 60 FPS and above.[/*]
 [*][b]Wizards in Alpine Ridge:[/b] the wizards stop moving their stairs, doors and walkways after one spell.[/*]
 [*][b]Fire dragons in Fireworks Factory:[/b] the dragons' body sections bunch up right behind the head, which makes them much harder to hit.[/*]
+[*][b]Flame breath:[/b] long, thin flame streaks stick out of Spyro's flame, pointing straight up, sideways or diagonally.[/*]
 [/list]
-With this mod, all of these behave [b]the same as at 30 FPS[/b], at any framerate.
-[b]At 30 FPS the mod changes nothing.[/b]
+With this mod, all of these behave [b]the same as at 30 FPS[/b], at any framerate (the camera lock is fixed at every framerate).
+[b]At 30 FPS the mod changes nothing[/b], except the camera lock fix, which fixes a bug the game also has at 30 FPS.
 [line]
 [size=5][b]Before and after[/b][/size]
 Every number below was recorded in game with a frame-by-frame logger, at 30 FPS and at 144 FPS with and without the mod. The goal is for "144 FPS with the mod" to match "30 FPS".
@@ -66,6 +68,12 @@ How far the camera trails behind Spyro in a full charge turn:
 [*]144 FPS without the mod: [color=#ff6666][b]36.5°[/b][/color][/*]
 [*]144 FPS with the mod: [color=#6aa84f][b]33.0°[/b][/color][/*]
 [/list]
+[size=4][b]Camera lock in charges[/b][/size]
+Starting a charge with the camera a little to one side of Spyro, then turning fully away from it:
+[list]
+[*]Starting 12° off: 30 FPS [b]locks on[/b] · 144 FPS without the mod [color=#ff6666][b]stuck[/b][/color] · with the mod [color=#6aa84f][b]locks on[/b][/color] (33° behind, as normal)[/*]
+[*]Starting 33° off: 30 FPS without the mod [color=#ff6666][b]stuck[/b][/color] · 144 FPS without the mod [color=#ff6666][b]stuck[/b][/color] · with the mod [color=#6aa84f][b]locks on at both[/b][/color][/*]
+[/list]
 [size=4][b]Charge dust[/b][/size]
 Dust bursts per second behind a ground charge:
 [list]
@@ -88,6 +96,14 @@ Average gap between the dragons' body sections while they fly (game units):
 [*]144 FPS with the mod: [color=#6aa84f][b]58 to 60[/b][/color][/*]
 [/list]
 The dragons' flying speed and how quickly lost body sections grow back were already the same at every framerate.
+[size=4][b]Flame breath[/b][/size]
+Stray flame streaks sticking out of Spyro's flame (recorded at 320 FPS, where they show up most):
+[list]
+[*]30 FPS: [b]none[/b][/*]
+[*]320 FPS without the mod: [color=#ff6666][b]up to 2 per breath[/b][/color][/*]
+[*]320 FPS with the mod: [color=#6aa84f][b]none[/b][/color][/*]
+[/list]
+The streaks are only visual: the flame's damage comes from separate hit checks that don't use them.
 [spoiler]
 [b]Why these happen, in plain words[/b]
 
@@ -111,6 +127,9 @@ While charging, the game treats the mouse movement of each frame like how far a 
 [b]Camera during charges[/b]
 The camera closes part of the gap to Spyro each frame. Like the charge turning, many small steps don't add up to the same as a few big ones. The mod adjusts the camera's catch-up speed so it trails Spyro by the same angle as at 30 FPS.
 
+[b]Camera lock in charges[/b]
+When the camera starts swinging back behind Spyro, it picks a swing speed from how far off it is, and only switches to smoothly locking on once it gets close enough. If it starts only a little off, that speed is very slow, and if Spyro turns away faster than that, the camera never gets close enough to switch; it keeps crawling until he turns a full circle or stops charging. The game does this at every framerate. How close counts as close enough also depends on how far Spyro turned in one frame, which is much less at high framerates, so there a few degrees are enough to get stuck. The mod makes that check use the 30 FPS turn amount, and when the camera is clearly falling further behind, it lets it switch to locking on.
+
 [b]Charge dust[/b]
 The game replaces the dust cloud behind a charge with a brand new one every frame, and each one only gets a single frame to make dust. A 30 FPS frame is long enough for one burst; a 60+ FPS frame isn't, so no dust appears at all. The mod gives one new cloud every 1/30 of a second a full 30 FPS frame's worth of time, and keeps the ones in between quiet.
 
@@ -118,7 +137,10 @@ The game replaces the dust cloud behind a charge with a brand new one every fram
 The wizards move their stairs, doors and walkways at one exact moment in their spell animation, and they take turns between two spells. In one of them, that moment comes 0.9 ms after the animation starts to end. At 30 FPS one frame jumps past both at once, so the spell works. At 60, 120 and 144 FPS a frame lands exactly on the end first, so the spell is cut off before it can work. The wizard only switches to his other spell when a spell works, so he keeps repeating the broken one. The mod moves that moment 1 ms earlier, to the same moment as in the other spell, which works at every framerate.
 
 [b]Fire dragons[/b]
-Each frame, every body section moves part of the way towards the section in front of it. The game treats every frame as at least 1/30 of a second long for this, so at 144 FPS each section gets a full 30 FPS pull almost five times as often. The sections catch up far too quickly and end up squeezed behind the head. The mod gives each section a smaller pull at high framerates, sized so it trails the section ahead by the same distance as at 30 FPS.[/spoiler]
+Each frame, every body section moves part of the way towards the section in front of it. The game treats every frame as at least 1/30 of a second long for this, so at 144 FPS each section gets a full 30 FPS pull almost five times as often. The sections catch up far too quickly and end up squeezed behind the head. The mod gives each section a smaller pull at high framerates, sized so it trails the section ahead by the same distance as at 30 FPS.
+
+[b]Flame breath[/b]
+Close to Spyro's mouth, the flame has a small effect of long, thin streaks that point the way they're moving. They move very slowly, and the game works out their direction from how far they moved since the last frame. At very high framerates that distance is so tiny that the direction becomes unreliable, and a streak can flip to point straight up or sideways. The mod turns that effect off above 35 FPS; at 30 FPS the flame looks the same with or without it, so it stays on there.[/spoiler]
 [line]
 [size=5][b]Requirements[/b][/size]
 [list]

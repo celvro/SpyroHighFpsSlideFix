@@ -10,6 +10,7 @@ Spyro Reignited Trilogy was tuned for 30 FPS. At higher framerates Spyro handles
 - **Charge turning:** Spyro's path swings wider in charge turns (12.1–12.5° behind his facing instead of 9.4°).
 - **Mouse charge steering:** the same mouse movement turns a charging Spyro far less.
 - **Camera during charges:** the camera trails further behind in charge turns (36.5° instead of 33.0°).
+- **Camera lock in charges:** if a charge starts with the camera a little to one side and Spyro turns away from it, the camera can get stuck swinging slowly beside him instead of locking on behind him. The game does this at any framerate, but at high framerates a much smaller angle is enough (12° gets stuck at 144 FPS but not at 30). Fixed at every framerate.
 - **Charge dust:** the dust cloud behind a charge disappears at 60 FPS and above.
 - **Alpine Ridge wizards:** the wizards stop moving their stairs, doors and walkways.
 - **Fireworks Factory dragons:** the segments are much too short, making them extremely hard to hit.
@@ -17,7 +18,7 @@ Spyro Reignited Trilogy was tuned for 30 FPS. At higher framerates Spyro handles
 
 `ue4ss/Mods/HighFpsSlidingAndJumpFix/README.txt` and `nexus-description.bbcode` list the recorded before/after numbers for each fix.
 
-At 30 FPS the mod changes nothing.
+At 30 FPS the mod changes nothing, except the camera lock fix, which fixes a bug the game also has at 30 FPS.
 
 ## Requirements
 
