@@ -199,6 +199,10 @@ local state = {
     walkinEvent = nil,
     walkinCount = 0,
     walkinErrorLogged = false,
+    spot = nil,      -- the one saved quicksave spot (V/B/L), loaded from spots.txt at startup
+    travel = nil,    -- a StartAtLevelCheckpoint travel in progress, waiting to teleport on arrival
+    spotRequest = nil, -- "save", "load" or "reload", set by a key and handled in the game thread
+    reload = nil,    -- a level reload in progress, waiting to teleport back to the spot
     optional = {}, -- per optional call: true once it has worked, false if its first call failed
     errorLogged = false,
 }
@@ -1466,54 +1470,376 @@ local function logParticleModuleAddresses()
     end
 end
 
--- Stuck camera repro (J / H, see CLAUDE.md "Stuck charge camera"). Centering latches its speed from the
--- camera gap on the charge's first centering frame, and sticks if Spyro then turns away from the camera
--- faster than that speed before the gap passes the switch check. Armed: every frame until a charge starts,
--- Spyro is turned to face `gap` degrees right of the camera. Once charging: he is turned right at the
--- full-lock charge rate for CAM_REPRO_TURN_TIME, as if steering full right. Press charge without the stick.
-local CAM_REPRO_TURN_RATE = 130.8 -- deg/s, full stick lock during a charge
-local CAM_REPRO_TURN_TIME = 3
-local CAM_REPRO_ARMED_TIMEOUT = 10
+-- Quicksave spot (V save, B teleport back) and level reload (L). Saving the game's own state needs a
+-- restart (tools/Save-GameSnapshot.ps1), so this is the fast version: V remembers where Spyro stands,
+-- B puts him back, and L reloads the level (respawning enemies and resetting mechanisms) and then
+-- teleports him to the spot once the level is up. Spots are per level and kept in spots.txt, so they
+-- survive a restart. Only position, facing and camera yaw are restored, not velocity or ability state:
+-- save while standing still.
+local SPOT_FILE = modDir .. "\\spots.txt"
+local RELOAD_TIMEOUT = 60 -- seconds before a stuck reload gives up and puts everything back
+local RELOAD_SETTLE = 0.5 -- seconds after the sublevels are back before Spyro is put down
 
-local function armCamRepro(gap)
-    if state.camRepro then
-        state.camRepro = nil
-        log("camrepro cancelled")
-        return
-    end
-    state.camRepro = { gap = gap, phase = "armed", t = 0 }
-    log("camrepro armed: gap %.0f deg right of the camera; press charge (no stick) within %d s", gap, CAM_REPRO_ARMED_TIMEOUT)
+-- UE4SS returns FString and FName as objects, not Lua strings; tostring() gives "FString: <address>".
+local function asString(v)
+    if type(v) == "string" then return v end
+    if v == nil then return nil end
+    local ok, s = pcall(function() return v:ToString() end)
+    return (ok and type(s) == "string") and s or nil
 end
 
-local function setYaw(pawn, yaw)
+-- The persistent level is GlobalPersistentLevel for every level, so the level itself is whichever
+-- LS### package is streamed in (e.g. /LS107_PeacekeeperHome/Maps/LS107_design -> LS107).
+-- The game streams levels in as runtime LevelStreamingKismet instances, whose PackageName is empty;
+-- the package is on the loaded ULevel (e.g. Level /LS107_PeacekeeperHome/Maps/LS107_design.…).
+local function streamingPackage(sl)
+    local name = asString(sl.PackageNameToLoad)
+    if name and name ~= "" and name ~= "None" then return name end
+    name = asString(sl.PackageName)
+    if name and name ~= "" and name ~= "None" then return name end
+    local ok, full = pcall(function()
+        local level = sl.LoadedLevel
+        return level:IsValid() and level:GetFullName() or nil
+    end)
+    return (ok and full) and full:match("([^%s]+)%.[^%.]*$") or nil
+end
+
+local function eachStreamingLevel(pawn, fn)
+    local world = pawn:GetWorld()
+    if not world:IsValid() then return end
+    world.StreamingLevels:ForEach(function(_, element)
+        local sl = element:get()
+        if sl:IsValid() then fn(sl, streamingPackage(sl)) end
+    end)
+end
+
+-- The level prefix and sublevel suffix of a streamed package, e.g. /LS104_Townsquare/Maps/LS104_design
+-- -> "LS104", "design". Anything that isn't an LS### sublevel (GlobalPersistentLevel, LS104_ART_MASTER)
+-- comes back nil.
+local function levelParts(package)
+    local base = package and package:match("([^/]+)$")
+    if not base then return nil end
+    local prefix, suffix = base:match("^(.-)_([^_]+)$")
+    if not prefix or not prefix:match("^%a%a%d+$") then return nil end
+    return prefix, suffix
+end
+
+local function levelTranslation(sl)
+    return tryCall("LevelStreaming.LevelTransform", function()
+        local t = sl.LevelTransform.Translation
+        return { X = t.X, Y = t.Y }
+    end)
+end
+
+-- Which level Spyro is in. Neighbouring levels keep a visible LS###_Transport sublevel (a homeworld has
+-- several), so "the first visible LS### level" picks the wrong one; each level instance is placed by its
+-- LevelTransform, so the level Spyro is actually in is the one he is nearest.
+local function currentLevel(pawn)
+    local best, bestDist
+    tryCall("World.StreamingLevels", function()
+        local loc = pawn:K2_GetActorLocation()
+        eachStreamingLevel(pawn, function(sl, package)
+            local prefix = levelParts(package)
+            if not prefix then return end
+            if tryCall("LevelStreaming:IsLevelVisible", function() return sl:IsLevelVisible() end) == false then return end
+            local t = levelTranslation(sl)
+            if not t then return end
+            local dist = (loc.X - t.X) ^ 2 + (loc.Y - t.Y) ^ 2
+            if not bestDist or dist < bestDist then best, bestDist = prefix, dist end
+        end)
+    end)
+    if best then return best end
+    return asString(tryCall("GetCurrentLevelName", function()
+        return UEHelpers.GetGameplayStatics():GetCurrentLevelName(pawn, true)
+    end))
+end
+
+local function dumpStreamingLevels(pawn)
+    local level = currentLevel(pawn)
+    log("streaming levels (current level %s):", tostring(level))
+    local count = 0
+    eachStreamingLevel(pawn, function(sl, package)
+        count = count + 1
+        local loaded = tryCall("LevelStreaming:IsLevelLoaded", function() return sl:IsLevelLoaded() end)
+        local visible = tryCall("LevelStreaming:IsLevelVisible", function() return sl:IsLevelVisible() end)
+        local levelName = tryCall("LevelStreaming.LoadedLevel", function()
+            local level = sl.LoadedLevel
+            return level:IsValid() and level:GetFullName() or "none"
+        end)
+        log("  %s loaded=%s visible=%s shouldBeLoaded=%s shouldBeVisible=%s level=%s",
+            tostring(package), tostring(loaded), tostring(visible),
+            tostring(sl.bShouldBeLoaded), tostring(sl.bShouldBeVisible), tostring(levelName))
+    end)
+    log("streaming levels: %d", count)
+end
+
+local function readSpot()
+    local file = io.open(SPOT_FILE, "r")
+    if not file then return end
+    local line = file:read("l")
+    file:close()
+    local fields = {}
+    for field in (line or ""):gmatch("[^|]+") do table.insert(fields, field) end
+    if #fields < 9 then return end
+    state.spot = {
+        level = fields[1],
+        x = tonumber(fields[2]), y = tonumber(fields[3]), z = tonumber(fields[4]),
+        pitch = tonumber(fields[5]), yaw = tonumber(fields[6]), roll = tonumber(fields[7]),
+        ctrlPitch = tonumber(fields[8]), ctrlYaw = tonumber(fields[9]),
+    }
+    log("quicksave spot: %s at (%.0f, %.0f, %.0f)", state.spot.level, state.spot.x, state.spot.y, state.spot.z)
+end
+
+local function writeSpot()
+    local file = io.open(SPOT_FILE, "w")
+    if not file then
+        log("could not write %s", SPOT_FILE)
+        return
+    end
+    local s = state.spot
+    file:write(string.format("%s|%.3f|%.3f|%.3f|%.3f|%.3f|%.3f|%.3f|%.3f\n",
+        s.level, s.x, s.y, s.z, s.pitch, s.yaw, s.roll, s.ctrlPitch, s.ctrlYaw))
+    file:close()
+end
+
+local function saveSpot(pawn, pc, r)
+    local level = currentLevel(pawn)
+    if not level then
+        log("quicksave: the level name is unavailable")
+        return
+    end
     local rot = pawn:K2_GetActorRotation()
-    pawn:K2_SetActorRotation({ Pitch = rot.Pitch, Yaw = yaw, Roll = rot.Roll }, false)
+    local ctrl = pc:GetControlRotation()
+    state.spot = {
+        level = level, x = r.x, y = r.y, z = r.z,
+        pitch = rot.Pitch, yaw = rot.Yaw, roll = rot.Roll,
+        ctrlPitch = ctrl.Pitch, ctrlYaw = ctrl.Yaw,
+    }
+    writeSpot()
+    log("quicksave: %s at (%.0f, %.0f, %.0f) facing %.0f", level, r.x, r.y, r.z, rot.Yaw)
 end
 
-local function updateCamRepro(pawn, r)
-    local c = state.camRepro
-    if not c then return end
-    c.t = c.t + r.dt
-    if c.phase == "armed" then
-        if r.charging then
-            c.phase, c.t = "turning", 0
-            log("camrepro charge started: gap %.1f deg (camera %.1f, Spyro %.1f); turning right for %.1f s",
-                angleDiff(r.yaw, r.camYaw), r.camYaw, r.yaw, CAM_REPRO_TURN_TIME)
-        elseif c.t > CAM_REPRO_ARMED_TIMEOUT then
-            state.camRepro = nil
-            log("camrepro timed out without a charge")
-            return
-        else
-            setYaw(pawn, r.camYaw + c.gap)
-            return
-        end
+-- Puts Spyro on the saved spot. The caller makes sure its level is the one he is in (B travels first).
+local function teleportToSpot(pawn, pc, cmc, what)
+    local spot = state.spot
+    if not spot then
+        log("%s: nothing saved yet (press V to save a spot)", what)
+        return false
     end
-    if not r.charging or c.t >= CAM_REPRO_TURN_TIME then
-        log("camrepro done after %.2f s: gap %.1f deg, camera rate %.1f deg/s", c.t, angleDiff(r.yaw, r.camYaw), r.camRate)
-        state.camRepro = nil
+    -- K2_TeleportTo looks for room at the spot and returns false if it can't find any.
+    local placed = pawn:K2_TeleportTo({ X = spot.x, Y = spot.y, Z = spot.z },
+        { Pitch = spot.pitch, Yaw = spot.yaw, Roll = spot.roll })
+    cmc.Velocity = { X = 0, Y = 0, Z = 0 }
+    pc:SetControlRotation({ Pitch = spot.ctrlPitch, Yaw = spot.ctrlYaw, Roll = 0 })
+    -- Without this the follow camera flies in from wherever it was; ResetBehind snaps it behind Spyro.
+    if not tryCall("FollowCamera:ResetBehind", function() pawn.FollowCamera:ResetBehind(true) return true end) then
+        tryCall("FollowCamera:SetCameraYaw", function() pawn.FollowCamera:SetCameraYaw(spot.yaw) return true end)
+    end
+    log("%s: %s at (%.0f, %.0f, %.0f)%s", what, spot.level, spot.x, spot.y, spot.z,
+        placed == false and " (no room there; the engine moved him)" or "")
+    return true
+end
+
+-- RestartLevel drops to the title screen in this game (tested 2026-09-17), and the persistent level is
+-- shared by every level, so L reloads the current level's gameplay sublevels instead: it clears their
+-- bShouldBeLoaded/bShouldBeVisible, waits for the engine to stream them out, sets the flags again and
+-- waits for them back. Art, lighting, audio and the Transport levels are left alone. Spyro is held in
+-- Flying (the ground under him goes away with LS###_design) and teleported to the spot at the end.
+local RELOAD_SUFFIXES = { design = true, enemy = true, loot = true, cinematics = true }
+
+local function reloadTargets(pawn, level)
+    local targets = {}
+    eachStreamingLevel(pawn, function(sl, package)
+        local prefix, suffix = levelParts(package)
+        if prefix == level and suffix and RELOAD_SUFFIXES[suffix:lower()] then
+            table.insert(targets, { streaming = sl, package = package })
+        end
+    end)
+    return targets
+end
+
+-- Streamed level instances are placed by LevelTransform; if a reload comes back with a different one,
+-- everything in that sublevel (enemies, gems, the floor) lands away from the art levels.
+local function logTargets(targets, when)
+    for _, t in ipairs(targets) do
+        local name = tryCall("LevelStreaming:GetFName", function() return t.streaming:GetFName():ToString() end)
+        local translation = tryCall("LevelStreaming.LevelTransform", function()
+            local tr = t.streaming.LevelTransform.Translation
+            return string.format("(%.1f, %.1f, %.1f)", tr.X, tr.Y, tr.Z)
+        end)
+        log("  %s %s: instance=%s packageName=%s toLoad=%s transform=%s", when,
+            (t.package:match("([^/]+)$")), tostring(name),
+            tostring(asString(t.streaming.PackageName)), tostring(asString(t.streaming.PackageNameToLoad)),
+            tostring(translation))
+    end
+end
+
+local function setStreamingWanted(targets, wanted)
+    for _, t in ipairs(targets) do
+        t.streaming.bShouldBeLoaded = wanted
+        t.streaming.bShouldBeVisible = wanted
+    end
+end
+
+local function streamingAll(targets, read, want)
+    for _, t in ipairs(targets) do
+        local ok, value = pcall(read, t.streaming)
+        if not ok or value ~= want then return false end
+    end
+    return true
+end
+
+-- Travelling between levels goes through the GlobalTransporter actor: QueueStream(LevelStreamingRecord,
+-- TransportType, RecordType) -> ConvertStreamData -> the native latent QueueTransport, which loads the
+-- level's sublevels, unloads the current ones and moves the player. N dumps the actor (and its level
+-- data table rows) so the record's real field names and a level row can be read.
+local function dumpTransporter()
+    local transporter = FindFirstOf("GlobalTransporter_C")
+    if not transporter or not transporter:IsValid() then
+        log("transporter: no GlobalTransporter_C found")
         return
     end
-    setYaw(pawn, r.yaw + CAM_REPRO_TURN_RATE * r.dt)
+    log("transporter: %s", transporter:GetFullName())
+    writeCamDump("transporter", dumpObject(transporter))
+    local tables = FindAllOf("DataTable") or {}
+    for _, dt in ipairs(tables) do
+        local ok, name = pcall(function() return dt:GetFullName() end)
+        if ok and name:lower():match("level") then log("transporter: data table %s", name) end
+    end
+end
+
+-- Travelling to another level: GlobalTransporter's StartAtLevelCheckpoint(Start Level, isRestart,
+-- transitionType, checkpoint) is the game's own load-a-save path. It reads the level row (LevelMapPath
+-- plus the LLxxx sublevel table), builds a record with UnloadCurrentLevels, and calls native StartAtLevel,
+-- so lighting, music and game state follow. Rows in Spyro1_StreamData are named like our level keys (LS102).
+local STREAM_DATA_TABLE = "/GameplayCommon/LevelMechanics/LevelStreaming/StreamingData/LevelStreams/Spyro1_StreamData.Spyro1_StreamData"
+local TRAVEL_TIMEOUT = 30 -- seconds before a travel that never arrives is given up on
+
+-- FindFirstOf can hand back the class default object, which would take the call and do nothing.
+local function findTransporter()
+    local instances = FindAllOf("GlobalTransporter_C") or {}
+    for _, obj in ipairs(instances) do
+        local ok, name = pcall(function() return obj:GetFullName() end)
+        if ok and obj:IsValid() and not name:match("Default__") then return obj, name end
+    end
+    return nil
+end
+
+local function travelToLevel(level)
+    local transporter, transporterName = findTransporter()
+    if not transporter then
+        log("travel: no GlobalTransporter_C instance found")
+        return false
+    end
+    local streamData = StaticFindObject(STREAM_DATA_TABLE)
+    if not streamData or not streamData:IsValid() then
+        log("travel: %s not found", STREAM_DATA_TABLE)
+        return false
+    end
+    -- Does the table read back from Lua, and does it have this level's row?
+    local rows = tryCall("DataTableFunctionLibrary:GetDataTableRowNames", function()
+        local lib = StaticFindObject("/Script/Engine.Default__DataTableFunctionLibrary")
+        local out = {}
+        lib:GetDataTableRowNames(streamData, out)
+        local names = out.OutRowNames or out.RowNames
+        local count, found = 0, false
+        if names then
+            for _, n in ipairs(names) do
+                count = count + 1
+                if asString(n) == level then found = true end
+            end
+        end
+        return { count = count, found = found, keys = describeOut(out) }
+    end)
+    log("travel: %s, table rows=%s row %s found=%s", tostring(transporterName),
+        rows and tostring(rows.count) or "?", level, rows and tostring(rows.found) or "?")
+    local ok, err = pcall(function()
+        transporter:StartAtLevelCheckpoint({ DataTable = streamData, RowName = FName(level) }, false, 0, "")
+    end)
+    if not ok then
+        log("travel: StartAtLevelCheckpoint failed: %s", tostring(err))
+        return false
+    end
+    state.travel = { level = level, started = os.clock(), settled = 0 }
+    log("travel: loading %s", level)
+    return true
+end
+
+-- Once the target level is up and Spyro has control, put him on the saved spot.
+local function updateTravel(pawn, pc, cmc, r)
+    local s = state.travel
+    if not s then return end
+    if os.clock() - s.started > TRAVEL_TIMEOUT then
+        state.travel = nil
+        log("travel: %s never loaded (still in %s); StartAtLevelCheckpoint did nothing",
+            s.level, tostring(currentLevel(pawn)))
+        return
+    end
+    if currentLevel(pawn) ~= s.level then return end
+    s.settled = (r.mode == 1 and not r.rootMotion) and s.settled + r.dt or 0
+    if s.settled < RELOAD_SETTLE then return end
+    state.travel = nil
+    log("travel: arrived in %s after %.1f s", s.level, os.clock() - s.started)
+    teleportToSpot(pawn, pc, cmc, "quickload")
+end
+
+local function requestReload(pawn, pc)
+    local level = currentLevel(pawn)
+    local targets = level and reloadTargets(pawn, level) or {}
+    if #targets == 0 then
+        log("reload: no gameplay sublevels found for %s", tostring(level))
+        dumpStreamingLevels(pawn)
+        return
+    end
+    state.reload = { level = level, targets = targets, stage = "unloading", started = os.clock() }
+    setStreamingWanted(targets, false)
+    local names = {}
+    for _, t in ipairs(targets) do table.insert(names, (t.package:match("([^/]+)$"))) end
+    log("reload: streaming out %s", table.concat(names, ", "))
+    logTargets(targets, "before")
+end
+
+-- Runs every frame while a reload is in progress: keeps Spyro up, waits out each streaming stage,
+-- and puts him back on the ground at the end.
+local function updateReload(pawn, pc, cmc, r)
+    local s = state.reload
+    if not s then return end
+    local elapsed = os.clock() - s.started
+
+    -- LS###_design holds the floor, so keep him flying in place until it is back.
+    if r.mode ~= 5 then cmc:SetMovementMode(5, 0) end
+    cmc.Velocity = { X = 0, Y = 0, Z = 0 }
+
+    local function finish(what)
+        setStreamingWanted(s.targets, true)
+        state.reload = nil
+        cmc:SetMovementMode(1, 0)
+        log("reload: %s after %.1f s", what, elapsed)
+        logTargets(s.targets, "after")
+        -- Only put him on the spot if it belongs to this level; otherwise leave him where he reloaded.
+        if state.spot and state.spot.level == s.level then teleportToSpot(pawn, pc, cmc, "reload") end
+    end
+
+    if elapsed > RELOAD_TIMEOUT then
+        finish("gave up waiting")
+        return
+    end
+    if s.stage == "unloading" then
+        setStreamingWanted(s.targets, false) -- in case the game's own streaming re-enables them
+        if streamingAll(s.targets, function(sl) return sl:IsLevelLoaded() end, false) then
+            s.stage = "loading"
+            setStreamingWanted(s.targets, true)
+            log("reload: streamed out after %.1f s; streaming back in", elapsed)
+        end
+    elseif s.stage == "loading" then
+        setStreamingWanted(s.targets, true)
+        if streamingAll(s.targets, function(sl) return sl:IsLevelVisible() end, true) then
+            s.stage, s.settled = "settling", 0
+        end
+    else
+        s.settled = s.settled + r.dt
+        if s.settled >= RELOAD_SETTLE then finish("done") end
+    end
 end
 
 -- Freed dragon walk-in (Collectable_Dragon): SimpleMoveToLocation walks Spyro to `Walk to Target Point`,
@@ -1764,11 +2090,6 @@ local function sample()
     updateCharge(r, prev)
     updateCamTransition(r, prev)
     updateCamDump(pawn, r)
-    local reproOk, reproErr = pcall(updateCamRepro, pawn, r)
-    if not reproOk then
-        state.camRepro = nil
-        log("camrepro error: %s", tostring(reproErr))
-    end
     -- The first call succeeds on every level without dragons, so log errors here rather than via tryCall.
     local dragonOk, dragonErr = pcall(updateDragons, r.time, prev and r.time - prev.time or 0)
     if not dragonOk and not state.dragon.errorLogged then
@@ -1793,6 +2114,31 @@ local function sample()
     if not flameOk and not state.flame.errorLogged then
         state.flame.errorLogged = true
         log("flame stats error: %s", tostring(flameErr))
+    end
+    local request = state.spotRequest
+    state.spotRequest = nil
+    local spotOk, spotErr = pcall(function()
+        if request == "save" then
+            saveSpot(pawn, pc, r)
+        elseif request == "load" then
+            -- B always goes to the saved spot, travelling to its level first when Spyro is elsewhere.
+            local spot = state.spot
+            if spot and spot.level ~= currentLevel(pawn) then
+                travelToLevel(spot.level)
+            else
+                teleportToSpot(pawn, pc, cmc, "quickload")
+            end
+        elseif request == "reload" then
+            requestReload(pawn, pc)
+        elseif request == "transporter" then
+            dumpTransporter()
+        end
+        updateReload(pawn, pc, cmc, r)
+        updateTravel(pawn, pc, cmc, r)
+    end)
+    if not spotOk then
+        state.reload = nil
+        log("quicksave error: %s", tostring(spotErr))
     end
     local walkinOk, walkinErr = pcall(updateWalkin, pc, cmc, r, prev)
     if not walkinOk then
@@ -1827,8 +2173,10 @@ RegisterKeyBind(Key.F8, function() setFpsCap(0) end)
 RegisterKeyBind(Key.F9, function() state.camDump.requested = true end)
 RegisterKeyBind(Key.F10, function() state.flame.scan = true end)
 -- Not F11 (the game toggles fullscreen) and nothing the game's DefaultInput.ini binds.
-RegisterKeyBind(Key.J, function() ExecuteInGameThread(function() armCamRepro(33) end) end)
-RegisterKeyBind(Key.H, function() ExecuteInGameThread(function() armCamRepro(12) end) end)
+RegisterKeyBind(Key.V, function() state.spotRequest = "save" end)
+RegisterKeyBind(Key.B, function() state.spotRequest = "load" end)
+RegisterKeyBind(Key.L, function() state.spotRequest = "reload" end)
+RegisterKeyBind(Key.N, function() state.spotRequest = "transporter" end)
 RegisterKeyBind(Key.K, function()
     local f = state.flame
     f.experiment = (f.experiment or 1) % #FLAME_EXPERIMENTS + 1
@@ -1854,6 +2202,8 @@ if not EngineTickAvailable then
     log("EngineTick hook unavailable; per-frame sampling disabled")
     return
 end
+
+readSpot()
 
 LoopInGameThreadAfterFrames(1, function()
     local ok, err = pcall(sample)

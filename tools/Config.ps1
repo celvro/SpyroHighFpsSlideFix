@@ -7,3 +7,7 @@ $GameDir = if ($env:SPYRO_GAME_DIR) { $env:SPYRO_GAME_DIR } else {
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $BuildDir = Join-Path $RepoRoot 'build'
+
+# Game save files, and where Save-GameSnapshot.ps1 keeps named copies of them.
+$SaveGamesDir = Join-Path $env:LOCALAPPDATA 'Falcon\Saved\SaveGames'
+$SnapshotDir = Join-Path $BuildDir 'saves'
