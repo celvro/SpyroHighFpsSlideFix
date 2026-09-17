@@ -19,7 +19,7 @@ Spyro Reignited Trilogy was made for 30 FPS. At higher framerates the game quiet
 [*][b]Wizards in Alpine Ridge:[/b] the wizards stop moving their stairs, doors and walkways after one spell.[/*]
 [*][b]Fire dragons in Fireworks Factory:[/b] the dragons' body sections bunch up right behind the head, which makes them much harder to hit.[/*]
 [*][b]Flame breath:[/b] long, thin flame streaks stick out of Spyro's flame, pointing straight up, sideways or diagonally.[/*]
-[*][b]Freed dragons (Spyro 1):[/b] after touching a dragon statue, Spyro doesn't walk up to his spot in front of the dragon, or gets there late. Versions 1.1.0 to 1.3.0 of this mod caused this at high framerates; the game itself does it at very high framerates (~500 FPS).[/*]
+[*][b]Freed dragons (Spyro 1):[/b] after touching a dragon statue, Spyro starts his walk up to the dragon late and walks too slowly at very high framerates (~500 FPS), so he barely gets there.[/*]
 [/list]
 With this mod, all of these behave [b]the same as at 30 FPS[/b], at any framerate (the camera lock is fixed at every framerate).
 [b]At 30 FPS the mod changes nothing[/b], except the camera lock fix, which fixes a bug the game also has at 30 FPS.
@@ -109,7 +109,6 @@ The streaks are only visual: the flame's damage comes from separate hit checks t
 After touching a dragon statue, when Spyro reaches his spot and when he turns to the dragon (same dragon, same starting spot):
 [list]
 [*]30 FPS: arrives at [b]1.27 s[/b], turns at [b]1.47 s[/b][/*]
-[*]High FPS with mod versions 1.1.0 to 1.3.0: [color=#ff6666][b]doesn't walk into place[/b][/color][/*]
 [*]About 500 FPS without the mod: [color=#ff6666][b]starts about 0.25 s late and walks at 100 to 200 instead of 268[/b][/color], reaching the spot near the end of the dragon's animation[/*]
 [*]About 365 FPS with the mod: [color=#6aa84f][b]arrives at 1.21 s, turns at 1.46 s[/b][/color][/*]
 [/list]
@@ -149,10 +148,10 @@ The wizards move their stairs, doors and walkways at one exact moment in their s
 Each frame, every body section moves part of the way towards the section in front of it. The game treats every frame as at least 1/30 of a second long for this, so at 144 FPS each section gets a full 30 FPS pull almost five times as often. The sections catch up far too quickly and end up squeezed behind the head. The mod gives each section a smaller pull at high framerates, sized so it trails the section ahead by the same distance as at 30 FPS.
 
 [b]Flame breath[/b]
-Close to Spyro's mouth, the flame has a small effect of long, thin streaks that point the way they're moving. They move very slowly, and the game works out their direction from how far they moved since the last frame. At very high framerates that distance is so tiny that the direction becomes unreliable, and a streak can flip to point straight up or sideways. Above 30 FPS the mod speeds those streaks up so they move as far each frame as they do at 30 FPS, which keeps their direction stable. They drift slightly farther from Spyro's mouth, but the flame keeps its full look. At 30 FPS nothing changes.
+Close to Spyro's mouth, the flame has a small effect of long, thin streaks that point the way they're moving. They move very slowly, and the game works out their direction from how far they moved since the last frame. At very high framerates that distance is so tiny that the direction becomes unreliable, and a streak can flip to point straight up or sideways. The mod makes those streaks move as far each frame as they do at 30 FPS, so they keep pointing the way they move.
 
 [b]Freed dragons[/b]
-When you touch a dragon statue, the game walks Spyro to his spot the same way it walks computer-controlled characters, with no stick input. Earlier versions of this mod treated "moving with no stick input" as Spyro slowing to a stop, and at high framerates the walk's first tiny step looked like rounding, so the mod kept undoing it. Separately, at around 500 FPS the game's own walk runs into the same position rounding as the sliding bug: the first step rounds to nothing, and after that the walking speed snaps to rounded values. The mod now recognizes the scripted walk and applies the speed-up the game intended, like it does for normal walking.[/spoiler]
+When you touch a dragon statue, the game walks Spyro to his spot the same way it walks computer-controlled characters, with no stick input. At around 500 FPS that walk runs into the same position rounding as the sliding bug: the first step rounds to nothing, and after that the walking speed snaps to rounded values. The mod now recognizes the scripted walk and applies the speed-up the game intended, like it does for normal walking.[/spoiler]
 [line]
 [size=5][b]Requirements[/b][/size]
 [list]
