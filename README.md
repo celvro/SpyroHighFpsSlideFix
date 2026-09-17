@@ -15,6 +15,7 @@ Spyro Reignited Trilogy was tuned for 30 FPS. At higher framerates Spyro handles
 - **Alpine Ridge wizards:** the wizards stop moving their stairs, doors and walkways.
 - **Fireworks Factory dragons:** the segments are much too short, making them extremely hard to hit.
 - **Flame breath:** long stray flame streaks stick out of Spyro's flame, pointing up or sideways.
+- **Freed dragons (Spyro 1):** after you touch a dragon statue, Spyro's walk up to his spot in front of the dragon starts late and crawls at very high framerates (~500 FPS), so he only gets there near the end of the dragon's animation.
 
 `ue4ss/Mods/HighFpsSlidingAndJumpFix/README.txt` and `nexus-description.bbcode` list the recorded before/after numbers for each fix.
 
@@ -77,7 +78,7 @@ Spyro Reignited Trilogy\Falcon\Binaries\Win64\ue4ss\UE4SS.log
 Near the end you should see:
 
 ```
-[HighFpsSlidingAndJumpFix] v1.3.0 loaded
+[HighFpsSlidingAndJumpFix] v1.4.0 loaded
 ```
 
 ## Troubleshooting
