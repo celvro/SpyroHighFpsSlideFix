@@ -111,9 +111,10 @@
 --   frame's change in position: ~0.3 units at 30 FPS, but only ~0.02 at 320 FPS, too small for a
 --   stable direction, so a few of the sprites flip to point straight up or sideways and show as long
 --   lines sticking out of the flame. Particle captures showed the emitter simulating identically at
---   both framerates; switching it off removed the lines, and at 30 FPS the flame looks the same
---   without it. Above ~35 FPS this switches the emitter off in both flame templates (new breaths pick
---   it up) and turns it back on at 30 FPS, so 30 FPS is unchanged.
+--   both framerates. Above 30 FPS this scales the emitter's start velocity in both flame templates
+--   by (1/30)/dt, so each frame moves its particles as far as at 30 FPS and the sprites keep their
+--   direction. The particles drift a little farther from the mouth over their 0.2-0.3 s life (~2
+--   units at 30 FPS, ~10 at 144, ~21 at 320). At 30 FPS or lower the asset's own values are kept.
 
 local UEHelpers = require("UEHelpers")
 
@@ -159,7 +160,7 @@ local FLAME_TEMPLATE_PATHS = {
     "/VFX_Spryo/Shared/Particles/Characters/Spyro/FlameThrower/PS_VFX_Flame_Breath_Rage.PS_VFX_Flame_Breath_Rage",
 }
 local FLAME_MUZZLE_EMITTER = "hard_flames_velocity_muzzle"
-local FLAME_MUZZLE_MAX_FRAME_TIME = 1 / 35 -- average frames shorter than this hide the emitter (30 FPS keeps it)
+local FLAME_VELOCITY_RESCALE = 0.1    -- rewrite the muzzle velocity when the wanted scale differs from the written one by this fraction
 local HOOK_RETRY_FRAMES = 60          -- frames between looks for a (not yet loaded) hooked Blueprint or asset
 local HOOK_MAX_FAILURES = 200         -- failed RegisterHook calls before giving up on a level Blueprint
 local PROFILE = false        -- log the fixes' per-frame cost to UE4SS.log
@@ -215,11 +216,12 @@ local dragon = {
     heads = {},    -- address -> dragon head whose segments we took over, to hand back after an error
     failures = 0, failed = false, retryIn = 0, lookups = 1,
 }
--- Flame breath lines fix, per template: object and { lod, original bEnabled } of its muzzle emitter, and
--- whether that emitter is hidden. Keyed by the template's object name for NotifyOnNewObject.
+-- Flame breath lines fix, per template: object, the StartVelocity lookup tables of its muzzle emitter
+-- ({ values, original }) and the velocity scale written to them. Keyed by the template's object name
+-- for NotifyOnNewObject.
 local flame = { failed = false, avgDt = nil, templates = {} }
 for _, path in ipairs(FLAME_TEMPLATE_PATHS) do
-    flame.templates[path:match("%.([^.]+)$")] = { path = path, lookups = 1, retryIn = 0, object = nil, lods = nil, hidden = nil }
+    flame.templates[path:match("%.([^.]+)$")] = { path = path, lookups = 1, retryIn = 0, object = nil, tables = nil, scale = nil }
 end
 mouse.lookups = 1
 dust.lookups = 1
@@ -871,14 +873,22 @@ local function fixDruidEnergize()
     if triggerTime then log("druid Energize notify moved to %.5f s", triggerTime) end
 end
 
--- Hides the flame breath's hard muzzle emitter above ~35 FPS and restores it below (see the header).
--- Changing the template's LOD only affects flame components created afterwards, i.e. the next breath.
+-- Writes a velocity scale into a template's muzzle StartVelocity tables (1 restores the asset's values).
+local function scaleFlameMuzzle(t, scale)
+    for _, entry in ipairs(t.tables) do
+        for n, original in ipairs(entry.original) do entry.values[n] = original * scale end
+    end
+    t.scale = scale
+end
+
+-- Scales the flame breath's hard muzzle emitter velocity above 30 FPS (see the header). The velocity
+-- module reads the template's table when a particle spawns, so the change applies to new particles.
 local function fixFlameMuzzleLines(dt)
     if dt >= MIN_TICK_TIME then flame.avgDt = flame.avgDt and (flame.avgDt * 0.9 + dt * 0.1) or dt end
     if not flame.avgDt then return end
-    local hide = flame.avgDt < FLAME_MUZZLE_MAX_FRAME_TIME
+    local want = math.max(1, (1 / REFERENCE_FPS) / flame.avgDt)
     for name, t in pairs(flame.templates) do
-        if t.object and not t.object:IsValid() then t.object, t.lods, t.hidden = nil, nil, nil end
+        if t.object and not t.object:IsValid() then t.object, t.tables, t.scale = nil, nil, nil end
         if not t.object then
             local template = lookUp(t, t.path)
             if template then
@@ -888,34 +898,47 @@ local function fixFlameMuzzleLines(dt)
                     t.lookups = math.max(t.lookups, 1)
                 else
                     t.lookups = 0
-                    t.object, t.lods = template, {}
+                    t.object, t.tables, t.scale = template, {}, 1
                     for i = 1, emitters:GetArrayNum() do
                         local emitter = emitters[i]
                         if emitter:IsValid() and emitter.EmitterName:ToString() == FLAME_MUZZLE_EMITTER then
                             local lods = emitter.LODLevels
                             for j = 1, lods:GetArrayNum() do
-                                table.insert(t.lods, { lod = lods[j], original = lods[j].bEnabled })
+                                local modules = lods[j].Modules
+                                for k = 1, modules:GetArrayNum() do
+                                    local module = modules[k]
+                                    if module:IsValid() and module:GetClass():GetFName():ToString() == "ParticleModuleVelocity" then
+                                        -- Cooked distributions are read from the lookup table (Distribution is null).
+                                        local values = module.StartVelocity.Table.Values
+                                        local entry = { values = values, original = {} }
+                                        for n = 1, values:GetArrayNum() do entry.original[n] = values[n] end
+                                        table.insert(t.tables, entry)
+                                    end
+                                end
                             end
                         end
                     end
-                    if #t.lods == 0 then log("flame muzzle lines fix: %s has no %s emitter", name, FLAME_MUZZLE_EMITTER) end
+                    if #t.tables == 0 then log("flame muzzle lines fix: %s has no %s velocity", name, FLAME_MUZZLE_EMITTER) end
                 end
             end
         end
-        if t.object and t.hidden ~= hide and #t.lods > 0 then
-            for _, entry in ipairs(t.lods) do entry.lod.bEnabled = (not hide) and entry.original end
-            t.hidden = hide
-            log("flame muzzle lines fix: %s emitter %s in %s", FLAME_MUZZLE_EMITTER, hide and "hidden" or "restored", name)
+        if t.object and #t.tables > 0 then
+            local rescale = math.abs(want - t.scale) > FLAME_VELOCITY_RESCALE * want or (want == 1 and t.scale ~= 1)
+            if rescale then
+                if (want == 1) ~= (t.scale == 1) then
+                    log("flame muzzle lines fix: %s velocity %s in %s", FLAME_MUZZLE_EMITTER,
+                        want == 1 and "restored" or string.format("scaled x%.1f", want), name)
+                end
+                scaleFlameMuzzle(t, want)
+            end
         end
     end
 end
 
--- Puts every found flame template's muzzle emitter back (after an error).
+-- Puts every found flame template's muzzle velocity back (after an error).
 local function restoreFlameMuzzle()
     for _, t in pairs(flame.templates) do
-        if t.object and t.lods then
-            for _, entry in ipairs(t.lods) do pcall(function() entry.lod.bEnabled = entry.original end) end
-        end
+        if t.object and t.tables then pcall(scaleFlameMuzzle, t, 1) end
     end
 end
 
