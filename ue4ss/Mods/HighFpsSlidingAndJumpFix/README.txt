@@ -43,6 +43,11 @@ Fixes (numbers were recorded in game at 30 FPS and at 144 FPS, before and after 
   them move as far each frame as at 30 FPS, so they keep their direction (they drift slightly farther from the
   mouth). At 30 FPS nothing changes.
     Stray streaks per flame:  30 FPS none  |  320 FPS before up to 2  |  after none
+- Freed dragons (Spyro 1): after you touch a dragon statue, Spyro should walk up to his spot in front of the dragon
+  before the cutscene. Versions 1.1.0 to 1.3.0 of this mod kept him from starting that walk at high FPS (the speed-up fix
+  mistook the scripted walk for Spyro stopping). Without the mod, at very high framerates (~500 FPS) the walk starts
+  late and crawls at under full speed, so he only gets there near the end of the dragon's animation.
+    Arrives / turns to the dragon:  30 FPS 1.27 s / 1.47 s  |  1.3.0 at high FPS doesn't walk  |  after (~365 FPS) 1.21 s / 1.46 s
 
 Requirements
 - UE4SS experimental build (https://github.com/UE4SS-RE/RE-UE4SS/releases/tag/experimental-latest).

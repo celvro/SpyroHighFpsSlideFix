@@ -10,9 +10,13 @@
 --       rounded move restores the old speed, and Spyro slides forever at a constant low speed.
 --     * accelerating: a frame's 1000 * dt (6.9 at 144 FPS) of acceleration lands on 4.5 or 9, so
 --       speeding up (e.g. starting a charge) runs at ~650 or ~1300 per second instead of 1000.
+--     * scripted walks: path following (SimpleMoveToLocation, e.g. walking Spyro up to a freed
+--       dragon) accelerates him through RequestedVelocity with no input. At ~500 FPS its first step
+--       rounds to nothing and the walk starts late, then crawls at 100-200 instead of 268.
 --   While walking without root motion, this keeps the unquantized velocity (same formula as
---   UCharacterMovementComponent::CalcVelocity) and writes it back whenever the engine's value
---   only differs by quantization. At low framerates the difference is negligible.
+--   UCharacterMovementComponent::CalcVelocity, including ApplyRequestedMove while the controller's
+--   PathFollowingComponent is moving) and writes it back whenever the engine's value only differs
+--   by quantization. At low framerates the difference is negligible.
 --
 -- Jump height fix
 --   A jump (ground, water, charge) sets Z velocity and applies GE_SpyroJumpNoGravity, which
@@ -175,6 +179,9 @@ local GC_COLLECTION_KB = 5
 local GC_MODE = nil
 
 local tracked = nil -- { x, y, z } unquantized velocity carried from the previous frame
+-- Path following (scripted walks): the controller's PathFollowingComponent and its class, whether a move
+-- was active last frame (for the log), and failed after an error.
+local path = { component = nil, class = nil, active = false, failed = false }
 local jump = nil    -- zero-gravity jump rise being tracked or extended
 local slip = nil    -- { base, written }: GroundFriction without our override, and the value we wrote
 local mouse = {
@@ -359,7 +366,98 @@ end
 
 local STILL = { 0, 0, 0 } -- tracked velocity while standing; never modified
 
-local function fixWalkingVelocity(pawn, cmc, dt, mode, vel)
+-- Largest velocity error a rounded move can introduce this frame, with a little slack.
+local function quantizationTolerance(pawn, dt)
+    local loc = pawn:K2_GetActorLocation()
+    return (math.max(floatSpacing(loc.X), floatSpacing(loc.Y), floatSpacing(loc.Z)) / dt) * 1.01
+end
+
+-- Mirrors CalcVelocity (UE 4.19) for walking under a path following request (ApplyRequestedMove), with
+-- zero input acceleration. `request` is RequestedVelocity: the direction to the current path point,
+-- scaled to reach it in one frame. Returns nil when the request is too small to be applied.
+local function calcRequestedWalkingVelocity(cmc, vx, vy, request, dt)
+    local rx, ry, rz = request.X, request.Y, request.Z
+    local requestedSq = rx * rx + ry * ry + rz * rz
+    if requestedSq < 1e-4 then return nil end
+    local requested = math.sqrt(requestedSq)
+    local dx, dy, dz = rx / requested, ry / requested, rz / requested
+    local maxSpeed = cmc.MaxWalkSpeed
+    local speed = cmc.bRequestedMoveWithMaxSpeed and maxSpeed or math.min(maxSpeed, requested)
+    local mx, my, mz = dx * speed, dy * speed, dz * speed
+
+    -- PhysWalking zeroes Z before CalcVelocity; the Z the request adds is flattened after the move.
+    local vz = 0
+    local ax, ay, az = 0, 0, 0
+    if cmc.bRequestedMoveUseAcceleration and vx * vx + vy * vy < (speed * 1.01) ^ 2 then
+        -- Turn in the same manner as with input acceleration, then accelerate towards the move velocity.
+        local size = math.sqrt(vx * vx + vy * vy)
+        local blend = math.min(dt * math.max(0, cmc.GroundFriction), 1)
+        vx, vy, vz = vx - (vx - dx * size) * blend, vy - (vy - dy * size) * blend, vz - (vz - dz * size) * blend
+        ax, ay, az = (mx - vx) / dt, (my - vy) / dt, (mz - vz) / dt
+        local accelSize = math.sqrt(ax * ax + ay * ay + az * az)
+        local maxAccel = cmc.MaxAcceleration
+        if accelSize > maxAccel and accelSize > 0 then
+            local scale = maxAccel / accelSize
+            ax, ay, az = ax * scale, ay * scale, az * scale
+        end
+    else
+        -- Decelerating: the engine sets the velocity directly so he doesn't slide past the destination.
+        vx, vy, vz = mx, my, mz
+    end
+
+    -- Braking only when over the (requested) max speed: the request counts as acceleration.
+    local limit = math.max(speed, cmc.MinAnalogWalkSpeed)
+    if vx * vx + vy * vy + vz * vz > limit * limit * 1.01 then
+        local friction, deceleration = brakingParams(cmc)
+        vx, vy, vz = applyBraking(vx, vy, vz, dt, friction, deceleration)
+    end
+
+    if ax ~= 0 or ay ~= 0 or az ~= 0 then
+        local sizeSq = vx * vx + vy * vy + vz * vz
+        local newMax = sizeSq > speed * speed * 1.01 and math.sqrt(sizeSq) or speed
+        vx, vy, vz = vx + ax * dt, vy + ay * dt, vz + az * dt
+        sizeSq = vx * vx + vy * vy + vz * vz
+        if sizeSq > newMax * newMax then
+            local scale = newMax / math.sqrt(sizeSq)
+            vx, vy = vx * scale, vy * scale
+        end
+    end
+    return vx, vy
+end
+
+-- RequestedVelocity while the player controller's path following is moving Spyro (SimpleMoveToLocation,
+-- e.g. walking him up to a freed dragon), else nil. The engine leaves RequestedVelocity set after the
+-- move ends, so the path status decides; it's only queried while RequestedVelocity is nonzero.
+local function readPathRequest(pc, cmc)
+    local request = cmc.RequestedVelocity
+    if request.X == 0 and request.Y == 0 and request.Z == 0 then return nil end
+    if not (path.component and path.component:IsValid()) then
+        path.class = path.class or StaticFindObject("/Script/AIModule.PathFollowingComponent")
+        local component = pc:GetComponentByClass(path.class)
+        path.component = (component and component:IsValid()) and component or nil
+    end
+    -- EPathFollowingAction: 0 Error, 1 NoMove (idle), 2 DirectMove, 3 PartialPath, 4 PathToGoal.
+    if not path.component or path.component:GetPathActionType() < 2 then return nil end
+    return { X = request.X, Y = request.Y, Z = request.Z }
+end
+
+local function pathRequest(pc, cmc)
+    if path.failed then return nil end
+    -- Called every frame without input (including standing still), so no closure per call.
+    local ok, result = pcall(readPathRequest, pc, cmc)
+    if not ok then
+        path.failed = true
+        log("path following moves aren't predicted after error: %s", tostring(result))
+        return nil
+    end
+    if (result ~= nil) ~= path.active then
+        path.active = result ~= nil
+        log("walking fix: path following move %s", path.active and "started" or "ended")
+    end
+    return result
+end
+
+local function fixWalkingVelocity(pc, pawn, cmc, dt, mode, vel)
     if mode ~= MOVE_WALKING then tracked = nil return end
     local vx, vy, vz = vel.X, vel.Y, vel.Z
     local stopped = vx == 0 and vy == 0 and vz == 0
@@ -370,9 +468,14 @@ local function fixWalkingVelocity(pawn, cmc, dt, mode, vel)
     end
     local accel = cmc:GetCurrentAcceleration()
     local braking = accel.X == 0 and accel.Y == 0 and accel.Z == 0
+    -- Path following moves Spyro through RequestedVelocity with zero input acceleration, which isn't braking:
+    -- predicting braking held him in place (at 144 FPS the first step is 4.5 per axis, within the tolerance
+    -- of 0). The engine's own path move breaks down at high FPS too: at ~550 FPS its first step rounds to
+    -- nothing and its velocity locks to the position lattice, so predict it like input acceleration.
+    local request = braking and FIX_WALKING_ACCELERATION and pathRequest(pc, cmc) or nil
     -- Zero velocity with input still has to be predicted: above ~250 FPS the first frame's move
     -- (MaxAcceleration * dt^2) rounds to nothing, the engine resets velocity to 0, and Spyro never starts moving.
-    if stopped and braking then
+    if stopped and braking and not request then
         tracked = STILL
         return
     end
@@ -383,12 +486,16 @@ local function fixWalkingVelocity(pawn, cmc, dt, mode, vel)
         return
     end
 
-    local bx, by = calcWalkingVelocity(cmc, tracked[1], tracked[2], accel.X, accel.Y, dt)
+    local bx, by
+    if request then
+        bx, by = calcRequestedWalkingVelocity(cmc, tracked[1], tracked[2], request, dt)
+    end
+    if not bx then
+        bx, by = calcWalkingVelocity(cmc, tracked[1], tracked[2], accel.X, accel.Y, dt)
+    end
     local bz = 0
 
-    -- Largest velocity error a rounded move can introduce this frame, with a little slack.
-    local loc = pawn:K2_GetActorLocation()
-    local tolerance = (math.max(floatSpacing(loc.X), floatSpacing(loc.Y), floatSpacing(loc.Z)) / dt) * 1.01
+    local tolerance = quantizationTolerance(pawn, dt)
 
     if math.abs(vx - bx) <= tolerance and math.abs(vy - by) <= tolerance and math.abs(vz - bz) <= tolerance then
         if vx ~= bx or vy ~= by or vz ~= bz then
@@ -1072,7 +1179,7 @@ local function tick()
     -- Read once and share: all fixes need the mode and velocity from the frame that just finished.
     local mode = cmc.MovementMode
     local vel = cmc.Velocity
-    fixWalkingVelocity(pawn, cmc, dt, mode, vel)
+    fixWalkingVelocity(pc, pawn, cmc, dt, mode, vel)
     fixJumpHeight(pawn, cmc, dt, mode, vel)
     if FIX_MOUSE_CHARGE_STEERING then registerMouseHook() end
     if FIX_CHARGE_DUST and not dust.failed then
