@@ -121,6 +121,14 @@ Build the release zip (named from `VERSION` in `main.lua`):
 
 This writes `build\release\HighFpsGameplayFixes-<version>.zip` for the GitHub release. The mod folder inside stays `HighFpsSlidingAndJumpFix` so updates overwrite older installs.
 
+Build the UE4SS bundle (a separate download: UE4SS itself, repackaged for this game and preset to engine version 4.19):
+
+```powershell
+.\tools\Package-UE4SS-Release.ps1
+```
+
+This writes `build\release\UE4SS-for-Spyro-<ue4ss version>.zip` from `tools\bin\ue4ss-dist\`, plus a filled-in copy of `nexus-description-ue4ss.bbcode`. UE4SS is MIT licensed, so the zip ships its `LICENSE` (in place and as `LICENSE.txt`) together with `ue4ss-bundle\README.txt`, which credits the UE4SS team and lists the one change made to the release (the engine version).
+
 ## License
 
 [MIT](LICENSE)
