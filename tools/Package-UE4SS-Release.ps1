@@ -9,7 +9,7 @@
 
     The only change to UE4SS itself is the engine version override (4.19) in UE4SS-settings.ini;
     the source dist is left untouched. UE4SS is MIT licensed, so its LICENSE ships both in place
-    (ue4ss\LICENSE, as released) and as LICENSE.txt in the zip root, and ue4ss-bundle\README.txt
+    (ue4ss\LICENSE, as released) and as LICENSE.txt in the zip root, and README-ue4ss.txt
     carries the credits and the list of changes. Do not strip those: the licence requires the
     copyright and permission notice to travel with the files.
 
@@ -57,7 +57,7 @@ foreach ($setting in @{ MajorVersion = 4; MinorVersion = 19 }.GetEnumerator()) {
 $license = Join-Path $distUe4ss 'LICENSE'
 if (-not (Test-Path $license)) { throw "UE4SS's LICENSE is missing from $distUe4ss. It has to ship with the files." }
 
-$readme = (Get-Content (Join-Path $RepoRoot 'ue4ss-bundle\README.txt') -Raw).Replace('{{UE4SS_VERSION}}', $Version)
+$readme = (Get-Content (Join-Path $RepoRoot 'README-ue4ss.txt') -Raw).Replace('{{UE4SS_VERSION}}', $Version)
 
 $vortexOverrides = @'
 [
