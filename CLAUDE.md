@@ -18,6 +18,7 @@ Investigation logs live in `docs/`; each fix module in `ue4ss/Mods/HighFpsSlidin
 | `docs/findings/druid-energize.md` | Alpine Ridge green druid notify missed | fixed, verified |
 | `docs/findings/fire-dragon.md` | Fireworks Factory dragon segments bunch up | fixed, verified |
 | `docs/findings/thief-chase.md` | Gnorc thief chase speed | measured, not worth fixing |
+| `docs/findings/flight.md` | Spyro 1 flight level speed (MaxFlySpeed follows pitch) | matches 30 FPS |
 | `docs/findings/freed-dragon-walkin.md` | Walk-in after freeing a dragon (path following vs walking fix) | fixed, verified |
 | `docs/findings/frame-spikes.md` | Hitches from `StaticFindObject` misses | fixed, verified |
 | `docs/findings/flame-breath.md` | Stray flame lines (`hard_flames_velocity_muzzle`) | fixed (velocity scaling) |

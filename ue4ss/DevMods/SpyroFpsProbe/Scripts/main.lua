@@ -18,7 +18,8 @@
 --                        "camlock", "camstuck", "camtransition", "camdump diff" (trackers/camera.lua);
 --                        "supercharge" (trackers/supercharge.lua); "dragon" (trackers/dragons.lua);
 --                        "thief" (trackers/thieves.lua); "flame" (trackers/flames.lua); "walkin"
---                        (trackers/walkin.lua); quicksave, reload and travel lines (tools/quicksave.lua)
+--                        (trackers/walkin.lua); "flight", "flightramp", "flightrun" (trackers/flight.lua);
+--                        quicksave, reload and travel lines (tools/quicksave.lua)
 --
 -- Scripts/
 --   lib/       shared helpers: logging, the row sampled each frame, the trace CSV, object dumps, level queries
@@ -37,6 +38,7 @@ local camera = require("trackers.camera")
 local charge = require("trackers.charge")
 local dragons = require("trackers.dragons")
 local flames = require("trackers.flames")
+local flight = require("trackers.flight")
 local movement = require("trackers.movement")
 local supercharge = require("trackers.supercharge")
 local thieves = require("trackers.thieves")
@@ -94,6 +96,7 @@ local function sample()
     flames.update(r, frameTime)
     quicksave.update(pawn, pc, cmc, r)
     walkin.update(pc, cmc, r, prev)
+    flight.update(pawn, cmc, r, prev)
 
     trace.writeRow(r)
     state.prevRow = r

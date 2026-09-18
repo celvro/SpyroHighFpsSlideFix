@@ -2,7 +2,7 @@
 
 ## Code layout
 
-`main.lua` holds `sample()` (one row per unpaused frame, handed to every tracker in order), the key binds and the `NotifyOnNewObject` hooks. `lib/row.lua` builds the row, `lib/trace.lua` writes it to `trace_*.csv` (column list there), and `lib/state.lua` holds what trackers share: the previous row, the last 10 rows, and the measurement each tracker has in progress (the CSV's id columns). Each `trackers/*.lua` module documents its own log lines in its header: `movement` (seg/drift/rise), `charge` (charge/turn), `camera` (camlock/camstuck/camtransition/camdump), `supercharge`, `dragons`, `thieves`, `flames` (plus the K experiment), `walkin`. The quicksave aid is `tools/quicksave.lua`, with level streaming queries in `lib/levels.lua`.
+`main.lua` holds `sample()` (one row per unpaused frame, handed to every tracker in order), the key binds and the `NotifyOnNewObject` hooks. `lib/row.lua` builds the row, `lib/trace.lua` writes it to `trace_*.csv` (column list there), and `lib/state.lua` holds what trackers share: the previous row, the last 10 rows, and the measurement each tracker has in progress (the CSV's id columns). Each `trackers/*.lua` module documents its own log lines in its header: `movement` (seg/drift/rise), `charge` (charge/turn), `camera` (camlock/camstuck/camtransition/camdump), `supercharge`, `dragons`, `thieves`, `flames` (plus the K experiment), `walkin`, `flight` (Spyro 1 flight levels: per-second speed, MaxFlySpeed ramps, run totals). The quicksave aid is `tools/quicksave.lua`, with level streaming queries in `lib/levels.lua`.
 
 ## Quicksave (V / B / L / N, added 2026-09-17)
 
