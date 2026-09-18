@@ -23,6 +23,7 @@ Investigation logs live in `docs/`; each fix module in `ue4ss/Mods/HighFpsSlidin
 | `docs/findings/frame-spikes.md` | Hitches from `StaticFindObject` misses | fixed, verified |
 | `docs/findings/charge-wall-stall.md` | Charge stalls against walls at high FPS (zero-displacement blocked frames) | fixed, verified |
 | `docs/findings/flame-breath.md` | Stray flame lines (`hard_flames_velocity_muzzle`) | fixed (velocity scaling) |
+| `docs/findings/balloon-camera.md` | Camera whirls around the balloonist's balloon (0.5 deg per tick timeline) | fixed, verified |
 | `docs/ue4ss.md` | UE4SS install details, profiling history, Lua GC experiments | reference |
 | `docs/tools.md` | Full packaging/Vortex/tool notes | reference |
 | `docs/probe.md` | Probe mod: log lines, CSV columns, hotkeys, quicksave, level streaming | reference |
@@ -60,6 +61,25 @@ So `chunk1\Plugins\Levels\...` is the game path `Falcon/Plugins/Levels/...`. Pro
 - `PROFILE` in `Scripts/config.lua` must be `false` in commits.
 - The mod folder and `[HighFpsSlidingAndJumpFix]` log prefix keep the old name on purpose: renaming would leave older installs loaded alongside and apply every fix twice.
 - Disassembly: the exe's `.text` is SteamStub-encrypted on disk. `tools/Read-GameVtables.ps1 -OutExe` writes a copy with the decrypted `.text` from the running game, then use `dumpbin /DISASM /RANGE:...` (VS 2022). Native reflection names are plain strings in the exe; `tools/Find-PropertyParams.ps1` finds property offsets.
+
+## Hooking a Blueprint function (fix recipe)
+
+Examples: `fixes/balloon.lua` and `fixes/dragon.lua` (level Blueprints), `fixes/dust.lua` (Spyro's Blueprint).
+
+1. **Find the code**: `build/AssetDump/AssetDump.exe <file.uasset> --code`. Most Blueprint logic is in `ExecuteUbergraph_<Class>`. Event and timeline stubs just jump into it, e.g. `Timeline_0__UpdateFunc` → `ExecuteUbergraph_X(7650)`, so read from that offset. Timeline lengths are in the `*_Template` exports. Timeline update functions run once per tick, so any fixed step inside one is per frame.
+2. **Function path**: `/<Plugin>/<path under Content>/<Asset>.<Asset>_C:<Function>`, where the plugin is the folder under `Falcon/Plugins/`. Example: `chunk0\Falcon\Plugins\GameplayCommon\Content\LevelMechanics\...\BalloonTransporter.uasset` → `/GameplayCommon/LevelMechanics/.../BalloonTransporter.BalloonTransporter_C:Timeline_0__UpdateFunc`.
+3. **Look it up without polling**: at load, call `lookup.watch("/Script/Engine.BlueprintGeneratedClass", "<Asset>_C", state)`, where `state` has `retryIn = 0, lookups = 1`. Then in `update()` call `lookup.find(state, path)`, which only spends lookups granted when the class is created.
+4. **Register the hook**:
+   - **Classes that stay loaded** (the player Blueprint): use `lookup.registerBlueprintHook(state, path, cb, cb, name)` once.
+   - **Level Blueprints**: the function object is replaced every time the level loads, so compare `fn:GetAddress()` against the last hooked address and call `RegisterHook` again when it changes. `RegisterHook` can fail while the level is still loading (`UFunction::Func 0x0`), so keep `lookups >= 1` and retry, and give up after `lookup.MAX_FAILURES`.
+   - Put fixes that only hook or patch level content in `levelFixes` in `main.lua`: they run without a pawn. Fixes that act on Spyro go in `pawnFixes`.
+5. **Callback**: `context:get()` is `self`, and parameters are read with `param:get()`. The callback runs after the body (see Rules), so correct the result rather than the inputs. Wrap it in a guarded function: on the first error, `pcall` the body, set `fix.failed`, undo engine changes and log it once. Make it idempotent: act once per call, e.g. keyed on `engine.frame` plus the actor address.
+6. **Inside the callback**:
+   - For dt, use `engine.worldDeltaSeconds(actor)` (times the actor's `CustomTimeDilation` if the Blueprint's timing uses it), not `engine.dt`, which is from the tick.
+   - Leave frames alone unless `util.aboveReferenceFps(dt)`.
+   - Pass out-params (e.g. `SweepHitResult`) and struct arguments as tables reused at module level, so the hook doesn't allocate every frame.
+   - To move a component, call its `K2_Set*`/`K2_Add*` function. Writing `RelativeRotation`/`RelativeLocation` directly doesn't update the transform.
+7. **Wire it up**: add a `FIX_*` switch to `config.lua`, the module to `main.lua`, a findings doc plus a row in the table above, and a `README.txt` line once it's verified.
 
 ## Repo layout
 

@@ -55,6 +55,9 @@ Fixes (numbers were recorded in game at 30 FPS and at 144 FPS, before and after 
   stopping dead until he turns away from it. At 30 FPS he slides along it.
     Frames touching a wall where he stops dead:  30 FPS none  |  320 FPS before 275 of 781  |  after 17 of 1213,
     each followed by a normal frame, so he keeps his speed
+- Balloonist (Spyro 1): at the end of the loading screen after taking a balloon, the camera whirls
+  around the balloon instead of drifting slowly.
+    Camera turn speed:  30 FPS 15 deg/s  |  320 FPS before 160 deg/s  |  after 15 deg/s
 
 Requirements
 - UE4SS experimental build (https://github.com/UE4SS-RE/RE-UE4SS/releases/tag/experimental-latest).

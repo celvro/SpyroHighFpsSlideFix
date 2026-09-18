@@ -30,6 +30,7 @@ local camera = require("fixes.camera")
 local levelFixes = {
     require("fixes.druid"),
     require("fixes.dragon"),
+    require("fixes.balloon"),
 }
 -- Fixes that act on Spyro, in the order the tick runs them.
 local pawnFixes = {
