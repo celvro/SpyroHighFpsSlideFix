@@ -16,6 +16,12 @@ Spyro Reignited Trilogy was tuned for 30 FPS. At higher framerates Spyro handles
 - **Fireworks Factory dragons:** the segments are much too short, making them extremely hard to hit.
 - **Flame breath:** long stray flame streaks stick out of Spyro's flame, pointing up or sideways.
 - **Freed dragons (Spyro 1):** after you touch a dragon statue, Spyro's walk up to his spot in front of the dragon starts late and crawls at very high framerates (~500 FPS), so he only gets there near the end of the dragon's animation.
+- **Glide distance:** a glide goes up to 1% further or shorter than at 30 FPS depending on which way Spyro faces (glide speed 364.0–370.7 at 320 FPS instead of 367.4).
+- **Glide start:** a glide pressed early in a jump starts while Spyro is still rising, about 5 units lower after a full jump.
+- **Walls:** Spyro can get stuck against a wall or pole he's charging or running along, crawling or stopping dead until he turns away.
+- **Balloonist (Spyro 1):** as the loading screen after a balloon ride ends, the camera whirls around the balloon (160°/s at 320 FPS instead of 15°/s).
+- **Buzz (Spyro 3 boss):** his running attack often plays the run animation without moving, and after his rolling attack he can keep sliding.
+- **Sheila in the Buzz fight:** she stands still or crawls between her spots, so she can be on the far side of the arena when it's time to stomp Buzz.
 
 `ue4ss/Mods/HighFpsSlidingAndJumpFix/README.txt` and `nexus-description.bbcode` list the recorded before/after numbers for each fix.
 
@@ -78,7 +84,7 @@ Spyro Reignited Trilogy\Falcon\Binaries\Win64\ue4ss\UE4SS.log
 Near the end you should see:
 
 ```
-[HighFpsSlidingAndJumpFix] v1.4.0 loaded
+[HighFpsSlidingAndJumpFix] v1.5.0 loaded
 ```
 
 ## Troubleshooting

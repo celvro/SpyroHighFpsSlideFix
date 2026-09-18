@@ -1,9 +1,9 @@
 [center][size=6][b]Spyro High FPS Gameplay Fixes[/b][/size]
-[size=3]Play Spyro Reignited Trilogy at high framerates and have it play exactly like it does at 30 FPS: same jumps, same stops, same charge, same camera, wizards that keep working, and fire dragons you can actually hit.[/size][/center]
+[size=3]Play Spyro Reignited Trilogy at high framerates and have it play exactly like it does at 30 FPS: same jumps and glides, same stops, same charge, same camera, wizards that keep working, fire dragons you can actually hit, and a Buzz fight that works.[/size][/center]
 [line]
 [size=5][b]Disclaimer: AI-generated code[/b][/size]
 [b]All of the code in this mod was written by AI[/b] (Claude Opus 5), under my direction. That includes the Lua mod itself and every tool used to investigate the bugs. My part was directing the work and testing everything in game.
-The bugs were measured with frame-by-frame recordings of the game, and I tested the fixes in game at 30 and 144 FPS. Even so, please keep in mind that no human wrote this code by hand. Bug reports are welcome in the Posts or Bugs tab.
+The bugs were measured with frame-by-frame recordings of the game, and I tested the fixes in game at 30 FPS and at 144 FPS or higher (up to about 550 FPS). Even so, please keep in mind that no human wrote this code by hand. Bug reports are welcome in the Posts or Bugs tab.
 [line]
 [size=5][b]What it fixes[/b][/size]
 Spyro Reignited Trilogy was made for 30 FPS. At higher framerates the game quietly plays differently:
@@ -20,12 +20,18 @@ Spyro Reignited Trilogy was made for 30 FPS. At higher framerates the game quiet
 [*][b]Fire dragons in Fireworks Factory:[/b] the dragons' body sections bunch up right behind the head, which makes them much harder to hit.[/*]
 [*][b]Flame breath:[/b] long, thin flame streaks stick out of Spyro's flame, pointing straight up, sideways or diagonally.[/*]
 [*][b]Freed dragons (Spyro 1):[/b] after touching a dragon statue, Spyro starts his walk up to the dragon late and walks too slowly at very high framerates (~500 FPS), so he barely gets there.[/*]
+[*][b]Glide distance:[/b] a glide goes up to 1% further or shorter depending on which way Spyro faces.[/*]
+[*][b]Glide start:[/b] a glide pressed early in a jump starts while Spyro is still rising, so it starts lower and ends shorter.[/*]
+[*][b]Walls:[/b] Spyro can get stuck against a wall or pole he's charging or running along, crawling or stopping dead until he turns away.[/*]
+[*][b]Balloonist (Spyro 1):[/b] as the loading screen after a balloon ride ends, the camera whirls around the balloon instead of drifting slowly.[/*]
+[*][b]Buzz (Spyro 3 boss):[/b] his running attack often plays the run animation without moving, and after his rolling attack he can keep sliding.[/*]
+[*][b]Sheila in the Buzz fight:[/b] she stands still or crawls between her spots, so she can be on the far side of the arena when it's time to stomp Buzz.[/*]
 [/list]
 With this mod, all of these behave [b]the same as at 30 FPS[/b], at any framerate (the camera lock is fixed at every framerate).
 [b]At 30 FPS the mod changes nothing[/b], except the camera lock fix, which fixes a bug the game also has at 30 FPS.
 [line]
 [size=5][b]Before and after[/b][/size]
-Every number below was recorded in game with a frame-by-frame logger, at 30 FPS and at 144 FPS with and without the mod. The goal is for "144 FPS with the mod" to match "30 FPS".
+Every number below was recorded in game with a frame-by-frame logger, at 30 FPS and at a high framerate (144 FPS unless stated) with and without the mod. The goal is for the high framerate with the mod to match 30 FPS.
 
 [size=4][b]Sliding[/b][/size]
 How long Spyro takes to stop after you let go of the stick:
@@ -112,6 +118,49 @@ After touching a dragon statue, when Spyro reaches his spot and when he turns to
 [*]About 500 FPS without the mod: [color=#ff6666][b]starts about 0.25 s late and walks at 100 to 200 instead of 268[/b][/color], reaching the spot near the end of the dragon's animation[/*]
 [*]About 365 FPS with the mod: [color=#6aa84f][b]arrives at 1.21 s, turns at 1.46 s[/b][/color][/*]
 [/list]
+[size=4][b]Glide distance[/b][/size]
+Glide speed over the ground (game units per second):
+[list]
+[*]30 FPS: [b]367.4[/b][/*]
+[*]320 FPS without the mod: [color=#ff6666][b]364.0 to 370.7[/b][/color], depending on direction (up to about 45 units over a long glide)[/*]
+[*]320 FPS with the mod: [color=#6aa84f][b]366.8 to 366.9[/b][/color][/*]
+[/list]
+[size=4][b]Glide start[/b][/size]
+Glide start height after a full jump with glide pressed early:
+[list]
+[*]30 FPS: [b]68.0[/b][/*]
+[*]320 FPS without the mod: [color=#ff6666][b]62.9[/b][/color][/*]
+[*]320 FPS with the mod: [color=#6aa84f][b]starts at the same moment as at 30 FPS[/b][/color][/*]
+[/list]
+[size=4][b]Walls[/b][/size]
+Frames touching a wall where Spyro stops dead:
+[list]
+[*]30 FPS: [b]none[/b][/*]
+[*]320 FPS without the mod: [color=#ff6666][b]275 of 781[/b][/color][/*]
+[*]320 FPS with the mod: [color=#6aa84f][b]17 of 1213[/b][/color], each followed by a normal frame, so he keeps his speed[/*]
+[/list]
+[size=4][b]Balloonist[/b][/size]
+How fast the camera turns around the balloon at the end of the loading screen:
+[list]
+[*]30 FPS: [b]15° per second[/b][/*]
+[*]320 FPS without the mod: [color=#ff6666][b]160° per second[/b][/color][/*]
+[*]320 FPS with the mod: [color=#6aa84f][b]15° per second[/b][/color][/*]
+[/list]
+[size=4][b]Buzz[/b][/size]
+How far his running attack takes him in its 2 seconds (game units):
+[list]
+[*]30 FPS: [b]980 to 1100[/b][/*]
+[*]320 to 550 FPS without the mod: [color=#ff6666][b]0 to 930[/b][/color] (often standing still for up to half a second, sometimes the whole attack)[/*]
+[*]320 to 550 FPS with the mod: [color=#6aa84f][b]970 to 1080[/b][/color][/*]
+[/list]
+Stopping after his rolling attack: 30 FPS [b]0.13 s[/b] · without the mod [color=#ff6666][b]up to 1.3 s[/b][/color] · with the mod [color=#6aa84f][b]0.09 s[/b][/color]
+[size=4][b]Sheila in the Buzz fight[/b][/size]
+How long Sheila takes to reach full walking speed:
+[list]
+[*]30 FPS: [b]0.20 s[/b][/*]
+[*]400 to 530 FPS without the mod: [color=#ff6666][b]0.4 to 1.1 s, or never[/b][/color] (short walks cover 5 to 60 units instead of 100 to 250)[/*]
+[*]380 to 550 FPS with the mod: [color=#6aa84f][b]0.17 to 0.18 s[/b][/color][/*]
+[/list]
 [spoiler]
 [b]Why these happen, in plain words[/b]
 
@@ -151,7 +200,25 @@ Each frame, every body section moves part of the way towards the section in fron
 Close to Spyro's mouth, the flame has a small effect of long, thin streaks that point the way they're moving. They move very slowly, and the game works out their direction from how far they moved since the last frame. At very high framerates that distance is so tiny that the direction becomes unreliable, and a streak can flip to point straight up or sideways. The mod makes those streaks move as far each frame as they do at 30 FPS, so they keep pointing the way they move.
 
 [b]Freed dragons[/b]
-When you touch a dragon statue, the game walks Spyro to his spot the same way it walks computer-controlled characters, with no stick input. At around 500 FPS that walk runs into the same position rounding as the sliding bug: the first step rounds to nothing, and after that the walking speed snaps to rounded values. The mod now recognizes the scripted walk and applies the speed-up the game intended, like it does for normal walking.[/spoiler]
+When you touch a dragon statue, the game walks Spyro to his spot the same way it walks computer-controlled characters, with no stick input. At around 500 FPS that walk runs into the same position rounding as the sliding bug: the first step rounds to nothing, and after that the walking speed snaps to rounded values. The mod now recognizes the scripted walk and applies the speed-up the game intended, like it does for normal walking.
+
+[b]Glide distance[/b]
+The same position rounding also nudges every step of a glide slightly, more in some directions than others. Over a long glide that adds up to as much as 45 units. The mod keeps the glide moving exactly as far each step as the game intended.
+
+[b]Glide start[/b]
+After a jump, the game only lets a glide start once a 0.3 second wait is over, and that wait begins one frame into the jump. At 30 FPS that first frame is 1/30 of a second long, so an early-pressed glide starts later, when Spyro has risen higher. At high framerates the first frame is so short that the glide starts about 0.03 seconds sooner, lower down. The mod starts the glide at the same moment as at 30 FPS.
+
+[b]Walls[/b]
+Running or charging along a wall, each short step is so small that rounding can leave both the step and its slide along the wall pointing into the wall. The step is blocked, the game sets Spyro's speed to zero, and from zero the next steps are too small to get going. The mod slides his speed along the wall the way a 30 FPS step does.
+
+[b]Balloonist[/b]
+At the end of the balloon's loading screen, the camera turns around the balloon by a fixed half degree every frame. That's 15° per second at 30 FPS, but more than ten times faster at 320 FPS. The mod turns it by the same amount per second as at 30 FPS.
+
+[b]Buzz[/b]
+Buzz's arena also sits far from the center of the world. His running attack builds up his speed from how far he moved the frame before, and at high framerates his first step from standing still rounds to nothing. So he runs in place until a hitch gets him going, and even then he can stay stuck at a crawl. Once his rolling attack ends, his braking hits the same rounding as Spyro's sliding. The mod keeps track of the speed the game intended for him, as it does for Spyro.
+
+[b]Sheila[/b]
+Sheila walks between spots around Buzz's arena, and her first step from standing still rounds to nothing in the same way. She stands still or crawls, and can end up far from Buzz when it's time for the stomp. The mod keeps track of her intended speed too.[/spoiler]
 [line]
 [size=5][b]Requirements[/b][/size]
 [list]
@@ -179,7 +246,7 @@ The folder keeps the mod's original name, so a new version replaces an older one
 Start the game. No window or message appears in game; that's normal. Open this file in Notepad:
 [code]Spyro Reignited Trilogy\Falcon\Binaries\Win64\ue4ss\UE4SS.log[/code]
 Near the end you should see a line like this (the number is the mod version):
-[code][HighFpsSlidingAndJumpFix] v1.4.0 loaded[/code]
+[code][HighFpsSlidingAndJumpFix] v1.5.0 loaded[/code]
 [line]
 [size=5][b]Troubleshooting[/b][/size]
 [list]
