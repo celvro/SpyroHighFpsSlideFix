@@ -16,6 +16,7 @@ return {
     FIX_DRAGON_SEGMENTS = true,           -- false: the bunched-up fire dragons
     FIX_FLAME_MUZZLE_LINES = true,        -- false: the stray lines in the flame breath
     FIX_BALLOON_CAMERA_SPIN = true,       -- false: the camera whirling around the balloonist's balloon
+    FIX_BUZZ_CHARGE_RUN = true,           -- false: Buzz running in place, and sliding after his rolls
 
     PROFILE = false,                     -- log the fixes' per-frame cost to UE4SS.log
     PROFILE_INTERVAL = 10,                -- seconds between profile log lines

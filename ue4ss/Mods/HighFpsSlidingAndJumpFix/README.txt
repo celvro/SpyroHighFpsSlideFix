@@ -58,6 +58,10 @@ Fixes (numbers were recorded in game at 30 FPS and at 144 FPS, before and after 
 - Balloonist (Spyro 1): at the end of the loading screen after taking a balloon, the camera whirls
   around the balloon instead of drifting slowly.
     Camera turn speed:  30 FPS 15 deg/s  |  320 FPS before 160 deg/s  |  after 15 deg/s
+- Buzz (Spyro 3 boss): at high FPS his running attack often plays the run animation without moving,
+  or crawls along, until a frame hitch gets him going.
+    Running attack distance in 2 s:  30 FPS 980-1100  |  320-550 FPS before 0-930  |  after 970-1080
+  After his rolling attack he could keep sliding instead of stopping; he now stops in under 0.1 s, as at 30 FPS.
 
 Requirements
 - UE4SS experimental build (https://github.com/UE4SS-RE/RE-UE4SS/releases/tag/experimental-latest).

@@ -14,6 +14,7 @@
 --   trace_<stamp>.csv    one row per frame (columns in lib/trace.lua)
 --   thieves_<stamp>.csv  one row per frame per active thief (trackers/thieves.lua)
 --   flames_<stamp>.csv   one row per frame per active flame (trackers/flames.lua)
+--   buzz_<stamp>.csv     one row per frame while Buzz exists (trackers/buzz.lua)
 --   hits_<stamp>.csv     one row per blocking hit during a ground charge (trackers/hits.lua)
 --   camdump_*.txt        every reflected FollowCameraComponent property (trackers/camera.lua)
 --   log lines            "seg", "drift", "rise" (trackers/movement.lua); "charge", "turn" (trackers/charge.lua);
@@ -22,7 +23,7 @@
 --                        "thief" (trackers/thieves.lua); "flame" (trackers/flames.lua); "walkin"
 --                        (trackers/walkin.lua); "glide", "hover", "glideair" (trackers/glide.lua);
 --                        "flight", "flightramp", "flightrun" (trackers/flight.lua);
---                        "chargestall" (trackers/hits.lua);
+--                        "chargestall" (trackers/hits.lua); "buzzrun" (trackers/buzz.lua);
 --                        quicksave, reload and travel lines (tools/quicksave.lua); "glidetest" (tools/glidetest.lua)
 --
 -- Scripts/
@@ -38,6 +39,7 @@ local row = require("lib.row")
 local state = require("lib.state")
 local trace = require("lib.trace")
 local util = require("lib.util")
+local buzz = require("trackers.buzz")
 local camera = require("trackers.camera")
 local charge = require("trackers.charge")
 local dragons = require("trackers.dragons")
@@ -100,9 +102,11 @@ local function sample()
         state.pawnAddress = pawnAddress
         dragons.pawnChanged()
         thieves.pawnChanged()
+        buzz.pawnChanged()
         flames.rescan()
     end
     thieves.update(r, prev)
+    buzz.update(r, prev)
     flames.update(r, frameTime)
     quicksave.update(pawn, pc, cmc, r)
     glidetest.update(pawn, pc, cmc, r)
@@ -145,6 +149,7 @@ NotifyOnNewObject("/Script/Engine.ParticleSystemComponent", flames.onNewComponen
 -- Level Blueprint classes load with their level; look for their instances for a while afterwards.
 local levelClasses = { [dragons.CLASS] = dragons }
 for className in pairs(thieves.CLASSES) do levelClasses[className] = thieves end
+for className in pairs(buzz.CLASSES) do levelClasses[className] = buzz end
 NotifyOnNewObject("/Script/Engine.BlueprintGeneratedClass", function(object)
     local ok, name = pcall(function() return object:GetFName():ToString() end)
     local tracker = ok and levelClasses[name]

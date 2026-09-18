@@ -6,6 +6,7 @@ util.MIN_TICK_TIME = 1e-6   -- the engine's own "did any time pass" threshold (U
 util.REFERENCE_FPS = 30     -- the framerate the game was tuned at; every fix reproduces its behaviour
 util.REFERENCE_DT = 1 / 30
 util.MOVE_WALKING = 1       -- EMovementMode values we care about
+util.MOVE_NAV_WALKING = 2   -- AI walking on the navmesh (Buzz's ChargeRun)
 util.MOVE_FALLING = 3
 
 -- True while a frame is shorter than a 30 FPS frame, i.e. while there is anything to fix. Frames

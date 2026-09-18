@@ -14,6 +14,9 @@ local profile = { frames = 0, cost = 0, maxCost = 0, timerCost = 0, frameTime = 
 -- is that same delta but specifically on the frame that had the window's maxCost, to see whether the
 -- worst-cost frame is also the frame a collection landed in.
 local gcProfile = { collections = 0, minDelta = nil, maxCostGcDelta = nil, totalDelta = 0 }
+-- Hook callbacks (profiler.wrapHook) run outside the tick, so they are timed separately: name ->
+-- { calls, cost, maxCall }, folded into the same window.
+local hookProfile = {}
 
 local function describeTable(t)
     local parts = {}
@@ -84,6 +87,13 @@ function profiler.wrap(runTick)
                     gcProfile.maxCostGcDelta and string.format("%.1f KB", gcProfile.maxCostGcDelta) or "n/a")
                 gcProfile.collections, gcProfile.minDelta, gcProfile.maxCostGcDelta, gcProfile.totalDelta = 0, nil, nil, 0
             end
+            for name, h in pairs(hookProfile) do
+                if h.calls > 0 then
+                    log("profile hook %s: %d calls, avg %.3f ms/frame (%.2f%% of frame), avg %.3f ms/call, max %.3f ms",
+                        name, h.calls, h.cost / n * 1000, h.cost / profile.frameTime * 100, h.cost / h.calls * 1000, h.maxCall * 1000)
+                end
+                h.calls, h.cost, h.maxCall = 0, 0, 0
+            end
             profile.frames, profile.cost, profile.maxCost, profile.timerCost, profile.frameTime = 0, 0, 0, 0, 0
             profile.windowStart = t2
         end
@@ -97,6 +107,31 @@ function profiler.wrap(runTick)
             profilingFailed = true
             log("profiling disabled after error: %s", tostring(err))
         end
+    end
+end
+
+-- Wraps a hook callback so its cost shows up in the profile window as its own line. Returns the
+-- callback unchanged when profiling is off. The clock needs a context object: the player controller.
+function profiler.wrapHook(name, callback)
+    if not config.PROFILE then return callback end
+    local h = { calls = 0, cost = 0, maxCall = 0 }
+    hookProfile[name] = h
+    local failed = false
+    return function(...)
+        local pc = not failed and engine.getPlayerController()
+        if not pc then return callback(...) end
+        local statics = engine.getGameplayStatics()
+        local ok, t0 = pcall(accurateSeconds, statics, pc)
+        if not ok then
+            failed = true
+            log("hook profiling disabled for %s after error: %s", name, tostring(t0))
+            return callback(...)
+        end
+        local t1 = accurateSeconds(statics, pc)
+        callback(...)
+        local t2 = accurateSeconds(statics, pc)
+        local cost = math.max(0, (t2 - t1) - (t1 - t0))
+        h.calls, h.cost, h.maxCall = h.calls + 1, h.cost + cost, math.max(h.maxCall, cost)
     end
 end
 

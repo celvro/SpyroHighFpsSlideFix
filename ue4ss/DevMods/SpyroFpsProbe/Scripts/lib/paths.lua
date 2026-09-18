@@ -9,5 +9,6 @@ return {
     trace = string.format("%s\\trace_%s.csv", modDir, stamp),
     thieves = string.format("%s\\thieves_%s.csv", modDir, stamp), -- created with the first active thief
     flames = string.format("%s\\flames_%s.csv", modDir, stamp),   -- created with the first flame
+    buzz = string.format("%s\\buzz_%s.csv", modDir, stamp),         -- created when Buzz is found
     spots = modDir .. "\\spots.txt",
 }
