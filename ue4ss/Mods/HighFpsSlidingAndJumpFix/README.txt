@@ -62,6 +62,9 @@ Fixes (numbers were recorded in game at 30 FPS and at 144 FPS, before and after 
   or crawls along, until a frame hitch gets him going.
     Running attack distance in 2 s:  30 FPS 980-1100  |  320-550 FPS before 0-930  |  after 970-1080
   After his rolling attack he could keep sliding instead of stopping; he now stops in under 0.1 s, as at 30 FPS.
+- Sheila (Buzz fight): at high FPS she often stands still or crawls between her patrol spots, so she can
+  still be on the far side of the arena when Buzz catches fire and needs longer to reach him for the stomp.
+    Time to reach full walking speed:  30 FPS 0.20 s  |  400-530 FPS before 0.4-1.1 s or never  |  after 0.17-0.18 s
 
 Requirements
 - UE4SS experimental build (https://github.com/UE4SS-RE/RE-UE4SS/releases/tag/experimental-latest).

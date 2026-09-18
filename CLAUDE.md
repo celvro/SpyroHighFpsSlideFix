@@ -25,6 +25,7 @@ Investigation logs live in `docs/`; each fix module in `ue4ss/Mods/HighFpsSlidin
 | `docs/findings/flame-breath.md` | Stray flame lines (`hard_flames_velocity_muzzle`) | fixed (velocity scaling) |
 | `docs/findings/balloon-camera.md` | Camera whirls around the balloonist's balloon (0.5 deg per tick timeline) | fixed, verified |
 | `docs/findings/buzz-charge-run.md` | Spyro 3 boss Buzz runs in place (car movement from rest rounds to zero), slides after rolls | fixed, verified |
+| `docs/findings/sheila-buzz-walk.md` | Sheila stalls and crawls around Buzz's arena (requested moves from rest round to zero) | fixed, verified |
 | `docs/ue4ss.md` | UE4SS install details, profiling history, Lua GC experiments | reference |
 | `docs/tools.md` | Full packaging/Vortex/tool notes | reference |
 | `docs/probe.md` | Probe mod: log lines, CSV columns, hotkeys, quicksave, level streaming | reference |
@@ -72,7 +73,7 @@ Examples: `fixes/balloon.lua` and `fixes/dragon.lua` (level Blueprints), `fixes/
 3. **Look it up without polling**: at load, call `lookup.watch("/Script/Engine.BlueprintGeneratedClass", "<Asset>_C", state)`, where `state` has `retryIn = 0, lookups = 1`. Then in `update()` call `lookup.find(state, path)`, which only spends lookups granted when the class is created.
 4. **Register the hook**:
    - **Classes that stay loaded** (the player Blueprint): use `lookup.registerBlueprintHook(state, path, cb, cb, name)` once.
-   - **Level Blueprints**: the function object is replaced every time the level loads, so compare `fn:GetAddress()` against the last hooked address and call `RegisterHook` again when it changes. `RegisterHook` can fail while the level is still loading (`UFunction::Func 0x0`), so keep `lookups >= 1` and retry, and give up after `lookup.MAX_FAILURES`.
+   - **Level Blueprints** (and characters that load with a level, like bosses): the function object is replaced every time the level loads, so compare `fn:GetAddress()` against the last hooked address and call `RegisterHook` again when it changes. `RegisterHook` can fail while the level is still loading (`UFunction::Func 0x0`), so keep `lookups >= 1` and retry, and give up after `lookup.MAX_FAILURES`. `lookup.hookLevelFunction(target, cb, name)` does all of this (used by `fixes/buzz.lua` and `fixes/sheila.lua`).
    - Put fixes that only hook or patch level content in `levelFixes` in `main.lua`: they run without a pawn. Fixes that act on Spyro go in `pawnFixes`.
 5. **Callback**: `context:get()` is `self`, and parameters are read with `param:get()`. The callback runs after the body (see Rules), so correct the result rather than the inputs. Wrap it in a guarded function: on the first error, `pcall` the body, set `fix.failed`, undo engine changes and log it once. Make it idempotent: act once per call, e.g. keyed on `engine.frame` plus the actor address. Wrap it in `profiler.wrapHook(name, cb)`: hooks run outside the timed tick, so that is the only way `PROFILE` measures them.
 6. **Inside the callback**:

@@ -41,6 +41,29 @@ function lookup.registerBlueprintHook(state, path, pre, post, name)
     end
 end
 
+-- Hooks a function of a Blueprint that loads with a level. Its function object is replaced when the
+-- level loads again, so `target` (a lookup state with `path`, `class`, `hooked`, `failures`) is hooked
+-- again whenever the looked-up function's address changes. RegisterHook can fail while the level is
+-- still loading (UFunction::Func 0x0), so failures are retried, up to MAX_FAILURES. Returns "hooked"
+-- when it registered the hook, "failed" when it gave up, else nil.
+function lookup.hookLevelFunction(target, callback, name)
+    local fn = lookup.find(target, target.path)
+    if not fn then return nil end
+    local address = fn:GetAddress()
+    if address == target.hooked then target.lookups = 0 return nil end
+    target.lookups = math.max(target.lookups, 1)
+    local ok, err = pcall(RegisterHook, target.path, callback, callback)
+    if ok then
+        target.hooked, target.lookups, target.failures = address, 0, 0
+        log("%s hook registered (%s)", name, target.class)
+        return "hooked"
+    end
+    target.failures = (target.failures or 0) + 1
+    if target.failures < lookup.MAX_FAILURES then return nil end
+    log("%s disabled: RegisterHook failed: %s", name, tostring(err))
+    return "failed"
+end
+
 local watched = {} -- class path -> { object name -> lookup state }
 
 -- Grants `state` fresh lookups whenever an object called `name` of that class is created.

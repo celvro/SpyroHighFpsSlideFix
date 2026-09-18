@@ -139,30 +139,12 @@ local onTick = profiler.wrapHook("buzz", function(context)
     end
 end)
 
--- RegisterHook can fail while the level is still loading (UFunction::Func 0x0), so failures are
--- retried, up to lookup.MAX_FAILURES.
-local function registerHook(hook)
-    local fn = lookup.find(hook, hook.path)
-    if not fn then return end
-    local address = fn:GetAddress()
-    if address == hook.hooked then hook.lookups = 0 return end
-    hook.lookups = math.max(hook.lookups, 1)
-    local ok, err = pcall(RegisterHook, hook.path, onTick, onTick)
-    if ok then
-        hook.hooked, hook.lookups, hook.failures = address, 0, 0
-        tracked, handled = {}, {}
-        log("%s hook registered (%s)", fix.name, hook.class)
-    else
-        hook.failures = hook.failures + 1
-        if hook.failures >= lookup.MAX_FAILURES then
-            fix.failed = true
-            log("%s disabled: RegisterHook failed: %s", fix.name, tostring(err))
-        end
-    end
-end
-
 function fix.update()
-    for _, hook in ipairs(hooks) do registerHook(hook) end
+    for _, hook in ipairs(hooks) do
+        local result = lookup.hookLevelFunction(hook, onTick, fix.name)
+        if result == "hooked" then tracked, handled = {}, {} end
+        if result == "failed" then fix.failed = true end
+    end
 end
 
 if fix.enabled then
