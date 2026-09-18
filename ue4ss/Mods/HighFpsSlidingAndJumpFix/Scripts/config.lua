@@ -3,6 +3,7 @@
 -- next to the findings that explain them.
 return {
     FIX_WALKING_ACCELERATION = true,      -- false: only fix braking (the original sliding fix)
+    FIX_WALL_SLIDE = true,                -- false: blocked frames against walls reset the velocity (charge stalls)
     FIX_CHARGE_TURN_SLIP = true,          -- false: the unfixed charge turn
     FIX_MOUSE_CHARGE_STEERING = true,     -- false: the unfixed mouse charge steering
     FIX_CAMERA_CENTERING = true,          -- false: the unfixed camera centering

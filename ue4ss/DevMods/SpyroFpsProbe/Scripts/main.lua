@@ -13,12 +13,14 @@
 --   trace_<stamp>.csv    one row per frame (columns in lib/trace.lua)
 --   thieves_<stamp>.csv  one row per frame per active thief (trackers/thieves.lua)
 --   flames_<stamp>.csv   one row per frame per active flame (trackers/flames.lua)
+--   hits_<stamp>.csv     one row per blocking hit during a ground charge (trackers/hits.lua)
 --   camdump_*.txt        every reflected FollowCameraComponent property (trackers/camera.lua)
 --   log lines            "seg", "drift", "rise" (trackers/movement.lua); "charge", "turn" (trackers/charge.lua);
 --                        "camlock", "camstuck", "camtransition", "camdump diff" (trackers/camera.lua);
 --                        "supercharge" (trackers/supercharge.lua); "dragon" (trackers/dragons.lua);
 --                        "thief" (trackers/thieves.lua); "flame" (trackers/flames.lua); "walkin"
 --                        (trackers/walkin.lua); "flight", "flightramp", "flightrun" (trackers/flight.lua);
+--                        "chargestall" (trackers/hits.lua);
 --                        quicksave, reload and travel lines (tools/quicksave.lua)
 --
 -- Scripts/
@@ -39,6 +41,7 @@ local charge = require("trackers.charge")
 local dragons = require("trackers.dragons")
 local flames = require("trackers.flames")
 local flight = require("trackers.flight")
+local hits = require("trackers.hits")
 local movement = require("trackers.movement")
 local supercharge = require("trackers.supercharge")
 local thieves = require("trackers.thieves")
@@ -50,6 +53,7 @@ local RECENT_FRAMES = 10
 
 local function sample()
     mouse.register()
+    hits.register()
     flames.beforeSample()
     local pc = UEHelpers.GetPlayerController()
     if not pc:IsValid() then return end
@@ -97,6 +101,7 @@ local function sample()
     quicksave.update(pawn, pc, cmc, r)
     walkin.update(pc, cmc, r, prev)
     flight.update(pawn, cmc, r, prev)
+    hits.update(r, prev)
 
     trace.writeRow(r)
     state.prevRow = r

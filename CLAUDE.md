@@ -21,6 +21,7 @@ Investigation logs live in `docs/`; each fix module in `ue4ss/Mods/HighFpsSlidin
 | `docs/findings/flight.md` | Spyro 1 flight level speed (MaxFlySpeed follows pitch) | matches 30 FPS |
 | `docs/findings/freed-dragon-walkin.md` | Walk-in after freeing a dragon (path following vs walking fix) | fixed, verified |
 | `docs/findings/frame-spikes.md` | Hitches from `StaticFindObject` misses | fixed, verified |
+| `docs/findings/charge-wall-stall.md` | Charge stalls against walls at high FPS (zero-displacement blocked frames) | fixed, verified |
 | `docs/findings/flame-breath.md` | Stray flame lines (`hard_flames_velocity_muzzle`) | fixed (velocity scaling) |
 | `docs/ue4ss.md` | UE4SS install details, profiling history, Lua GC experiments | reference |
 | `docs/tools.md` | Full packaging/Vortex/tool notes | reference |

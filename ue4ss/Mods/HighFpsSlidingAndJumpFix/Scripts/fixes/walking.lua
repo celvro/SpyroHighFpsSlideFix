@@ -14,16 +14,38 @@
 -- UCharacterMovementComponent::CalcVelocity, including ApplyRequestedMove while the controller's
 -- PathFollowingComponent is moving) and writes it back whenever the engine's value only differs
 -- by quantization. At low framerates the difference is negligible.
+--
+-- Wall slide (FIX_WALL_SLIDE)
+--
+-- Sliding along a wall at high FPS, a frame's move is under a unit, and rounding it to the 1/32
+-- lattice can leave the move and its slide both pointing into the wall: every sweep blocks at the
+-- start, the displacement is 0, and PhysWalking sets Velocity to 0. From 0, each move is too short to
+-- get anywhere, so Spyro stalls or locks against the wall until he turns away (charging, 2.3-35% of
+-- wall frames at 320 FPS, none at 30). At 30 FPS the same move slides along the wall and keeps the
+-- velocity's component along it. So above 30 FPS, when the engine leaves him slower than the predicted
+-- velocity projected along the walls he hit this frame (from a ReceiveHit hook), that projection is
+-- written instead.
 
 local config = require("config")
 local log = require("lib.log")
+local lookup = require("lib.lookup")
 local movement = require("lib.movement")
 local util = require("lib.util")
 
 local MIN_TICK_TIME = util.MIN_TICK_TIME
 local MOVE_WALKING = util.MOVE_WALKING
+local HIT_FUNCTION = "/CharacterCommon/BaseClasses/BP_Base_Playable.BP_Base_Playable_C:ReceiveHit"
+local MAX_WALL_HITS = 8     -- wall normals kept per frame
+local WALL_MAX_NZ = 0.7     -- steeper than this counts as a wall (walkable floors are nz >= ~0.71)
 
 local fix = { name = "walking velocity fix", enabled = true }
+
+-- Walls Spyro's own moves hit since the last update: 2D unit normals, as flat x1, y1, x2, y2, ...
+local walls = {
+    normals = {}, count = 0,
+    pawn = nil,        -- address of the pawn being fixed; hits on other actors are ignored
+    registered = false, failed = false, retryIn = 0, lookups = 1,
+}
 
 local tracked = nil -- { x, y, z } unquantized velocity carried from the previous frame
 local STILL = { 0, 0, 0 } -- tracked velocity while standing; never modified
@@ -63,8 +85,56 @@ local function pathRequest(pc, cmc)
     return result
 end
 
+-- Hooked on BP_Base_Playable's ReceiveHit, which the engine calls for every blocking hit of a move
+-- (the move itself, step-up and slide sweeps). Only records wall normals; the update uses them.
+local function onHit(context, myComp, other, otherComp, selfMoved, hitLocation, hitNormal)
+    if walls.count >= MAX_WALL_HITS or not selfMoved:get() then return end
+    if context:get():GetAddress() ~= walls.pawn then return end
+    local n = hitNormal:get()
+    local nx, ny, nz = n.X, n.Y, n.Z
+    if nz >= WALL_MAX_NZ then return end
+    local size = math.sqrt(nx * nx + ny * ny)
+    if size < 1e-3 then return end
+    local i = walls.count * 2
+    walls.normals[i + 1], walls.normals[i + 2] = nx / size, ny / size
+    walls.count = walls.count + 1
+end
+
+-- A hook error would repeat every frame, so the first one turns the wall slide off.
+local function onHitGuarded(...)
+    if walls.failed then return end
+    local ok, err = pcall(onHit, ...)
+    if not ok then
+        walls.failed = true
+        walls.count = 0
+        log("wall slide disabled after hook error: %s", tostring(err))
+    end
+end
+
+-- The predicted velocity with its component into each wall hit this frame removed, the way
+-- SlideAlongSurface redirects a move. Still into an earlier wall afterwards means a corner: 0.
+local function slideAlongWalls(vx, vy, count)
+    local normals = walls.normals
+    for i = 1, count * 2, 2 do
+        local into = vx * normals[i] + vy * normals[i + 1]
+        if into < 0 then vx, vy = vx - into * normals[i], vy - into * normals[i + 1] end
+    end
+    for i = 1, count * 2, 2 do
+        if vx * normals[i] + vy * normals[i + 1] < -1e-3 then return 0, 0 end
+    end
+    return vx, vy
+end
+
 function fix.update(ctx)
     local pawn, cmc, dt = ctx.pawn, ctx.cmc, ctx.dt
+    -- Hits since the last update belong to the move that produced ctx.vel; start collecting afresh.
+    local wallCount = walls.count
+    walls.count = 0
+    walls.pawn = pawn:GetAddress()
+    if config.FIX_WALL_SLIDE then
+        -- Registered as both the pre and the post callback: this UE4SS build only calls one for Blueprints.
+        lookup.registerBlueprintHook(walls, HIT_FUNCTION, onHitGuarded, onHitGuarded, "wall slide")
+    end
     if ctx.mode ~= MOVE_WALKING then tracked = nil return end
     local vel = ctx.vel
     local vx, vy, vz = vel.X, vel.Y, vel.Z
@@ -104,6 +174,20 @@ function fix.update(ctx)
     local bz = 0
 
     local tolerance = movement.quantizationTolerance(pawn, dt)
+
+    -- Hit a wall above 30 FPS: slide the prediction along it, and keep that unless the engine's
+    -- velocity is already faster (a hit late in the frame, which moved him most of the way).
+    if wallCount > 0 and config.FIX_WALL_SLIDE and util.aboveReferenceFps(dt) then
+        local sx, sy = slideAlongWalls(bx, by, wallCount)
+        local slower = vx * vx + vy * vy < sx * sx + sy * sy
+        if slower or (math.abs(vx - sx) <= tolerance and math.abs(vy - sy) <= tolerance and math.abs(vz) <= tolerance) then
+            if vx ~= sx or vy ~= sy or vz ~= 0 then
+                cmc.Velocity = { X = sx, Y = sy, Z = 0 }
+            end
+            tracked = (sx == 0 and sy == 0) and nil or { sx, sy, 0 }
+            return
+        end
+    end
 
     if math.abs(vx - bx) <= tolerance and math.abs(vy - by) <= tolerance and math.abs(vz - bz) <= tolerance then
         if vx ~= bx or vy ~= by or vz ~= bz then
