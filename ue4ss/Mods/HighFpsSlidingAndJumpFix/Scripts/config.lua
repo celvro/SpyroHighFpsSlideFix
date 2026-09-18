@@ -4,6 +4,8 @@
 return {
     FIX_WALKING_ACCELERATION = true,      -- false: only fix braking (the original sliding fix)
     FIX_WALL_SLIDE = true,                -- false: blocked frames against walls reset the velocity (charge stalls)
+    FIX_GLIDE_START = true,               -- false: early-pressed glides start ~5 units lower at high FPS
+    FIX_GLIDE_DISTANCE = true,            -- false: glides drift up to 1% long or short at high FPS (position rounding)
     FIX_CHARGE_TURN_SLIP = true,          -- false: the unfixed charge turn
     FIX_MOUSE_CHARGE_STEERING = true,     -- false: the unfixed mouse charge steering
     FIX_CAMERA_CENTERING = true,          -- false: the unfixed camera centering
@@ -14,7 +16,7 @@ return {
     FIX_DRAGON_SEGMENTS = true,           -- false: the bunched-up fire dragons
     FIX_FLAME_MUZZLE_LINES = true,        -- false: the stray lines in the flame breath
 
-    PROFILE = false,                      -- log the fixes' per-frame cost to UE4SS.log
+    PROFILE = false,                     -- log the fixes' per-frame cost to UE4SS.log
     PROFILE_INTERVAL = 10,                -- seconds between profile log lines
     -- GC spike investigation (see CLAUDE.md "Frame spikes"): only sampled while PROFILE is also on.
     -- GC_COLLECTION_KB is a per-frame collectgarbage("count") drop big enough to count as "a

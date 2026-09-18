@@ -21,7 +21,7 @@ local log = require("lib.log")
 local lookup = require("lib.lookup")
 local profiler = require("profiler")
 
-local VERSION = "1.4.0" -- tools/Package-Release.ps1 names the release zip from this
+local VERSION = "1.5.0" -- tools/Package-Release.ps1 names the release zip from this
 
 local camera = require("fixes.camera")
 
@@ -36,6 +36,7 @@ local pawnFixes = {
     require("fixes.flame"),
     require("fixes.walking"),
     require("fixes.jump"),
+    require("fixes.glide"),
     require("fixes.dust"),
     require("fixes.charge"),
     camera.centering,

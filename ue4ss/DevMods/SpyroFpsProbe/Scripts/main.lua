@@ -3,11 +3,12 @@
 -- leave it off when profiling the fix mod (its per-frame garbage lands in the fixes' timed region).
 --
 -- Keys (game window focused; not F11, which toggles fullscreen, nor anything DefaultInput.ini binds):
---   F5 / F6 / F7 / F8  set t.MaxFPS to 30 / 60 / 120 / 0 (uncapped)
+--   F5 / F6 / F7 / F8  set t.MaxFPS to 30 / 60 / 120 / 0 (uncapped); F4 sets 320
 --   F9                 dump Spyro's FollowCameraComponent properties to camdump_*_manual.txt
 --   F10                rescan for flame particle components (if a flame isn't picked up automatically)
 --   K                  cycle the flame muzzle experiment: normal / noHardMuzzle / velocity30
 --   V / B / L / N      quicksave: save this spot / go back to it / reload the level / dump the transporter
+--   G                  scripted glide from a standstill, 600 above the saved spot (tools/glidetest.lua)
 --
 -- Output, in this mod folder and the UE4SS console and log:
 --   trace_<stamp>.csv    one row per frame (columns in lib/trace.lua)
@@ -19,9 +20,10 @@
 --                        "camlock", "camstuck", "camtransition", "camdump diff" (trackers/camera.lua);
 --                        "supercharge" (trackers/supercharge.lua); "dragon" (trackers/dragons.lua);
 --                        "thief" (trackers/thieves.lua); "flame" (trackers/flames.lua); "walkin"
---                        (trackers/walkin.lua); "flight", "flightramp", "flightrun" (trackers/flight.lua);
+--                        (trackers/walkin.lua); "glide", "hover", "glideair" (trackers/glide.lua);
+--                        "flight", "flightramp", "flightrun" (trackers/flight.lua);
 --                        "chargestall" (trackers/hits.lua);
---                        quicksave, reload and travel lines (tools/quicksave.lua)
+--                        quicksave, reload and travel lines (tools/quicksave.lua); "glidetest" (tools/glidetest.lua)
 --
 -- Scripts/
 --   lib/       shared helpers: logging, the row sampled each frame, the trace CSV, object dumps, level queries
@@ -41,12 +43,14 @@ local charge = require("trackers.charge")
 local dragons = require("trackers.dragons")
 local flames = require("trackers.flames")
 local flight = require("trackers.flight")
+local glide = require("trackers.glide")
 local hits = require("trackers.hits")
 local movement = require("trackers.movement")
 local supercharge = require("trackers.supercharge")
 local thieves = require("trackers.thieves")
 local walkin = require("trackers.walkin")
 local quicksave = require("tools.quicksave")
+local glidetest = require("tools.glidetest")
 
 local DEFAULT_SIM_STEP = 0.05 -- engine default MaxSimulationTimeStep; the game never changes it
 local RECENT_FRAMES = 10
@@ -61,6 +65,7 @@ local function sample()
     if not pawn:IsValid() then return end
     local cmc = pawn.CharacterMovement
     if not cmc:IsValid() then return end
+    glide.register() -- after the pawn exists: its abilities are loaded by then
 
     local statics = UEHelpers.GetGameplayStatics()
     local time = statics:GetTimeSeconds(pawn)
@@ -83,6 +88,7 @@ local function sample()
 
     local frameTime = prev and r.time - prev.time or 0
     movement.update(r, util.isGrounded(r.mode))
+    glide.update(r, prev, util.isGrounded(r.mode))
     supercharge.update(r, prev)
     charge.update(r, prev)
     camera.updateTransition(r, prev)
@@ -99,6 +105,7 @@ local function sample()
     thieves.update(r, prev)
     flames.update(r, frameTime)
     quicksave.update(pawn, pc, cmc, r)
+    glidetest.update(pawn, pc, cmc, r)
     walkin.update(pc, cmc, r, prev)
     flight.update(pawn, cmc, r, prev)
     hits.update(r, prev)
@@ -119,6 +126,7 @@ local function setFpsCap(cap)
     end)
 end
 
+RegisterKeyBind(Key.F4, function() setFpsCap(320) end)
 RegisterKeyBind(Key.F5, function() setFpsCap(30) end)
 RegisterKeyBind(Key.F6, function() setFpsCap(60) end)
 RegisterKeyBind(Key.F7, function() setFpsCap(120) end)
@@ -130,6 +138,7 @@ RegisterKeyBind(Key.B, function() quicksave.request("load") end)
 RegisterKeyBind(Key.L, function() quicksave.request("reload") end)
 RegisterKeyBind(Key.N, function() quicksave.request("transporter") end)
 RegisterKeyBind(Key.K, flames.cycleExperiment)
+RegisterKeyBind(Key.G, glidetest.request)
 
 NotifyOnNewObject("/Script/Engine.ParticleSystemComponent", flames.onNewComponent)
 

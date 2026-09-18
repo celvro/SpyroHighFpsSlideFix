@@ -84,7 +84,7 @@ local function saveSpot(pawn, pc, r)
 end
 
 -- Puts Spyro on the saved spot. The caller makes sure its level is the one he is in (B travels first).
-local function teleportToSpot(pawn, pc, cmc, what)
+local function teleportToSpot(pawn, pc, cmc, what, dz)
     if not spot then
         log("%s: nothing saved yet (press V to save a spot)", what)
         return false
@@ -97,7 +97,8 @@ local function teleportToSpot(pawn, pc, cmc, what)
     end
     local x, y = spot.x - spot.originX + origin.X, spot.y - spot.originY + origin.Y
     -- K2_TeleportTo looks for room at the spot and returns false if it can't find any.
-    local placed = pawn:K2_TeleportTo({ X = x, Y = y, Z = spot.z },
+    local z = spot.z + (dz or 0)
+    local placed = pawn:K2_TeleportTo({ X = x, Y = y, Z = z },
         { Pitch = spot.pitch, Yaw = spot.yaw, Roll = spot.roll })
     cmc.Velocity = { X = 0, Y = 0, Z = 0 }
     pc:SetControlRotation({ Pitch = spot.ctrlPitch, Yaw = spot.ctrlYaw, Roll = 0 })
@@ -105,9 +106,14 @@ local function teleportToSpot(pawn, pc, cmc, what)
     if not tryCall("FollowCamera:ResetBehind", function() pawn.FollowCamera:ResetBehind(true) return true end) then
         tryCall("FollowCamera:SetCameraYaw", function() pawn.FollowCamera:SetCameraYaw(spot.yaw) return true end)
     end
-    log("%s: %s at (%.0f, %.0f, %.0f)%s", what, spot.level, x, y, spot.z,
+    log("%s: %s at (%.0f, %.0f, %.0f)%s", what, spot.level, x, y, z,
         placed == false and " (no room there; the engine moved him)" or "")
     return true
+end
+
+-- Puts Spyro dz above the saved spot (same level only), for tools/glidetest.lua. Returns false if it cant.
+function quicksave.teleportAbove(pawn, pc, cmc, dz)
+    return teleportToSpot(pawn, pc, cmc, "glide test", dz)
 end
 
 -- RestartLevel drops to the title screen in this game (tested 2026-09-17), and the persistent level is

@@ -18,4 +18,5 @@ return {
     camLock = nil,                             -- trackers/camera.lua
     camTransition = nil, camTransitionCount = 0,
     superCharge = nil, superChargeCount = 0,   -- trackers/supercharge.lua
+    glide = nil,                               -- trackers/glide.lua (the glide in progress, for the trace)
 }

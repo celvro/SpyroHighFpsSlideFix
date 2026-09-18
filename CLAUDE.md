@@ -10,7 +10,7 @@ Investigation logs live in `docs/`; each fix module in `ue4ss/Mods/HighFpsSlidin
 
 | Doc | Topic | Status |
 |---|---|---|
-| `docs/findings/jump-glide.md` | Jump/hover height (zero-gravity phase rounds to frames), glide, framerate config | fixed, verified |
+| `docs/findings/jump-glide.md` | Jump/hover height (zero-gravity phase rounds to frames), glide distance (position rounding), glide start wait, framerate config | fixed, verified |
 | `docs/findings/sliding-walking.md` | Braking slide, acceleration lanes, stuck from standstill (float32 position quantization far from origin) | fixed, verified |
 | `docs/findings/charge-turn-camera.md` | Charge slip, mouse charge steering, camera centering, centering switch, stuck charge camera (native disassembly) | fixed, verified |
 | `docs/findings/super-charge.md` | Super charge stages, ramp, jump assist | matches 30 FPS |

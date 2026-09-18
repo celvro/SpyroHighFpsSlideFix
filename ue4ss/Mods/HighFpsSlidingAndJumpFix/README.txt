@@ -15,6 +15,12 @@ Fixes (numbers were recorded in game at 30 FPS and at 144 FPS, before and after 
     Full jump:    30 FPS 84.6   |  144 FPS before 79.7   |  after 84.7
     Charge jump:  30 FPS 74.5   |  144 FPS before 68.7-70.4  |  after 74.6
     Glide hover:  30 FPS 48.9   |  144 FPS before 42.5   |  after 49.0
+- Glide distance: at high FPS a glide goes up to 1% further or shorter than at 30 FPS, depending on which way
+  Spyro faces (up to about 45 units over a long glide).
+    Glide speed over the ground:  30 FPS 367.4  |  320 FPS before 364.0-370.7  |  after 366.8-366.9
+- Glide start: a glide pressed early in a jump starts a little sooner at high FPS, while Spyro is still rising,
+  so it starts lower and ends shorter.
+    Glide start height after a full jump:  30 FPS 68.0  |  320 FPS before 62.9  |  after starts at the same moment as 30 FPS
 - Speeding up: Spyro gains speed unevenly, faster in some directions and slower in others.
     Speed gained per second:  30 FPS 1000  |  144 FPS before about 650 or 1300  |  after 1000
     Charge from a standstill to speed 400:  30 FPS 0.40 s  |  144 FPS after 0.40 s

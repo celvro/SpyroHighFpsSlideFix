@@ -11,7 +11,7 @@ local movement = {}
 local brakingParamsLogged = false
 
 -- Distance between adjacent float32 values at magnitude v.
-local function floatSpacing(v)
+function movement.floatSpacing(v)
     v = math.abs(v)
     if v < 1 then return 2 ^ -24 end
     -- UE4SS runs Lua 5.4, which has no math.frexp.
@@ -23,7 +23,8 @@ end
 -- Largest velocity error a rounded move can introduce this frame, with a little slack.
 function movement.quantizationTolerance(pawn, dt)
     local loc = pawn:K2_GetActorLocation()
-    return (math.max(floatSpacing(loc.X), floatSpacing(loc.Y), floatSpacing(loc.Z)) / dt) * 1.01
+    local spacing = movement.floatSpacing
+    return (math.max(spacing(loc.X), spacing(loc.Y), spacing(loc.Z)) / dt) * 1.01
 end
 
 -- Mirrors UCharacterMovementComponent::ApplyVelocityBraking (UE 4.19).
