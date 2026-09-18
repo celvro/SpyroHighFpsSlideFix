@@ -55,9 +55,10 @@ end
 
 -- Which level Spyro is in. Neighbouring levels keep a visible LS###_Transport sublevel (a homeworld has
 -- several), so "the first visible LS### level" picks the wrong one; each level instance is placed by its
--- LevelTransform, so the level Spyro is actually in is the one he is nearest.
+-- LevelTransform, so the level Spyro is actually in is the one he is nearest. Also returns that
+-- LevelTransform translation ({ X, Y }): the same level can be placed at a different offset each load.
 function levels.current(pawn)
-    local best, bestDist
+    local best, bestDist, bestOrigin
     tryCall("World.StreamingLevels", function()
         local loc = pawn:K2_GetActorLocation()
         levels.each(pawn, function(sl, package)
@@ -67,10 +68,10 @@ function levels.current(pawn)
             local t = levelTranslation(sl)
             if not t then return end
             local dist = (loc.X - t.X) ^ 2 + (loc.Y - t.Y) ^ 2
-            if not bestDist or dist < bestDist then best, bestDist = prefix, dist end
+            if not bestDist or dist < bestDist then best, bestDist, bestOrigin = prefix, dist, t end
         end)
     end)
-    if best then return best end
+    if best then return best, bestOrigin end
     return asString(tryCall("GetCurrentLevelName", function()
         return UEHelpers.GetGameplayStatics():GetCurrentLevelName(pawn, true)
     end))

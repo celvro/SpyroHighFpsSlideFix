@@ -6,6 +6,8 @@
 --      teleports him to the spot if it belongs to this level
 --   N  dumps the GlobalTransporter actor and lists the level data tables
 -- Only position, facing and camera yaw are restored, not velocity or ability state: save while standing still.
+-- The spot is kept relative to its level's LevelTransform: the same level streams in at a different offset
+-- (a multiple of LEVEL_OFFSET) from one load to the next.
 local dump = require("lib.dump")
 local levels = require("lib.levels")
 local log = require("lib.log")
@@ -18,6 +20,7 @@ local RELOAD_TIMEOUT = 60 -- seconds before a stuck reload gives up and puts eve
 local RELOAD_SETTLE = 0.5 -- seconds after the sublevels are back (or the travel arrives) before Spyro is put down
 local TRAVEL_TIMEOUT = 30 -- seconds before a travel that never arrives is given up on
 local STREAM_DATA_TABLE = "/GameplayCommon/LevelMechanics/LevelStreaming/StreamingData/LevelStreams/Spyro1_StreamData.Spyro1_StreamData"
+local LEVEL_OFFSET = 300000 -- GlobalTransporter LevelOffset: levels are placed on this grid
 -- The sublevels L reloads. Art, lighting, audio and the Transport levels are left alone.
 local RELOAD_SUFFIXES = { design = true, enemy = true, loot = true, cinematics = true }
 
@@ -37,11 +40,15 @@ function quicksave.load()
     local fields = {}
     for field in (line or ""):gmatch("[^|]+") do table.insert(fields, field) end
     if #fields < 9 then return end
+    local x, y = tonumber(fields[2]), tonumber(fields[3])
     spot = {
         level = fields[1],
-        x = tonumber(fields[2]), y = tonumber(fields[3]), z = tonumber(fields[4]),
+        x = x, y = y, z = tonumber(fields[4]),
         pitch = tonumber(fields[5]), yaw = tonumber(fields[6]), roll = tonumber(fields[7]),
         ctrlPitch = tonumber(fields[8]), ctrlYaw = tonumber(fields[9]),
+        -- The level's LevelTransform when it was saved; older spots.txt files without it are on the grid.
+        originX = tonumber(fields[10]) or math.floor(x / LEVEL_OFFSET + 0.5) * LEVEL_OFFSET,
+        originY = tonumber(fields[11]) or math.floor(y / LEVEL_OFFSET + 0.5) * LEVEL_OFFSET,
     }
     log("quicksave spot: %s at (%.0f, %.0f, %.0f)", spot.level, spot.x, spot.y, spot.z)
 end
@@ -53,15 +60,15 @@ local function writeSpot()
         return
     end
     local s = spot
-    file:write(string.format("%s|%.3f|%.3f|%.3f|%.3f|%.3f|%.3f|%.3f|%.3f\n",
-        s.level, s.x, s.y, s.z, s.pitch, s.yaw, s.roll, s.ctrlPitch, s.ctrlYaw))
+    file:write(string.format("%s|%.3f|%.3f|%.3f|%.3f|%.3f|%.3f|%.3f|%.3f|%.1f|%.1f\n",
+        s.level, s.x, s.y, s.z, s.pitch, s.yaw, s.roll, s.ctrlPitch, s.ctrlYaw, s.originX, s.originY))
     file:close()
 end
 
 local function saveSpot(pawn, pc, r)
-    local level = levels.current(pawn)
-    if not level then
-        log("quicksave: the level name is unavailable")
+    local level, origin = levels.current(pawn)
+    if not (level and origin) then
+        log("quicksave: the level name or placement is unavailable")
         return
     end
     local rot = pawn:K2_GetActorRotation()
@@ -70,6 +77,7 @@ local function saveSpot(pawn, pc, r)
         level = level, x = r.x, y = r.y, z = r.z,
         pitch = rot.Pitch, yaw = rot.Yaw, roll = rot.Roll,
         ctrlPitch = ctrl.Pitch, ctrlYaw = ctrl.Yaw,
+        originX = origin.X, originY = origin.Y,
     }
     writeSpot()
     log("quicksave: %s at (%.0f, %.0f, %.0f) facing %.0f", level, r.x, r.y, r.z, rot.Yaw)
@@ -81,8 +89,15 @@ local function teleportToSpot(pawn, pc, cmc, what)
         log("%s: nothing saved yet (press V to save a spot)", what)
         return false
     end
+    -- Where the level is placed this time.
+    local level, origin = levels.current(pawn)
+    if level ~= spot.level or not origin then
+        log("%s: can't place the %s spot (Spyro is in %s)", what, spot.level, tostring(level))
+        return false
+    end
+    local x, y = spot.x - spot.originX + origin.X, spot.y - spot.originY + origin.Y
     -- K2_TeleportTo looks for room at the spot and returns false if it can't find any.
-    local placed = pawn:K2_TeleportTo({ X = spot.x, Y = spot.y, Z = spot.z },
+    local placed = pawn:K2_TeleportTo({ X = x, Y = y, Z = spot.z },
         { Pitch = spot.pitch, Yaw = spot.yaw, Roll = spot.roll })
     cmc.Velocity = { X = 0, Y = 0, Z = 0 }
     pc:SetControlRotation({ Pitch = spot.ctrlPitch, Yaw = spot.ctrlYaw, Roll = 0 })
@@ -90,7 +105,7 @@ local function teleportToSpot(pawn, pc, cmc, what)
     if not tryCall("FollowCamera:ResetBehind", function() pawn.FollowCamera:ResetBehind(true) return true end) then
         tryCall("FollowCamera:SetCameraYaw", function() pawn.FollowCamera:SetCameraYaw(spot.yaw) return true end)
     end
-    log("%s: %s at (%.0f, %.0f, %.0f)%s", what, spot.level, spot.x, spot.y, spot.z,
+    log("%s: %s at (%.0f, %.0f, %.0f)%s", what, spot.level, x, y, spot.z,
         placed == false and " (no room there; the engine moved him)" or "")
     return true
 end
