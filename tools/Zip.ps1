@@ -25,7 +25,13 @@ function New-ZipFromEntries {
     try {
         foreach ($name in $Entries.Keys) {
             $source = $Entries[$name]
-            if ($source -and (Test-Path -LiteralPath $source -PathType Leaf)) {
+            # Literal text can hold newlines and other characters Test-Path rejects outright, so only
+            # single-line values are even tried as paths, and a failing test means "this is text".
+            $isFile = $false
+            if ($source -and $source -notmatch '[\r\n]') {
+                try { $isFile = Test-Path -LiteralPath $source -PathType Leaf } catch { $isFile = $false }
+            }
+            if ($isFile) {
                 [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $source, $name, 'Optimal') | Out-Null
             } else {
                 $entry = $zip.CreateEntry($name)
