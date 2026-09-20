@@ -30,7 +30,7 @@ local REFERENCE_FPS = util.REFERENCE_FPS
 local MOVE_WALKING = util.MOVE_WALKING
 local MOVE_FALLING = util.MOVE_FALLING
 
-local CHARGE_MIN_WALK_SPEED = 350 -- charging sets MaxWalkSpeed 458.5, charge jumping 358; running is 268.5
+local CHARGE_MIN_WALK_SPEED = util.CHARGE_MIN_WALK_SPEED
 local CHARGE_MIN_SPEED = 50       -- slower than this, acceleration dominates the turn; leave friction alone
 local MOUSE_AXIS_FUNCTION = "/CharacterCommon/Components/CharacterInputComponent/CharacterInputComponent_Spyro.CharacterInputComponent_Spyro_C:InputAxis_RightStick_X"
 local MOUSE_HISTORY = 64          -- mouse samples kept; must cover 1/30 s at the highest framerate
@@ -137,16 +137,22 @@ end
 -- CharacterInputComponent_Spyro.IsKeyboardMouseAndUsingMouseCheckingXAxis, the same test the
 -- Blueprint uses to steer the charge with the mouse: keyboard/mouse input, mouse steering enabled
 -- in the settings, and no keyboard steering this frame.
+-- Asked every frame of a charge, so the out-param table is reused and the call is a named function
+-- rather than a closure: both would otherwise be garbage every frame.
+local steeringOut = {}
+local function readMouseSteering(component)
+    local out = steeringOut
+    out["Is Using"] = nil -- the reused table must not answer with the last call's value
+    local ret = component:IsKeyboardMouseAndUsingMouseCheckingXAxis(out)
+    if type(out["Is Using"]) == "boolean" then return out["Is Using"] end
+    if type(ret) == "boolean" then return ret end
+    error("IsKeyboardMouseAndUsingMouseCheckingXAxis returned no Is Using value")
+end
+
 local function usingMouseSteering()
     local component = mouse.component
     if mouse.failed or not (component and component:IsValid()) then return false end
-    local ok, result = pcall(function()
-        local out = {}
-        local ret = component:IsKeyboardMouseAndUsingMouseCheckingXAxis(out)
-        if type(out["Is Using"]) == "boolean" then return out["Is Using"] end
-        if type(ret) == "boolean" then return ret end
-        error("IsKeyboardMouseAndUsingMouseCheckingXAxis returned no Is Using value")
-    end)
+    local ok, result = pcall(readMouseSteering, component)
     if ok then return result end
     mouse.failed = true
     log("mouse charge steering fix disabled: %s", tostring(result))

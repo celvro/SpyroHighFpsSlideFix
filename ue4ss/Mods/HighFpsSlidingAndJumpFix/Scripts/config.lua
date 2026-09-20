@@ -23,9 +23,16 @@ return {
     PROFILE_INTERVAL = 10,                -- seconds between profile log lines
     -- GC spike investigation (see CLAUDE.md "Frame spikes"): only sampled while PROFILE is also on.
     -- GC_COLLECTION_KB is a per-frame collectgarbage("count") drop big enough to count as "a
-    -- collection landed in this frame" rather than ordinary allocate/free noise.
+    -- collection landed in this frame" rather than ordinary allocate/free noise. It also logs a
+    -- `gc alloc:` line charging the KB/frame the mod allocates to the fix (or hook) that allocated
+    -- it, which costs two collectgarbage("count") calls per fix per frame while it is on.
     GC_PROFILE = false,
     GC_COLLECTION_KB = 5,
+    -- Forces a full collection at the end of every profile window and logs the heap before and
+    -- after, to tell retention from churn: a heap that drops back to its startup size was only
+    -- churn the collector hadn't got to yet, one that stays high is being held live by something.
+    -- It hitches the frame it runs in (~1 ms per MB freed), so it is a measurement run only.
+    GC_FULL_COLLECT = false,
     -- Switches the shared Lua state's collector at load, to A/B against the default incremental one.
     -- "generational" is the only other mode Lua 5.4 offers; nil/false leaves whatever UE4SS started with.
     GC_MODE = nil,

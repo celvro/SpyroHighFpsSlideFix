@@ -8,6 +8,10 @@ util.REFERENCE_DT = 1 / 30
 util.MOVE_WALKING = 1       -- EMovementMode values we care about
 util.MOVE_NAV_WALKING = 2   -- AI walking on the navmesh (Buzz's ChargeRun)
 util.MOVE_FALLING = 3
+-- Charging sets MaxWalkSpeed 458.5 and charge jumping 358; running is 268.5. A float property read
+-- costs nothing, so this is the cheap "might be charging" test the charge and dust fixes gate on
+-- before they read anything that allocates.
+util.CHARGE_MIN_WALK_SPEED = 350
 
 -- True while a frame is shorter than a 30 FPS frame, i.e. while there is anything to fix. Frames
 -- that are 1/30 s or longer (and the odd zero-length one) are left exactly as the game runs them.

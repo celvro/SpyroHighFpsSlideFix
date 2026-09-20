@@ -49,13 +49,28 @@ local pawnFixes = {
 -- Filled in once per frame and passed to every fix; reused so a tick allocates nothing.
 local ctx = { pc = nil, pawn = nil, cmc = nil, dt = 0, mode = 0, vel = nil }
 
-local function run(fix)
-    if not fix.enabled or fix.failed then return end
-    local ok, err = pcall(fix.update, ctx)
-    if ok then return end
+local function failed(fix, err)
     fix.failed = true
     if fix.disable then pcall(fix.disable, ctx, err) end
     log("%s disabled after error: %s", fix.name, tostring(err))
+end
+
+local function run(fix)
+    if not fix.enabled or fix.failed then return end
+    local ok, err = pcall(fix.update, ctx)
+    if not ok then failed(fix, err) end
+end
+
+-- With allocation profiling on, each fix is charged the Lua garbage its update makes (the plain
+-- `run` above is used otherwise, so the extra clock calls cost nothing in a normal build).
+if config.PROFILE and config.GC_PROFILE then
+    run = function(fix)
+        if not fix.enabled or fix.failed then return end
+        local alloc = profiler.startAlloc()
+        local ok, err = pcall(fix.update, ctx)
+        profiler.endAlloc(fix.name, alloc)
+        if not ok then failed(fix, err) end
+    end
 end
 
 -- No pawn to fix (level change, cutscene): drop the per-pawn state so nothing carries over.
@@ -73,7 +88,7 @@ local function tick()
 
     local pawn = pc.Pawn
     if not pawn:IsValid() then resetPawnFixes() return end
-    local cmc = pawn.CharacterMovement
+    local cmc = engine.characterMovement(pawn)
     if not cmc:IsValid() then resetPawnFixes() return end
 
     ctx.pawn, ctx.cmc = pawn, cmc

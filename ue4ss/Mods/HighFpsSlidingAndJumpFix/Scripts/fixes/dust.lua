@@ -102,8 +102,16 @@ end
 function fix.update(ctx)
     local pawn = ctx.pawn
     dust.pawn = pawn:GetAddress()
-    local ok, address = pcall(readDustEffectAddress, pawn)
-    dust.frameStart = ok and address or nil
+    -- Reading Charge_GroundEffects hands back a UE4SS wrapper (~235 B of garbage a frame), and the
+    -- hook that needs it only runs while charging, so it is only read when MaxWalkSpeed says a
+    -- charge is possible. On the frame a charge starts, MaxWalkSpeed is still low and this is nil:
+    -- that is right, because the effect the hook then sees is genuinely new and should emit.
+    local address = nil
+    if ctx.cmc.MaxWalkSpeed >= util.CHARGE_MIN_WALK_SPEED then
+        local ok, result = pcall(readDustEffectAddress, pawn)
+        address = ok and result or nil
+    end
+    dust.frameStart = address
     -- Callbacks stopped (pause, level change): don't leave effects slowed down.
     if dust.frame < engine.frame - 1 and #dust.dilated > 0 then resetDustDilations() end
     -- Registered as both the pre and the post callback (see the dust state above).

@@ -32,6 +32,24 @@ function engine.getPlayerController()
     return cachedController
 end
 
+-- The CharacterMovement of the pawn asked about last. A pawn keeps the same component for its
+-- lifetime, and the property read costs ~235 B of Lua garbage a frame, so it is kept until either
+-- the component goes invalid or a different pawn is asked about (a level change, or Spyro 3
+-- switching to Sheila or Sgt. Byrd).
+local cachedMovementPawn, cachedMovement = nil, nil
+
+function engine.characterMovement(pawn)
+    local address = pawn:GetAddress()
+    if cachedMovement and cachedMovementPawn == address and cachedMovement:IsValid() then
+        return cachedMovement
+    end
+    cachedMovementPawn, cachedMovement = nil, nil
+    local cmc = pawn.CharacterMovement
+    if not cmc:IsValid() then return cmc end -- the caller reports an invalid component
+    cachedMovementPawn, cachedMovement = address, cmc
+    return cmc
+end
+
 function engine.getGameplayStatics()
     if not (cachedStatics and cachedStatics:IsValid()) then cachedStatics = UEHelpers.GetGameplayStatics() end
     return cachedStatics

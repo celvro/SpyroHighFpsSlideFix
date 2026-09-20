@@ -8,6 +8,7 @@
 -- Only position, facing and camera yaw are restored, not velocity or ability state: save while standing still.
 -- The spot is kept relative to its level's LevelTransform: the same level streams in at a different offset
 -- (a multiple of LEVEL_OFFSET) from one load to the next.
+local UEHelpers = require("UEHelpers")
 local dump = require("lib.dump")
 local levels = require("lib.levels")
 local log = require("lib.log")
@@ -18,8 +19,8 @@ local asString, tryCall, describeOut = util.asString, util.tryCall, util.describ
 
 local RELOAD_TIMEOUT = 60 -- seconds before a stuck reload gives up and puts everything back
 local RELOAD_SETTLE = 0.5 -- seconds after the sublevels are back (or the travel arrives) before Spyro is put down
-local TRAVEL_TIMEOUT = 30 -- seconds before a travel that never arrives is given up on
-local STREAM_DATA_TABLE = "/GameplayCommon/LevelMechanics/LevelStreaming/StreamingData/LevelStreams/Spyro1_StreamData.Spyro1_StreamData"
+local TRAVEL_TIMEOUT = 90 -- seconds before a travel that never arrives is given up on (first visits play an intro cutscene)
+local STREAM_DATA_TABLE = "/GameplayCommon/LevelMechanics/LevelStreaming/StreamingData/LevelStreams/SpyroStreamData.SpyroStreamData"
 local LEVEL_OFFSET = 300000 -- GlobalTransporter LevelOffset: levels are placed on this grid
 -- The sublevels L reloads. Art, lighting, audio and the Transport levels are left alone.
 local RELOAD_SUFFIXES = { design = true, enemy = true, loot = true, cinematics = true }
@@ -27,7 +28,7 @@ local RELOAD_SUFFIXES = { design = true, enemy = true, loot = true, cinematics =
 local quicksave = {}
 
 local spot = nil     -- the one saved spot
-local travel = nil   -- a StartAtLevelCheckpoint travel in progress, waiting to teleport on arrival
+local travel = nil   -- a StartAtLevelCheckpoint travel in progress, waiting to arrive (and teleport, for B)
 local reload = nil   -- a level reload in progress, waiting to teleport back to the spot
 local request = nil  -- "save", "load", "reload" or "transporter", set by a key and handled in the game thread
 
@@ -251,47 +252,42 @@ local function findTransporter()
     return nil
 end
 
--- Travelling to another level: GlobalTransporter's StartAtLevelCheckpoint(Start Level, isRestart,
--- transitionType, checkpoint) is the game's own load-a-save path. It reads the level row (LevelMapPath
--- plus the LLxxx sublevel table), builds a record with UnloadCurrentLevels, and calls native StartAtLevel,
--- so lighting, music and game state follow. Rows in Spyro1_StreamData are named like our level keys (LS102).
-local function travelToLevel(level)
-    local transporter, transporterName = findTransporter()
-    if not transporter then
-        log("travel: no GlobalTransporter_C instance found")
-        return false
-    end
+-- The level table is only in memory once something has loaded it; LoadAsset (game thread) loads it if not.
+local function findStreamData()
     local streamData = StaticFindObject(STREAM_DATA_TABLE)
-    if not streamData or not streamData:IsValid() then
-        log("travel: %s not found", STREAM_DATA_TABLE)
+    if streamData and streamData:IsValid() then return streamData end
+    local ok, loaded = pcall(LoadAsset, STREAM_DATA_TABLE)
+    if ok and loaded and loaded:IsValid() then return loaded end
+    log("travel: LoadAsset(%s) failed: %s", STREAM_DATA_TABLE, tostring(loaded))
+    return nil
+end
+
+-- Travelling to another level (tested 2026-09-19 with tools/traveltest.lua): set the game index for the
+-- target level's game (FalconGameplayStatics SetActiveGameIndex + SetGameIndex), then call the game
+-- state's own portal load, BP_LoadIntoLevel(row, portal, screenType). It looks the row up in its
+-- SpyroStreamData table and calls GlobalTransporter.StartAtLevelCheckpoint, then does what the
+-- transporter call alone doesn't: that alone streams the level in but leaves Spyro falling in a black
+-- void. This worked within a game and from Spyro 1 into Spyro 2 (the level's intro cutscene plays on a
+-- first visit). Spyro1_StreamData is an older LevelStreamingData table the transporter silently rejects.
+local function travelToLevel(pawn, level, teleport)
+    local game = tonumber(level:match("^LS(%d)"))
+    if not game then
+        log("travel: %s isn't a level key", level)
         return false
     end
-    -- Does the table read back from Lua, and does it have this level's row?
-    local rows = tryCall("DataTableFunctionLibrary:GetDataTableRowNames", function()
-        local lib = StaticFindObject("/Script/Engine.Default__DataTableFunctionLibrary")
-        local out = {}
-        lib:GetDataTableRowNames(streamData, out)
-        local names = out.OutRowNames or out.RowNames
-        local count, found = 0, false
-        if names then
-            for _, n in ipairs(names) do
-                count = count + 1
-                if asString(n) == level then found = true end
-            end
-        end
-        return { count = count, found = found, keys = describeOut(out) }
-    end)
-    log("travel: %s, table rows=%s row %s found=%s", tostring(transporterName),
-        rows and tostring(rows.count) or "?", level, rows and tostring(rows.found) or "?")
+    if not findStreamData() then return false end -- BP_LoadIntoLevel reads it; make sure it's loaded
     local ok, err = pcall(function()
-        transporter:StartAtLevelCheckpoint({ DataTable = streamData, RowName = FName(level) }, false, 0, "")
+        local s = StaticFindObject("/Script/Falcon.Default__FalconGameplayStatics")
+        s:SetActiveGameIndex(pawn, game - 1)
+        s:SetGameIndex(pawn, game - 1)
+        UEHelpers.GetGameplayStatics():GetGameState(pawn):BP_LoadIntoLevel(FName(level), FName("None"), 0)
     end)
     if not ok then
-        log("travel: StartAtLevelCheckpoint failed: %s", tostring(err))
+        log("travel: BP_LoadIntoLevel failed: %s", tostring(err))
         return false
     end
-    travel = { level = level, started = os.clock(), settled = 0 }
-    log("travel: loading %s", level)
+    travel = { level = level, started = os.clock(), settled = 0, teleport = teleport }
+    log("travel: loading %s (game index %d)", level, game - 1)
     return true
 end
 
@@ -310,7 +306,7 @@ local function updateTravel(pawn, pc, cmc, r)
     if s.settled < RELOAD_SETTLE then return end
     travel = nil
     log("travel: arrived in %s after %.1f s", s.level, os.clock() - s.started)
-    teleportToSpot(pawn, pc, cmc, "quickload")
+    if s.teleport then teleportToSpot(pawn, pc, cmc, "quickload") end
 end
 
 -- V / B / L / N: the request is handled on the next sampled frame, in the game thread.
@@ -324,7 +320,7 @@ local function update(pawn, pc, cmc, r, kind)
     elseif kind == "load" then
         -- B always goes to the saved spot, travelling to its level first when Spyro is elsewhere.
         if spot and spot.level ~= levels.current(pawn) then
-            travelToLevel(spot.level)
+            travelToLevel(pawn, spot.level, true)
         else
             teleportToSpot(pawn, pc, cmc, "quickload")
         end
@@ -345,6 +341,32 @@ function quicksave.update(pawn, pc, cmc, r)
         reload = nil
         log("quicksave error: %s", tostring(err))
     end
+end
+
+-- For tools/tour.lua (call from the game thread): travel without teleporting on arrival.
+function quicksave.travel(pawn, level)
+    return travelToLevel(pawn, level, false)
+end
+
+function quicksave.travelling()
+    return travel ~= nil
+end
+
+-- The level keys (LS101 ... LS337) in the stream data table's order, or nil if it can't be read.
+function quicksave.levelNames()
+    return tryCall("DataTableFunctionLibrary:GetDataTableRowNames", function()
+        local streamData = findStreamData()
+        if not streamData then
+            log("tour: %s not loaded", STREAM_DATA_TABLE)
+            return nil
+        end
+        local lib = StaticFindObject("/Script/Engine.Default__DataTableFunctionLibrary")
+        local out = {}
+        lib:GetDataTableRowNames(streamData, out)
+        local names = {}
+        for _, n in ipairs(out.OutRowNames or out.RowNames or {}) do names[#names + 1] = asString(n) end
+        return names
+    end)
 end
 
 return quicksave

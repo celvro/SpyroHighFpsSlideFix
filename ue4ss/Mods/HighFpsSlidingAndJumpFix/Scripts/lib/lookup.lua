@@ -76,6 +76,10 @@ function lookup.watch(classPath, name, state)
     names[name] = state
 end
 
+local function objectName(object)
+    return object:GetFName():ToString()
+end
+
 local function startLookups(state)
     if not state then return end
     state.lookups = NEW_OBJECT_LOOKUPS
@@ -88,7 +92,8 @@ end
 function lookup.start()
     for classPath, names in pairs(watched) do
         NotifyOnNewObject(classPath, function(object)
-            local ok, name = pcall(function() return object:GetFName():ToString() end)
+            -- A named function, not a closure: this runs for every object of a watched class.
+            local ok, name = pcall(objectName, object)
             if ok then startLookups(names[name]) end
         end)
     end

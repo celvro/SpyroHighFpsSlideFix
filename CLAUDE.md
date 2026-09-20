@@ -26,6 +26,7 @@ Investigation logs live in `docs/`; each fix module in `ue4ss/Mods/HighFpsSlidin
 | `docs/findings/balloon-camera.md` | Camera whirls around the balloonist's balloon (0.5 deg per tick timeline) | fixed, verified |
 | `docs/findings/buzz-charge-run.md` | Spyro 3 boss Buzz runs in place (car movement from rest rounds to zero), slides after rolls | fixed, verified |
 | `docs/findings/sheila-buzz-walk.md` | Sheila stalls and crawls around Buzz's arena (requested moves from rest round to zero) | fixed, verified |
+| `docs/findings/npc-stalls.md` | Every NPC/enemy checked for the same stall from rest (static survey, probe stall tracker and level tour) | stalls confirmed (low-acceleration walkers), not fixed |
 | `docs/ue4ss.md` | UE4SS install details, profiling history, Lua GC experiments | reference |
 | `docs/tools.md` | Full packaging/Vortex/tool notes | reference |
 | `docs/probe.md` | Probe mod: log lines, CSV columns, hotkeys, quicksave, level streaming | reference |

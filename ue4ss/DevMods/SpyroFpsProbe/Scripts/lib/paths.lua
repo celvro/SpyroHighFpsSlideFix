@@ -10,5 +10,6 @@ return {
     thieves = string.format("%s\\thieves_%s.csv", modDir, stamp), -- created with the first active thief
     flames = string.format("%s\\flames_%s.csv", modDir, stamp),   -- created with the first flame
     buzz = string.format("%s\\buzz_%s.csv", modDir, stamp),         -- created when Buzz is found
+    stalls = string.format("%s\\stalls_%s.csv", modDir, stamp),     -- created with the first NPC movement stretch
     spots = modDir .. "\\spots.txt",
 }

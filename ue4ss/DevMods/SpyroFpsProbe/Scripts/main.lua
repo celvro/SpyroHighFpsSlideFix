@@ -9,6 +9,10 @@
 --   K                  cycle the flame muzzle experiment: normal / noHardMuzzle / velocity30
 --   V / B / L / N      quicksave: save this spot / go back to it / reload the level / dump the transporter
 --   G                  scripted glide from a standstill, 600 above the saved spot (tools/glidetest.lua)
+--   T                  level tour: every level for 25 s uncapped, for the NPC stall tracker (tools/tour.lua)
+--   Y                  travel test: each way to change level and game, in one run (tools/traveltest.lua)
+--   U                  spawn test: every chase/flee character type in front of Spyro, one at a time (tools/spawntest.lua)
+--   J                  slide pose for screenshots: start the steep-slope slide here, press again to end it (tools/slide.lua)
 --
 -- Output, in this mod folder and the UE4SS console and log:
 --   trace_<stamp>.csv    one row per frame (columns in lib/trace.lua)
@@ -16,6 +20,7 @@
 --   flames_<stamp>.csv   one row per frame per active flame (trackers/flames.lua)
 --   buzz_<stamp>.csv     one row per frame while Buzz exists (trackers/buzz.lua)
 --   hits_<stamp>.csv     one row per blocking hit during a ground charge (trackers/hits.lua)
+--   stalls_<stamp>.csv   one row per NPC/enemy movement stretch (trackers/stalls.lua)
 --   camdump_*.txt        every reflected FollowCameraComponent property (trackers/camera.lua)
 --   log lines            "seg", "drift", "rise" (trackers/movement.lua); "charge", "turn" (trackers/charge.lua);
 --                        "camlock", "camstuck", "camtransition", "camdump diff" (trackers/camera.lua);
@@ -24,6 +29,7 @@
 --                        (trackers/walkin.lua); "glide", "hover", "glideair" (trackers/glide.lua);
 --                        "flight", "flightramp", "flightrun" (trackers/flight.lua);
 --                        "chargestall" (trackers/hits.lua); "buzzrun" (trackers/buzz.lua);
+--                        "stall", "stallsummary" (trackers/stalls.lua); "tour" (tools/tour.lua); "traveltest" (tools/traveltest.lua); "spawntest" (tools/spawntest.lua); "slide" (tools/slide.lua);
 --                        quicksave, reload and travel lines (tools/quicksave.lua); "glidetest" (tools/glidetest.lua)
 --
 -- Scripts/
@@ -50,17 +56,24 @@ local hits = require("trackers.hits")
 local movement = require("trackers.movement")
 local supercharge = require("trackers.supercharge")
 local thieves = require("trackers.thieves")
+local stalls = require("trackers.stalls")
 local walkin = require("trackers.walkin")
 local quicksave = require("tools.quicksave")
 local glidetest = require("tools.glidetest")
+local tour = require("tools.tour")
+local traveltest = require("tools.traveltest")
+local spawntest = require("tools.spawntest")
+local slide = require("tools.slide")
 
 local DEFAULT_SIM_STEP = 0.05 -- engine default MaxSimulationTimeStep; the game never changes it
 local RECENT_FRAMES = 10
+local setFpsCap -- defined with the key binds below; the tour sets uncapped
 
 local function sample()
     mouse.register()
     hits.register()
     flames.beforeSample()
+    traveltest.update() -- before the pawn checks: it runs through the title screen
     local pc = UEHelpers.GetPlayerController()
     if not pc:IsValid() then return end
     local pawn = pc.Pawn
@@ -103,13 +116,18 @@ local function sample()
         dragons.pawnChanged()
         thieves.pawnChanged()
         buzz.pawnChanged()
+        stalls.pawnChanged()
         flames.rescan()
     end
     thieves.update(r, prev)
     buzz.update(r, prev)
+    stalls.update(r, prev, pawn)
     flames.update(r, frameTime)
     quicksave.update(pawn, pc, cmc, r)
     glidetest.update(pawn, pc, cmc, r)
+    tour.update(pawn, setFpsCap, stalls)
+    spawntest.update(pawn, pc, setFpsCap, frameTime)
+    slide.update(pawn, r)
     walkin.update(pc, cmc, r, prev)
     flight.update(pawn, cmc, r, prev)
     hits.update(r, prev)
@@ -120,7 +138,7 @@ local function sample()
     if #state.recent > RECENT_FRAMES then table.remove(state.recent, 1) end
 end
 
-local function setFpsCap(cap)
+setFpsCap = function(cap)
     ExecuteInGameThread(function()
         local pc = UEHelpers.GetPlayerController()
         if not pc:IsValid() then return end
@@ -143,8 +161,13 @@ RegisterKeyBind(Key.L, function() quicksave.request("reload") end)
 RegisterKeyBind(Key.N, function() quicksave.request("transporter") end)
 RegisterKeyBind(Key.K, flames.cycleExperiment)
 RegisterKeyBind(Key.G, glidetest.request)
+RegisterKeyBind(Key.T, tour.toggle)
+RegisterKeyBind(Key.Y, traveltest.toggle)
+RegisterKeyBind(Key.U, spawntest.toggle)
+RegisterKeyBind(Key.J, slide.request)
 
 NotifyOnNewObject("/Script/Engine.ParticleSystemComponent", flames.onNewComponent)
+NotifyOnNewObject(stalls.CLASS, stalls.onNewObject)
 
 -- Level Blueprint classes load with their level; look for their instances for a while afterwards.
 local levelClasses = { [dragons.CLASS] = dragons }

@@ -47,8 +47,24 @@ local walls = {
     registered = false, failed = false, retryIn = 0, lookups = 1,
 }
 
-local tracked = nil -- { x, y, z } unquantized velocity carried from the previous frame
-local STILL = { 0, 0, 0 } -- tracked velocity while standing; never modified
+-- The unquantized velocity carried from the previous frame, as scalars: this is set every frame
+-- Spyro moves, and a table per frame is garbage for the collector to sweep up later. `tracked` is
+-- false while there is nothing carried over (including after a move that ended at a standstill);
+-- standing still ready to move is tracked at zero.
+local tracked, tx, ty, tz = false, 0, 0, 0
+-- Written into by-value struct properties and out-params; reused for the same reason.
+local VELOCITY = { X = 0, Y = 0, Z = 0 }
+local REQUEST = { X = 0, Y = 0, Z = 0 }
+
+local function setVelocity(cmc, x, y, z)
+    VELOCITY.X, VELOCITY.Y, VELOCITY.Z = x, y, z
+    cmc.Velocity = VELOCITY
+end
+
+local function track(x, y, z)
+    tracked, tx, ty, tz = true, x, y, z
+end
+
 -- Path following (scripted walks): the controller's PathFollowingComponent and its class, whether a move
 -- was active last frame (for the log), and failed after an error.
 local path = { component = nil, class = nil, active = false, failed = false }
@@ -56,6 +72,9 @@ local path = { component = nil, class = nil, active = false, failed = false }
 -- RequestedVelocity while the player controller's path following is moving Spyro (SimpleMoveToLocation,
 -- e.g. walking him up to a freed dragon), else nil. The engine leaves RequestedVelocity set after the
 -- move ends, so the path status decides; it's only queried while RequestedVelocity is nonzero.
+-- Asking the status first instead was tried on 2026-09-19 to save the struct read on every walking
+-- frame, and measured no better: a UFunction call costs about what a struct read does (see
+-- docs/ue4ss.md), so the cheap nonzero test stays in front.
 local function readPathRequest(pc, cmc)
     local request = cmc.RequestedVelocity
     if request.X == 0 and request.Y == 0 and request.Z == 0 then return nil end
@@ -66,7 +85,10 @@ local function readPathRequest(pc, cmc)
     end
     -- EPathFollowingAction: 0 Error, 1 NoMove (idle), 2 DirectMove, 3 PartialPath, 4 PathToGoal.
     if not path.component or path.component:GetPathActionType() < 2 then return nil end
-    return { X = request.X, Y = request.Y, Z = request.Z }
+    -- Copied out of the engine's struct into a table of ours: the prediction reads it after other
+    -- engine calls, and the reused table keeps that copy free of garbage.
+    REQUEST.X, REQUEST.Y, REQUEST.Z = request.X, request.Y, request.Z
+    return REQUEST
 end
 
 local function pathRequest(pc, cmc)
@@ -135,13 +157,13 @@ function fix.update(ctx)
         -- Registered as both the pre and the post callback: this UE4SS build only calls one for Blueprints.
         lookup.registerBlueprintHook(walls, HIT_FUNCTION, onHitGuarded, onHitGuarded, "wall slide")
     end
-    if ctx.mode ~= MOVE_WALKING then tracked = nil return end
+    if ctx.mode ~= MOVE_WALKING then tracked = false return end
     local vel = ctx.vel
     local vx, vy, vz = vel.X, vel.Y, vel.Z
     local stopped = vx == 0 and vy == 0 and vz == 0
     -- Standing still without input: skip the engine calls below. A move that starts here is predicted from zero.
     if stopped and not config.FIX_WALKING_ACCELERATION then
-        tracked = nil
+        tracked = false
         return
     end
     local accel = cmc:GetCurrentAcceleration()
@@ -154,22 +176,23 @@ function fix.update(ctx)
     -- Zero velocity with input still has to be predicted: above ~250 FPS the first frame's move
     -- (MaxAcceleration * dt^2) rounds to nothing, the engine resets velocity to 0, and Spyro never starts moving.
     if stopped and braking and not request then
-        tracked = STILL
+        track(0, 0, 0)
         return
     end
     local handled = (braking or config.FIX_WALKING_ACCELERATION) and not pawn:IsPlayingRootMotion()
 
     if not handled or not tracked or dt < MIN_TICK_TIME then
-        tracked = handled and { vx, vy, vz } or nil
+        if handled then track(vx, vy, vz) else tracked = false end
         return
     end
 
+    local px, py = tx, ty -- the carried velocity the prediction starts from
     local bx, by
     if request then
-        bx, by = movement.calcRequestedWalkingVelocity(cmc, tracked[1], tracked[2], request, dt)
+        bx, by = movement.calcRequestedWalkingVelocity(cmc, px, py, request, dt)
     end
     if not bx then
-        bx, by = movement.calcWalkingVelocity(cmc, tracked[1], tracked[2], accel.X, accel.Y, dt)
+        bx, by = movement.calcWalkingVelocity(cmc, px, py, accel.X, accel.Y, dt)
     end
     local bz = 0
 
@@ -182,26 +205,26 @@ function fix.update(ctx)
         local slower = vx * vx + vy * vy < sx * sx + sy * sy
         if slower or (math.abs(vx - sx) <= tolerance and math.abs(vy - sy) <= tolerance and math.abs(vz) <= tolerance) then
             if vx ~= sx or vy ~= sy or vz ~= 0 then
-                cmc.Velocity = { X = sx, Y = sy, Z = 0 }
+                setVelocity(cmc, sx, sy, 0)
             end
-            tracked = (sx == 0 and sy == 0) and nil or { sx, sy, 0 }
+            if sx == 0 and sy == 0 then tracked = false else track(sx, sy, 0) end
             return
         end
     end
 
     if math.abs(vx - bx) <= tolerance and math.abs(vy - by) <= tolerance and math.abs(vz - bz) <= tolerance then
         if vx ~= bx or vy ~= by or vz ~= bz then
-            cmc.Velocity = { X = bx, Y = by, Z = bz }
+            setVelocity(cmc, bx, by, bz)
         end
-        tracked = (bx == 0 and by == 0 and bz == 0) and nil or { bx, by, bz }
+        if bx == 0 and by == 0 and bz == 0 then tracked = false else track(bx, by, bz) end
     else
         -- Something other than quantization changed the velocity (collision, script): follow the engine.
-        tracked = { vx, vy, vz }
+        track(vx, vy, vz)
     end
 end
 
 function fix.reset()
-    tracked = nil
+    tracked = false
 end
 
 return fix

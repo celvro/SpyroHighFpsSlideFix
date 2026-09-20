@@ -54,6 +54,10 @@ local announced = false
 --   pressedAt (30 FPS time of the first press, once there is one) }
 local gate = nil
 local pawnAddress = nil
+-- The offset and the sweep's out-param, reused between frames: a glide corrects on most frames, and
+-- a pair of tables per correction is garbage for the collector to sweep up later.
+local OFFSET = { X = 0, Y = 0, Z = 0 }
+local SWEEP_HIT = {}
 local hook = { lookups = 3, retryIn = 0 }
 local startFailed = false
 
@@ -178,7 +182,8 @@ local function updateDistance(ctx, gliding)
     local ex, ey = last.ex + rx, last.ey + ry
     local ox, oy = wholeSteps(ex, sx), wholeSteps(ey, sy)
     if ox ~= 0 or oy ~= 0 then
-        pawn:K2_AddActorWorldOffset({ X = ox, Y = oy, Z = 0 }, true, {}, false)
+        OFFSET.X, OFFSET.Y = ox, oy
+        pawn:K2_AddActorWorldOffset(OFFSET, true, SWEEP_HIT, false)
         local moved = pawn:K2_GetActorLocation()
         local mx, my = moved.X - x, moved.Y - y
         -- A blocked sweep moves less than asked: drop the carried error rather than push into the wall.

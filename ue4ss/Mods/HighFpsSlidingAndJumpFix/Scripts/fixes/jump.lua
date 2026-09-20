@@ -21,6 +21,12 @@ local EMULATE_RELEASE_ROUNDING = true -- also round early jump releases up to th
 local fix = { name = "jump height fix", enabled = true }
 
 local jump = nil -- zero-gravity jump rise being tracked or extended
+local VELOCITY = { X = 0, Y = 0, Z = 0 } -- reused for the writes below, so a jump allocates nothing
+
+local function setVelocity(cmc, x, y, z)
+    VELOCITY.X, VELOCITY.Y, VELOCITY.Z = x, y, z
+    cmc.Velocity = VELOCITY
+end
 
 -- Zero-gravity rise time (seconds) that 30 FPS produces when the no-gravity effect times out.
 -- The effect's timer is checked after each frame's move, so the rise lasts ceil(H * 30) frames,
@@ -64,7 +70,7 @@ local function finishJump(cmc)
     local vel = cmc.Velocity
     local vz2 = vel.Z * vel.Z + 2 * g * j.vz * leftover
     if g <= 0 or vel.Z <= 0 or vz2 <= 0 then return end
-    cmc.Velocity = { X = vel.X, Y = vel.Y, Z = math.sqrt(vz2) }
+    setVelocity(cmc, vel.X, vel.Y, math.sqrt(vz2))
 end
 
 -- Runs before each world tick, so the values read describe the frame that just finished and any
@@ -123,7 +129,7 @@ function fix.update(ctx)
     jump.restoreGravity = gravity
     cmc.GravityScale = 0
     if released then
-        cmc.Velocity = { X = vel.X, Y = vel.Y, Z = jump.vz }
+        setVelocity(cmc, vel.X, vel.Y, jump.vz)
     end
 end
 
