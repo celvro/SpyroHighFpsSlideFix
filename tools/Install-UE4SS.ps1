@@ -45,8 +45,12 @@ if (-not $ModsOnly) {
     $settings = Join-Path $gameUe4ss 'UE4SS-settings.ini'
     $ini = Get-Content $settings -Raw
     $ini = $ini -replace '(?m)^ConsoleEnabled = .*$', 'ConsoleEnabled = 1'
-    # Hot reload (Ctrl+R) occasionally crashes this UE4SS build; restart the game if it does.
+    # Hot reload: Ctrl+R, and saving a file in a mod's Scripts folder reloads that mod on its own, so
+    # a probe change can be tried without restarting the game. Both need the patched UE4SS.dll in
+    # bin\ue4ss-dist (tools\ue4ss-patches\luamod-hot-reload-actions-mutex.patch); the stock build
+    # crashes the game on a reload.
     $ini = $ini -replace '(?m)^EnableHotReloadSystem = .*$', 'EnableHotReloadSystem = 1'
+    $ini = $ini -replace '(?m)^EnableAutoReloadingLuaMods = .*$', 'EnableAutoReloadingLuaMods = 1'
     $ini = $ini -replace '(?m)^MajorVersion = .*$', 'MajorVersion = 4'
     $ini = $ini -replace '(?m)^MinorVersion = .*$', 'MinorVersion = 19'
     Set-Content $settings $ini -NoNewline
@@ -56,9 +60,30 @@ if (-not $ModsOnly) {
 function Deploy-LuaMod($mod) {
     $target = Join-Path $gameUe4ss "Mods\$($mod.Name)"
     New-Item -ItemType Directory -Force $target | Out-Null
-    Copy-Item (Join-Path $mod.FullName '*') $target -Recurse -Force
-    Set-Content (Join-Path $target 'enabled.txt') '' -NoNewline
-    Write-Host "Deployed Lua mod $($mod.Name)"
+    # Only files that actually differ, because UE4SS reloads a mod as soon as anything under its
+    # Scripts folder is written: copying everything every time reloads mods that didn't change, and
+    # reloading is the risky moment (see docs/ue4ss.md). Sizes and contents, not timestamps: a copy
+    # keeps the source's write time.
+    $copied = 0
+    foreach ($source in Get-ChildItem $mod.FullName -Recurse -File) {
+        $relative = $source.FullName.Substring($mod.FullName.Length + 1)
+        $destination = Join-Path $target $relative
+        $existing = Get-Item $destination -ErrorAction SilentlyContinue
+        if ($existing -and $existing.Length -eq $source.Length -and
+            (Get-FileHash $destination).Hash -eq (Get-FileHash $source.FullName).Hash) {
+            continue
+        }
+        New-Item -ItemType Directory -Force (Split-Path -Parent $destination) | Out-Null
+        Copy-Item $source.FullName $destination -Force
+        $copied++
+    }
+    $enabled = Join-Path $target 'enabled.txt'
+    if (-not (Test-Path $enabled)) { Set-Content $enabled '' -NoNewline }
+    if ($copied) {
+        Write-Host "Deployed Lua mod $($mod.Name) ($copied file(s) changed)"
+    } else {
+        Write-Host "Lua mod $($mod.Name) is already up to date"
+    }
 }
 
 foreach ($mod in Get-ChildItem (Join-Path $RepoRoot 'ue4ss\Mods') -Directory) {

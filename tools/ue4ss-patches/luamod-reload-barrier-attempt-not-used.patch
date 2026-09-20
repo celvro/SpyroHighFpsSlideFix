@@ -1,0 +1,493 @@
+diff --git a/UE4SS/include/Mod/LuaMod.hpp b/UE4SS/include/Mod/LuaMod.hpp
+index 3392d46..819656c 100644
+--- a/UE4SS/include/Mod/LuaMod.hpp
++++ b/UE4SS/include/Mod/LuaMod.hpp
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include <chrono>
++#include <atomic>
+ #include <mutex>
+ #include <string>
+ #include <thread>
+@@ -179,6 +180,13 @@ namespace RC
+         static inline std::vector<FunctionHookData> m_script_hook_callbacks{};
+         static inline bool m_is_currently_executing_game_action{};
+         static inline std::recursive_mutex m_thread_actions_mutex{};
++        // Set while a Lua mod is being torn down and restarted (auto-reload, Ctrl+R). That happens on
++        // another thread while the game thread keeps calling into Lua, and Lua is not thread-safe: two
++        // threads allocating in one lua_State corrupt the heap (STATUS_HEAP_CORRUPTION, no crash dump).
++        // The game-thread paths that run Lua skip their work while this is set - a frame or two of a
++        // reloading mod not running - instead of racing it. It is a flag rather than the mutex because a
++        // mod's startup code can wait on the game thread, which with the mutex held would deadlock.
++        static inline std::atomic<bool> m_reloading{false};
+ 
+       private:
+         std::jthread m_async_thread;
+diff --git a/UE4SS/src/Mod/LuaMod.cpp b/UE4SS/src/Mod/LuaMod.cpp
+index 5d97f0e..0c7352e 100644
+--- a/UE4SS/src/Mod/LuaMod.cpp
++++ b/UE4SS/src/Mod/LuaMod.cpp
+@@ -131,6 +131,9 @@ namespace RC
+ 
+     static auto lua_unreal_script_function_hook_pre(Unreal::UnrealScriptFunctionCallableContext context, void* custom_data) -> void
+     {
++        // A Lua mod is being reloaded on another thread: leave its Lua state alone this frame.
++        if (LuaMod::m_reloading.load(std::memory_order_acquire)) return;
++
+         TRY([&]() {
+             // Fetch the data corresponding to this UFunction
+             auto& lua_data = *static_cast<LuaUnrealScriptFunctionData*>(custom_data);
+@@ -235,6 +238,9 @@ namespace RC
+ 
+     static auto lua_unreal_script_function_hook_post(Unreal::UnrealScriptFunctionCallableContext context, void* custom_data) -> void
+     {
++        // A Lua mod is being reloaded on another thread: leave its Lua state alone this frame.
++        if (LuaMod::m_reloading.load(std::memory_order_acquire)) return;
++
+         // Fetch the data corresponding to this UFunction
+         auto& lua_data = *static_cast<LuaUnrealScriptFunctionData*>(custom_data);
+ 
+@@ -2292,6 +2298,9 @@ Overloads:
+         });
+ 
+         lua.register_function("NotifyOnNewObject", [](const LuaMadeSimple::Lua& lua) -> int {
++            // The container this adds to is read on the game thread, and LuaMod::uninstall() erases from it
++            // on the reload thread: registering has to hold the same mutex as both.
++            std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+             std::string error_overload_not_found{R"(
+ No overload found for function 'NotifyOnNewObject'.
+ Overloads:
+@@ -2415,6 +2424,9 @@ Overloads:
+         });
+ 
+         lua.register_function("RegisterLoadMapPreHook", [](const LuaMadeSimple::Lua& lua) -> int {
++            // The container this adds to is read on the game thread, and LuaMod::uninstall() erases from it
++            // on the reload thread: registering has to hold the same mutex as both.
++            std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+             std::string error_overload_not_found{R"(
+ No overload found for function 'RegisterLoadMapPreHook'.
+ Overloads:
+@@ -2442,6 +2454,9 @@ Overloads:
+         });
+ 
+         lua.register_function("RegisterLoadMapPostHook", [](const LuaMadeSimple::Lua& lua) -> int {
++            // The container this adds to is read on the game thread, and LuaMod::uninstall() erases from it
++            // on the reload thread: registering has to hold the same mutex as both.
++            std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+             std::string error_overload_not_found{R"(
+ No overload found for function 'RegisterLoadMapPostHook'.
+ Overloads:
+@@ -2469,6 +2484,9 @@ Overloads:
+         });
+ 
+         lua.register_function("RegisterInitGameStatePreHook", [](const LuaMadeSimple::Lua& lua) -> int {
++            // The container this adds to is read on the game thread, and LuaMod::uninstall() erases from it
++            // on the reload thread: registering has to hold the same mutex as both.
++            std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+             std::string error_overload_not_found{R"(
+ No overload found for function 'RegisterInitGameStatePreHook'.
+ Overloads:
+@@ -2497,6 +2515,9 @@ Overloads:
+         });
+ 
+         lua.register_function("RegisterInitGameStatePostHook", [](const LuaMadeSimple::Lua& lua) -> int {
++            // The container this adds to is read on the game thread, and LuaMod::uninstall() erases from it
++            // on the reload thread: registering has to hold the same mutex as both.
++            std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+             std::string error_overload_not_found{R"(
+ No overload found for function 'RegisterInitGameStatePostHook'.
+ Overloads:
+@@ -2525,6 +2546,9 @@ Overloads:
+         });
+ 
+         lua.register_function("RegisterBeginPlayPreHook", [](const LuaMadeSimple::Lua& lua) -> int {
++            // The container this adds to is read on the game thread, and LuaMod::uninstall() erases from it
++            // on the reload thread: registering has to hold the same mutex as both.
++            std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+             std::string error_overload_not_found{R"(
+ No overload found for function 'RegisterBeginPlayPreHook'.
+ Overloads:
+@@ -2553,6 +2577,9 @@ Overloads:
+         });
+ 
+         lua.register_function("RegisterBeginPlayPostHook", [](const LuaMadeSimple::Lua& lua) -> int {
++            // The container this adds to is read on the game thread, and LuaMod::uninstall() erases from it
++            // on the reload thread: registering has to hold the same mutex as both.
++            std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+             std::string error_overload_not_found{R"(
+ No overload found for function 'RegisterBeginPlayPostHook'.
+ Overloads:
+@@ -2581,6 +2608,9 @@ Overloads:
+         });
+ 
+         lua.register_function("RegisterEndPlayPreHook", [](const LuaMadeSimple::Lua& lua) -> int {
++            // The container this adds to is read on the game thread, and LuaMod::uninstall() erases from it
++            // on the reload thread: registering has to hold the same mutex as both.
++            std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+             std::string error_overload_not_found{R"(
+ No overload found for function 'RegisterEndPlayPreHook'.
+ Overloads:
+@@ -2609,6 +2639,9 @@ Overloads:
+         });
+ 
+         lua.register_function("RegisterEndPlayPostHook", [](const LuaMadeSimple::Lua& lua) -> int {
++            // The container this adds to is read on the game thread, and LuaMod::uninstall() erases from it
++            // on the reload thread: registering has to hold the same mutex as both.
++            std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+             std::string error_overload_not_found{R"(
+ No overload found for function 'RegisterEndPlayPostHook'.
+ Overloads:
+@@ -3126,6 +3159,9 @@ Overloads:
+         });
+ 
+         lua.register_function("RegisterProcessConsoleExecPreHook", [](const LuaMadeSimple::Lua& lua) -> int {
++            // The container this adds to is read on the game thread, and LuaMod::uninstall() erases from it
++            // on the reload thread: registering has to hold the same mutex as both.
++            std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+             std::string error_overload_not_found{R"(
+ No overload found for function 'RegisterProcessConsoleExecPreHook'.
+ Overloads:
+@@ -3147,6 +3183,9 @@ Overloads:
+         });
+ 
+         lua.register_function("RegisterProcessConsoleExecPostHook", [](const LuaMadeSimple::Lua& lua) -> int {
++            // The container this adds to is read on the game thread, and LuaMod::uninstall() erases from it
++            // on the reload thread: registering has to hold the same mutex as both.
++            std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+             std::string error_overload_not_found{R"(
+ No overload found for function 'RegisterProcessConsoleExecPostHook'.
+ Overloads:
+@@ -3168,6 +3207,9 @@ Overloads:
+         });
+ 
+         lua.register_function("RegisterCallFunctionByNameWithArgumentsPreHook", [](const LuaMadeSimple::Lua& lua) -> int {
++            // The container this adds to is read on the game thread, and LuaMod::uninstall() erases from it
++            // on the reload thread: registering has to hold the same mutex as both.
++            std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+             std::string error_overload_not_found{R"(
+ No overload found for function 'RegisterCallFunctionByNameWithArgumentsPreHook'.
+ Overloads:
+@@ -3189,6 +3231,9 @@ Overloads:
+         });
+ 
+         lua.register_function("RegisterCallFunctionByNameWithArgumentsPostHook", [](const LuaMadeSimple::Lua& lua) -> int {
++            // The container this adds to is read on the game thread, and LuaMod::uninstall() erases from it
++            // on the reload thread: registering has to hold the same mutex as both.
++            std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+             std::string error_overload_not_found{R"(
+ No overload found for function 'RegisterCallFunctionByNameWithArgumentsPostHook'.
+ Overloads:
+@@ -3210,6 +3255,9 @@ Overloads:
+         });
+ 
+         lua.register_function("RegisterULocalPlayerExecPreHook", [](const LuaMadeSimple::Lua& lua) -> int {
++            // The container this adds to is read on the game thread, and LuaMod::uninstall() erases from it
++            // on the reload thread: registering has to hold the same mutex as both.
++            std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+             std::string error_overload_not_found{R"(
+ No overload found for function 'RegisterULocalPlayerExecPreHook'.
+ Overloads:
+@@ -3231,6 +3279,9 @@ Overloads:
+         });
+ 
+         lua.register_function("RegisterULocalPlayerExecPostHook", [](const LuaMadeSimple::Lua& lua) -> int {
++            // The container this adds to is read on the game thread, and LuaMod::uninstall() erases from it
++            // on the reload thread: registering has to hold the same mutex as both.
++            std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+             std::string error_overload_not_found{R"(
+ No overload found for function 'RegisterULocalPlayerExecPostHook'.
+ Overloads:
+@@ -3782,9 +3833,19 @@ Overloads:
+ 
+     static auto process_simple_actions(std::vector<LuaMod::SimpleLuaAction>& actions) -> void
+     {
++        // A Lua mod is being reloaded on another thread: leave its Lua state alone this frame.
++        if (LuaMod::m_reloading.load(std::memory_order_acquire)) return;
++
++        // The mutex is held for the whole function, including while the Lua callbacks run.
++        // The actions are moved out of the container, so LuaMod::uninstall() (which runs on the
++        // filesystem watcher thread for auto-reload, and erases this mod's actions before closing its
++        // Lua state) cannot see them: if it got the mutex between the move and the call, it would close
++        // the state out from under the callback and the game thread would then run Lua on freed memory.
++        // The mutex is recursive, so a callback registering more actions is unaffected.
++        std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
++
+         std::vector<LuaMod::SimpleLuaAction> to_run{};
+         {
+-            std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+             if (actions.empty())
+             {
+                 return;
+@@ -3813,7 +3874,6 @@ Overloads:
+ 
+         if (!deferred.empty())
+         {
+-            std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+             actions.insert(
+                 actions.end(),
+                 std::make_move_iterator(deferred.begin()),
+@@ -3825,6 +3885,9 @@ Overloads:
+     // This MUST run on the game thread because Lua is NOT thread-safe
+     static auto process_pending_notify_on_new_object_callbacks() -> void
+     {
++        // A Lua mod is being reloaded on another thread: leave its Lua state alone this frame.
++        if (LuaMod::m_reloading.load(std::memory_order_acquire)) return;
++
+         struct PendingNotifyExec
+         {
+             uint64_t callback_id{};
+@@ -3938,6 +4001,9 @@ Overloads:
+     template <GameThreadExecutionMethod Executor>
+     static auto process_delayed_actions(std::vector<LuaMod::DelayedGameThreadAction>& actions) -> void
+     {
++        // A Lua mod is being reloaded on another thread: leave its Lua state alone this frame.
++        if (LuaMod::m_reloading.load(std::memory_order_acquire)) return;
++
+         struct ReadyDelayedExec
+         {
+             size_t index{};
+@@ -3945,9 +4011,17 @@ Overloads:
+             int32_t lua_action_function_ref{};
+         };
+ 
++        // Held for the whole function, including while the Lua callbacks run: `ready` holds raw
++        // LuaMadeSimple::Lua pointers, and LuaMod::uninstall() (the auto-reload path, on the filesystem
++        // watcher thread) erases this mod's actions and closes its Lua state under the same mutex. With
++        // the callbacks running outside the lock, a reload landing in that window left the game thread
++        // calling into a closed lua_State on the next engine tick, which is the "Fatal error!" crash on
++        // hot reload (a mod with a per-frame LoopInGameThreadAfterFrames hit it almost every reload).
++        // The mutex is recursive, so callbacks that queue more actions are unaffected.
++        std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
++
+         std::vector<ReadyDelayedExec> ready{};
+         {
+-            std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+             const auto now = std::chrono::steady_clock::now();
+             for (size_t i = 0; i < actions.size(); ++i)
+             {
+@@ -4020,7 +4094,6 @@ Overloads:
+         }
+ 
+         {
+-            std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+             const auto now = std::chrono::steady_clock::now();
+             for (auto& exec : ready)
+             {
+@@ -6283,6 +6356,9 @@ Overloads:
+ 
+     static auto script_hook([[maybe_unused]] Unreal::Hook::TCallbackIterationData<void>& CallbackIterationData, [[maybe_unused]] Unreal::UObject* Context, Unreal::FFrame& Stack, [[maybe_unused]] void* RESULT_DECL) -> void
+     {
++        // A Lua mod is being reloaded on another thread: leave its Lua state alone this frame.
++        if (LuaMod::m_reloading.load(std::memory_order_acquire)) return;
++
+         std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+ 
+         auto execute_hook = [&](std::vector<LuaMod::FunctionHookData>& callback_container, bool precise_name_match) {
+@@ -6441,6 +6517,9 @@ Overloads:
+         Unreal::Hook::RegisterLoadMapPreCallback(
+                 [](Unreal::Hook::TCallbackIterationData<bool>& CallbackIterationData, Unreal::UEngine* Engine, Unreal::FWorldContext& WorldContext, Unreal::FURL URL, Unreal::UPendingNetGame* PendingGame, Unreal::FString& Error) {
+                     TRY([&] {
++                        // Locked for the same reason as the action processors: a Lua mod reload erases from this
++                        // container and closes its Lua state on another thread while this runs on the game thread.
++                        std::lock_guard<std::recursive_mutex> read_guard{LuaMod::m_thread_actions_mutex};
+                         for (const auto& callback_data : m_load_map_pre_callbacks)
+                         {
+                             for (const auto& [lua_ptr, registry_index] : callback_data.registry_indexes)
+@@ -6476,6 +6555,9 @@ Overloads:
+         Unreal::Hook::RegisterLoadMapPostCallback(
+                 [](Unreal::Hook::TCallbackIterationData<bool>& CallbackIterationData, Unreal::UEngine* Engine, Unreal::FWorldContext& WorldContext, Unreal::FURL URL, Unreal::UPendingNetGame* PendingGame, Unreal::FString& Error) {
+                     TRY([&] {
++                        // Locked for the same reason as the action processors: a Lua mod reload erases from this
++                        // container and closes its Lua state on another thread while this runs on the game thread.
++                        std::lock_guard<std::recursive_mutex> read_guard{LuaMod::m_thread_actions_mutex};
+                         for (const auto& callback_data : m_load_map_post_callbacks)
+                         {
+                             for (const auto& [lua_ptr, registry_index] : callback_data.registry_indexes)
+@@ -6510,6 +6592,9 @@ Overloads:
+ 
+         Unreal::Hook::RegisterInitGameStatePreCallback([]([[maybe_unused]] Unreal::Hook::TCallbackIterationData<void>& CallbackIterationData, [[maybe_unused]] Unreal::AGameModeBase* Context) {
+             TRY([&] {
++                // Locked for the same reason as the action processors: a Lua mod reload erases from this
++                // container and closes its Lua state on another thread while this runs on the game thread.
++                std::lock_guard<std::recursive_mutex> read_guard{LuaMod::m_thread_actions_mutex};
+                 for (const auto& callback_data : m_init_game_state_pre_callbacks)
+                 {
+                     for (const auto& [lua_ptr, registry_index] : callback_data.registry_indexes)
+@@ -6527,6 +6612,9 @@ Overloads:
+ 
+         Unreal::Hook::RegisterInitGameStatePostCallback([]([[maybe_unused]] Unreal::Hook::TCallbackIterationData<void>& CallbackIterationData, [[maybe_unused]] Unreal::AGameModeBase* Context) {
+             TRY([&] {
++                // Locked for the same reason as the action processors: a Lua mod reload erases from this
++                // container and closes its Lua state on another thread while this runs on the game thread.
++                std::lock_guard<std::recursive_mutex> read_guard{LuaMod::m_thread_actions_mutex};
+                 for (const auto& callback_data : m_init_game_state_post_callbacks)
+                 {
+                     for (const auto& [lua_ptr, registry_index] : callback_data.registry_indexes)
+@@ -6544,6 +6632,9 @@ Overloads:
+ 
+         Unreal::Hook::RegisterBeginPlayPreCallback([]([[maybe_unused]] Unreal::Hook::TCallbackIterationData<void>& CallbackIterationData, [[maybe_unused]] Unreal::AActor* Context) {
+             TRY([&] {
++                // Locked for the same reason as the action processors: a Lua mod reload erases from this
++                // container and closes its Lua state on another thread while this runs on the game thread.
++                std::lock_guard<std::recursive_mutex> read_guard{LuaMod::m_thread_actions_mutex};
+                 for (const auto& callback_data : m_begin_play_pre_callbacks)
+                 {
+                     for (const auto& [lua_ptr, registry_index] : callback_data.registry_indexes)
+@@ -6561,6 +6652,9 @@ Overloads:
+ 
+         Unreal::Hook::RegisterBeginPlayPostCallback([]([[maybe_unused]] Unreal::Hook::TCallbackIterationData<void>& CallbackIterationData, [[maybe_unused]] Unreal::AActor* Context) {
+             TRY([&] {
++                // Locked for the same reason as the action processors: a Lua mod reload erases from this
++                // container and closes its Lua state on another thread while this runs on the game thread.
++                std::lock_guard<std::recursive_mutex> read_guard{LuaMod::m_thread_actions_mutex};
+                 for (const auto& callback_data : m_begin_play_post_callbacks)
+                 {
+                     for (const auto& [lua_ptr, registry_index] : callback_data.registry_indexes)
+@@ -6578,6 +6672,9 @@ Overloads:
+ 
+         Unreal::Hook::RegisterEndPlayPreCallback([]([[maybe_unused]] Unreal::Hook::TCallbackIterationData<void>& CallbackIterationData, [[maybe_unused]] Unreal::AActor* Context, Unreal::EEndPlayReason EndPlayReason) {
+             TRY([&] {
++                // Locked for the same reason as the action processors: a Lua mod reload erases from this
++                // container and closes its Lua state on another thread while this runs on the game thread.
++                std::lock_guard<std::recursive_mutex> read_guard{LuaMod::m_thread_actions_mutex};
+                 for (const auto& callback_data : m_end_play_pre_callbacks)
+                 {
+                     for (const auto& [lua_ptr, registry_index] : callback_data.registry_indexes)
+@@ -6597,6 +6694,9 @@ Overloads:
+ 
+         Unreal::Hook::RegisterEndPlayPostCallback([]([[maybe_unused]] Unreal::Hook::TCallbackIterationData<void>& CallbackIterationData, [[maybe_unused]] Unreal::AActor* Context, Unreal::EEndPlayReason EndPlayReason) {
+             TRY([&] {
++                // Locked for the same reason as the action processors: a Lua mod reload erases from this
++                // container and closes its Lua state on another thread while this runs on the game thread.
++                std::lock_guard<std::recursive_mutex> read_guard{LuaMod::m_thread_actions_mutex};
+                 for (const auto& callback_data : m_end_play_post_callbacks)
+                 {
+                     for (const auto& [lua_ptr, registry_index] : callback_data.registry_indexes)
+@@ -6619,6 +6719,14 @@ Overloads:
+                 // IMPORTANT: StaticConstructObject can be called from outside of the game thread (loading threads, etc.)
+                 // Lua is NOT thread-safe. If we're on the game thread, we can call Lua directly.
+                 // If we're on another thread, we must queue the callback for later processing.
++
++                // A Lua mod is being reloaded on another thread: leave its Lua state alone, and don't
++                // queue anything for a callback that is about to be replaced.
++                if (LuaMod::m_reloading.load(std::memory_order_acquire))
++                {
++                    return constructed_object;
++                }
++
+                 std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+ 
+                 Unreal::UStruct* object_class = constructed_object->GetClassPrivate();
+@@ -6719,6 +6827,9 @@ Overloads:
+         Unreal::Hook::RegisterULocalPlayerExecPreCallback([](Unreal::ULocalPlayer* context, Unreal::UWorld* in_world, const TCHAR* cmd, Unreal::FOutputDevice& ar)
+                                                                   -> Unreal::Hook::ULocalPlayerExecCallbackReturnValue {
+             return TRY([&] {
++                // Locked for the same reason as the action processors: a Lua mod reload erases from this
++                // container and closes its Lua state on another thread while this runs on the game thread.
++                std::lock_guard<std::recursive_mutex> read_guard{LuaMod::m_thread_actions_mutex};
+                 for (const auto& callback_data : m_local_player_exec_pre_callbacks)
+                 {
+                     Unreal::Hook::ULocalPlayerExecCallbackReturnValue return_value{};
+@@ -6775,6 +6886,9 @@ Overloads:
+         Unreal::Hook::RegisterULocalPlayerExecPostCallback([](Unreal::ULocalPlayer* context, Unreal::UWorld* in_world, const TCHAR* cmd, Unreal::FOutputDevice& ar)
+                                                                    -> Unreal::Hook::ULocalPlayerExecCallbackReturnValue {
+             return TRY([&] {
++                // Locked for the same reason as the action processors: a Lua mod reload erases from this
++                // container and closes its Lua state on another thread while this runs on the game thread.
++                std::lock_guard<std::recursive_mutex> read_guard{LuaMod::m_thread_actions_mutex};
+                 for (const auto& callback_data : m_local_player_exec_post_callbacks)
+                 {
+                     Unreal::Hook::ULocalPlayerExecCallbackReturnValue return_value{};
+@@ -6833,6 +6947,9 @@ Overloads:
+                         -> std::pair<bool, bool> {
+                     return TRY([&] {
+                         std::pair<bool, bool> return_value{};
++                        // Locked for the same reason as the action processors: a Lua mod reload erases from this
++                        // container and closes its Lua state on another thread while this runs on the game thread.
++                        std::lock_guard<std::recursive_mutex> read_guard{LuaMod::m_thread_actions_mutex};
+                         for (const auto& callback_data : m_call_function_by_name_with_arguments_pre_callbacks)
+                         {
+ 
+@@ -6875,6 +6992,9 @@ Overloads:
+                         -> std::pair<bool, bool> {
+                     return TRY([&] {
+                         std::pair<bool, bool> return_value{};
++                        // Locked for the same reason as the action processors: a Lua mod reload erases from this
++                        // container and closes its Lua state on another thread while this runs on the game thread.
++                        std::lock_guard<std::recursive_mutex> read_guard{LuaMod::m_thread_actions_mutex};
+                         for (const auto& callback_data : m_call_function_by_name_with_arguments_post_callbacks)
+                         {
+ 
+@@ -7010,6 +7130,9 @@ Overloads:
+                         auto command_parts = explode_by_occurrence_with_quotes(command, STR(' '));
+ 
+                         std::pair<bool, bool> return_value{};
++                        // Locked for the same reason as the action processors: a Lua mod reload erases from this
++                        // container and closes its Lua state on another thread while this runs on the game thread.
++                        std::lock_guard<std::recursive_mutex> read_guard{LuaMod::m_thread_actions_mutex};
+                         for (const auto& callback_data : m_process_console_exec_pre_callbacks)
+                         {
+ 
+@@ -7060,6 +7183,9 @@ Overloads:
+                         auto command_parts = explode_by_occurrence_with_quotes(command, STR(' '));
+ 
+                         std::pair<bool, bool> return_value{};
++                        // Locked for the same reason as the action processors: a Lua mod reload erases from this
++                        // container and closes its Lua state on another thread while this runs on the game thread.
++                        std::lock_guard<std::recursive_mutex> read_guard{LuaMod::m_thread_actions_mutex};
+                         for (const auto& callback_data : m_process_console_exec_post_callbacks)
+                         {
+                             for (const auto& [lua, registry_index] : callback_data.registry_indexes)
+diff --git a/UE4SS/src/UE4SSProgram.cpp b/UE4SS/src/UE4SSProgram.cpp
+index 8703cdf..1612d1b 100644
+--- a/UE4SS/src/UE4SSProgram.cpp
++++ b/UE4SS/src/UE4SSProgram.cpp
+@@ -1168,18 +1168,26 @@ namespace RC
+                         return;
+                     }
+                     m_pause_events_processing = true;
++                    // This whole reload runs on the watcher thread while the game thread keeps calling
++                    // into Lua; the flag makes the game-thread paths skip their Lua work until the new
++                    // mod has finished starting (LuaMod::m_reloading).
++                    LuaMod::m_reloading.store(true, std::memory_order_release);
+                     mod->uninstall();
+-                    auto& mod_ref = *std::ranges::find_if(m_mods, [&](const std::unique_ptr<Mod>& mod_ptr) {
++                    auto mod_it = std::ranges::find_if(m_mods, [&](const std::unique_ptr<Mod>& mod_ptr) {
+                         return mod_ptr.get() == mod;
+                     });
+-                    if (!mod_ref)
++                    if (mod_it == m_mods.end() || !*mod_it)
+                     {
++                        LuaMod::m_reloading.store(false, std::memory_order_release);
++                        m_pause_events_processing = false;
+                         return;
+                     }
++                    auto& mod_ref = *mod_it;
+                     mod_ref = std::make_unique<LuaMod>(*this, StringType{mod_ref->get_name()}, mod_ref->get_path());
+                     m_pause_events_processing = false;
+                     Output::send(STR("Auto-reloading Lua mod '{}'\n"), mod_ref->get_name());
+                     mod_ref->start_mod();
++                    LuaMod::m_reloading.store(false, std::memory_order_release);
+                 }
+             });
+         }
+@@ -1759,6 +1767,9 @@ namespace RC
+ 
+         // Stop processing events while stuff isn't properly setup
+         m_pause_events_processing = true;
++        // Same as the auto-reload path: this runs on the event loop thread, so the game thread has to
++        // keep out of the Lua states until every mod has started again (LuaMod::m_reloading).
++        LuaMod::m_reloading.store(true, std::memory_order_release);
+ 
+         uninstall_mods();
+ 
+@@ -1777,6 +1788,8 @@ namespace RC
+         start_cpp_mods();
+         start_lua_mods();
+ 
++        LuaMod::m_reloading.store(false, std::memory_order_release);
++
+         if (Unreal::UnrealInitializer::StaticStorage::bIsInitialized)
+         {
+             fire_unreal_init_for_cpp_mods();
