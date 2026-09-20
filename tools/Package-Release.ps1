@@ -64,7 +64,9 @@ $entries["$prefix/enabled.txt"] = $null
 # released version shipped but this one doesn't gets an entry that overwrites it with a comment saying
 # it is gone. Only tagged releases count: files that came and went between them never reached anyone.
 $released = @{}
-$tags = @(& git -C $RepoRoot tag 2>$null)
+# Version order, so the newest tag that shipped a file is the one reported: plain `git tag` sorts
+# alphabetically, which would put 1.10.0 before 1.2.0.
+$tags = @(& git -C $RepoRoot tag --sort=v:refname 2>$null)
 if ($LASTEXITCODE -ne 0) {
     Write-Warning 'git tag failed: cannot check for files retired since the last release.'
 } elseif (-not $tags) {
