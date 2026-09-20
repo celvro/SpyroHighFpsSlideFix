@@ -13,6 +13,12 @@
 --   Y                  travel test: each way to change level and game, in one run (tools/traveltest.lua)
 --   U                  spawn test: every chase/flee character type in front of Spyro, one at a time (tools/spawntest.lua)
 --   J                  slide pose for screenshots: start the steep-slope slide here, press again to end it (tools/slide.lua)
+--   M                  record where you stand as a scripted-tour stop (tools/routes.lua, routes.txt)
+--   H                  record a stop in front of every kind of character in this level (tools/scan.lua)
+--   O                  scripted tour: every recorded stop, playing its input script, at 30/60/144/320 FPS (tools/autotest.lua)
+--
+-- Sparx is kept full while the probe is loaded (KEEP_SPARX_FULL below, lib/invuln.lua), so a test is not
+-- cut short by a death and a level reload; Spyro still takes hits and knockback.
 --
 -- Output, in this mod folder and the UE4SS console and log:
 --   trace_<stamp>.csv    one row per frame (columns in lib/trace.lua)
@@ -21,6 +27,7 @@
 --   buzz_<stamp>.csv     one row per frame while Buzz exists (trackers/buzz.lua)
 --   hits_<stamp>.csv     one row per blocking hit during a ground charge (trackers/hits.lua)
 --   stalls_<stamp>.csv   one row per NPC/enemy movement stretch (trackers/stalls.lua)
+--   autotest_<stamp>.csv one row per scripted-tour sample, per framerate (tools/autotest.lua)
 --   camdump_*.txt        every reflected FollowCameraComponent property (trackers/camera.lua)
 --   log lines            "seg", "drift", "rise" (trackers/movement.lua); "charge", "turn" (trackers/charge.lua);
 --                        "camlock", "camstuck", "camtransition", "camdump diff" (trackers/camera.lua);
@@ -29,7 +36,7 @@
 --                        (trackers/walkin.lua); "glide", "hover", "glideair" (trackers/glide.lua);
 --                        "flight", "flightramp", "flightrun" (trackers/flight.lua);
 --                        "chargestall" (trackers/hits.lua); "buzzrun" (trackers/buzz.lua);
---                        "stall", "stallsummary" (trackers/stalls.lua); "tour" (tools/tour.lua); "traveltest" (tools/traveltest.lua); "spawntest" (tools/spawntest.lua); "slide" (tools/slide.lua);
+--                        "stall", "stallsummary" (trackers/stalls.lua); "tour" (tools/tour.lua); "autotest" (tools/autotest.lua); "routes" (tools/routes.lua); "resume" (lib/resume.lua); "traveltest" (tools/traveltest.lua); "spawntest" (tools/spawntest.lua); "slide" (tools/slide.lua);
 --                        quicksave, reload and travel lines (tools/quicksave.lua); "glidetest" (tools/glidetest.lua)
 --
 -- Scripts/
@@ -39,6 +46,7 @@
 
 local UEHelpers = require("UEHelpers")
 local log = require("lib.log")
+local invuln = require("lib.invuln")
 local mouse = require("lib.mouse")
 local paths = require("lib.paths")
 local row = require("lib.row")
@@ -58,22 +66,33 @@ local supercharge = require("trackers.supercharge")
 local thieves = require("trackers.thieves")
 local stalls = require("trackers.stalls")
 local walkin = require("trackers.walkin")
+local resume = require("lib.resume")
 local quicksave = require("tools.quicksave")
 local glidetest = require("tools.glidetest")
 local tour = require("tools.tour")
 local traveltest = require("tools.traveltest")
 local spawntest = require("tools.spawntest")
 local slide = require("tools.slide")
+local autotest = require("tools.autotest")
+local routes = require("tools.routes")
+local scan = require("tools.scan")
+local dumpstate = require("tools.dumpstate")
 
+-- Sparx is topped up to full every couple of seconds while the probe runs, so a test is not cut short by a
+-- death and a level reload. He still takes hits and knockback (lib/invuln.lua).
+local KEEP_SPARX_FULL = true
 local DEFAULT_SIM_STEP = 0.05 -- engine default MaxSimulationTimeStep; the game never changes it
 local RECENT_FRAMES = 10
 local setFpsCap -- defined with the key binds below; the tour sets uncapped
+local requestRecord = false -- P: record this spot as a tour stop (tools/routes.lua)
 
 local function sample()
     mouse.register()
     hits.register()
     flames.beforeSample()
     traveltest.update() -- before the pawn checks: it runs through the title screen
+    resume.update()     -- also runs with no pawn: it drives the title screen after a restart
+    dumpstate.update()  -- the dumpstate.txt diagnostic, also with no pawn
     local pc = UEHelpers.GetPlayerController()
     if not pc:IsValid() then return end
     local pawn = pc.Pawn
@@ -123,11 +142,19 @@ local function sample()
     buzz.update(r, prev)
     stalls.update(r, prev, pawn)
     flames.update(r, frameTime)
+    if KEEP_SPARX_FULL then invuln.update(pawn) end
     quicksave.update(pawn, pc, cmc, r)
     glidetest.update(pawn, pc, cmc, r)
     tour.update(pawn, setFpsCap, stalls)
     spawntest.update(pawn, pc, setFpsCap, frameTime)
     slide.update(pawn, r)
+    autotest.update(pawn, pc, cmc, r, setFpsCap)
+    scan.update(pawn, pc)
+    if requestRecord then
+        requestRecord = false
+        local okRecord, recordErr = pcall(routes.record, pawn, pc, r)
+        if not okRecord then log("routes error: %s", tostring(recordErr)) end
+    end
     walkin.update(pc, cmc, r, prev)
     flight.update(pawn, cmc, r, prev)
     hits.update(r, prev)
@@ -165,6 +192,9 @@ RegisterKeyBind(Key.T, tour.toggle)
 RegisterKeyBind(Key.Y, traveltest.toggle)
 RegisterKeyBind(Key.U, spawntest.toggle)
 RegisterKeyBind(Key.J, slide.request)
+RegisterKeyBind(Key.O, autotest.toggle)
+RegisterKeyBind(Key.M, function() requestRecord = true end)
+RegisterKeyBind(Key.H, scan.request)
 
 NotifyOnNewObject("/Script/Engine.ParticleSystemComponent", flames.onNewComponent)
 NotifyOnNewObject(stalls.CLASS, stalls.onNewObject)

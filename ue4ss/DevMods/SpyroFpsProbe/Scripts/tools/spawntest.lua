@@ -43,6 +43,7 @@ local STALL_WANT = 0.3   -- seconds of wanting to move before a still state coun
 local MIN_FPS = 260
 local TRIGGER = paths.modDir .. "\\spawntest.txt"
 local PROGRESS = paths.modDir .. "\\spawntest_progress.txt"
+local STOP = paths.modDir .. "\\spawntest.stop" -- an empty file that stops a run that is already going
 local CSV = string.format("%s\\spawntest_%s.csv", paths.modDir, paths.stamp)
 -- Types that crash the game when spawned out of their setup (the next run skips a crashed type anyway;
 -- these save a restart). The skate-race crab aborted the engine on spawn (2026-09-19 13:56).
@@ -63,6 +64,7 @@ local requested = false
 local options = nil -- from the trigger file: { fps = <cap>, only = { pattern, ... } }
 local run = nil -- { index, phase = "spawn" | "watch" | "gap", until, cur }
 local nextPoll = 0
+local nextStopPoll = 0
 local file = nil
 
 local function readProgress()
@@ -287,6 +289,17 @@ end
 
 -- setFpsCap(cap) is main.lua's F-key handler.
 function spawntest.update(pawn, pc, setFpsCap, dt)
+    -- spawntest.stop stops a run that is already going (the start trigger is only read between runs),
+    -- so a test can be turned off without reaching for U in the game window.
+    if run and os.clock() >= nextStopPoll then
+        nextStopPoll = os.clock() + 1
+        local f = io.open(STOP, "r")
+        if f then
+            f:close()
+            os.remove(STOP)
+            requested = true
+        end
+    end
     if not run and os.clock() >= nextPoll then
         nextPoll = os.clock() + 1
         local f = io.open(TRIGGER, "r")

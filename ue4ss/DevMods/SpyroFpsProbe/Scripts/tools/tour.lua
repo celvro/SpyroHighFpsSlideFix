@@ -1,7 +1,9 @@
 -- Level tour (T): travels through every level in the stream data table (LS101 ... LS337), starting at
 -- the one Spyro is in, and stays DWELL seconds uncapped in each while trackers/stalls.lua watches the
 -- NPCs and enemies. Spyro just stands at the level start, so it catches patrols and wanderers, not
--- characters that only move once he's close. T again stops it.
+-- characters that only move once he is close. T again stops it. On arriving in each level it also runs
+-- tools/scan.lua, which records a scripted-tour stop in front of every kind of character there, so one
+-- tour builds the route file for tools/autotest.lua.
 --
 --   "tour" lines  start/stop, each level (arrived, or skipped when the travel timed out), then a
 --                 stallsummary for that level.
@@ -9,6 +11,7 @@ local levels = require("lib.levels")
 local invuln = require("lib.invuln")
 local log = require("lib.log")
 local quicksave = require("tools.quicksave")
+local scan = require("tools.scan")
 
 local DWELL = 25 -- seconds in each level after arriving
 -- Flight levels and speedways: Spyro never walks there (so travel never counts as arrived), and a crash
@@ -54,6 +57,7 @@ local function nextLevel(pawn)
     s.level = level
     if level == levels.current(pawn) then
         s.phase, s.dwellUntil = "dwell", os.clock() + DWELL
+        scan.request() -- while it is here anyway: a stop in front of each kind of character (tools/scan.lua)
     elseif quicksave.travel(pawn, level) then
         s.phase = "travel"
     else
@@ -97,6 +101,7 @@ function tour.update(pawn, setFpsCap, stalls)
             s.phase = "next"
         else
             s.phase, s.dwellUntil = "dwell", os.clock() + DWELL
+            scan.request() -- while it is here anyway: a stop in front of each kind of character (tools/scan.lua)
         end
     end
     if s.phase == "dwell" and os.clock() >= s.dwellUntil then
