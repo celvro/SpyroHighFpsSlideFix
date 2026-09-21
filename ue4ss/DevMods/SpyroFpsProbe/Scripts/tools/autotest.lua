@@ -264,11 +264,8 @@ local function stopFinished(pawn, pc, reason)
     log("autotest %d FPS %s stop %d (%s, %s): %s after %.1f s, %d samples",
         currentCap(), entry.stop.level, entry.id, entry.stop.script, entry.stop.note,
         reason, run.elapsed or 0, run.samples or 0)
-    -- Try to close whatever has him before the next teleport, rather than teleporting a Spyro who is
-    -- still in a conversation and recording another stop of him standing there too.
-    -- Holding the skip buttons was tried and measured: 29 of 32 attempts did not close the conversation,
-    -- at six and a half seconds each. The check at the next stop costs six tenths of a second and the
-    -- level reload is what actually works, so the holds are gone.
+    -- Ask again at the next stop, once the teleport has moved him away from whoever was talking to him.
+    -- Asking here only ever said he was still held, because the NPC was still standing there saying it.
     run.checkNext = locked or nil
     run.phase = "next"
     writeProgress()
