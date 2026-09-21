@@ -20,7 +20,7 @@
 --   restart          start from the beginning instead of resuming autotest_progress.txt
 --   caps=30,144      run these framerate caps (0 is uncapped)
 --   level=LS102      only stops in this level
---   script=jump      only stops with this script
+--   script=jump      only stops with this script (a comma list is allowed: script=walk,enterPlay)
 --
 -- Progress is written to autotest_progress.txt after every stop, so a crash or a restart
 -- (tools/Restart-Game.ps1 with lib/resume.lua) picks the run up where it stopped.
@@ -121,12 +121,22 @@ local function readOptions()
     return options
 end
 
+-- "walk" or "walk,enterPlay": which scripts this run covers, so a route of a thousand stops can be cut
+-- down to the ones worth the hours (the walks that start a chase, the dialogue that starts a minigame).
+local function wantedScripts(text)
+    if not text then return nil end
+    local set = {}
+    for name in tostring(text):gmatch("[^,]+") do set[(name:gsub("%s", ""))] = true end
+    return set
+end
+
 -- The stops this run covers, in level order so each level is travelled to once.
 local function buildStops(options)
     local all, picked = routes.all(), {}
+    local only = wantedScripts(options.script)
     for index, stop in ipairs(all) do
         local wanted = (not options.level or stop.level == options.level)
-            and (not options.script or stop.script == options.script)
+            and (not only or only[stop.script])
         if wanted then
             if scripts.exists(stop.script) then
                 picked[#picked + 1] = { stop = stop, id = index }
