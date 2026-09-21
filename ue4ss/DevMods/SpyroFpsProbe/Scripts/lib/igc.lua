@@ -80,14 +80,41 @@ end
 
 -- What is loaded right now, for working out whether the class names above are the right ones. Logged by
 -- the first attempt in a run so a tour that never finds one says so instead of silently falling back.
-function igc.report()
+function igc.report(pawn)
     local list = instances()
-    log("igc: %d cinematic object(s) found", #list)
+    log("igc: %d cinematic object(s) found by name", #list)
     for i, object in ipairs(list) do
         if i > 5 then break end
         local name = "?"
         pcall(function() name = object:GetFullName() end)
         log("igc:   %s", tostring(name))
+    end
+    -- Nothing found by name means the guesses are wrong: an instance is of the level's own subclass.
+    -- Sweep every actor once and log the ones whose name says cinematic, so the real class name can be
+    -- read off the log instead of guessed at. Expensive, which is why it only runs when the names fail.
+    if #list > 0 then return end
+    local ok, actors = pcall(FindAllOf, "Actor")
+    if not ok or not actors then
+        log("igc: could not list actors to look for one")
+        return
+    end
+    local shown = 0
+    for _, actor in ipairs(actors) do
+        local name
+        pcall(function() name = actor:GetFullName() end)
+        if name and (name:find("IGC") or name:find("Dialog") or name:find("Cinemat")) then
+            shown = shown + 1
+            if shown <= 10 then log("igc: candidate %s", name) end
+        end
+    end
+    log("igc: %d of %d actors look like a cinematic", shown, #actors)
+    -- What is actually stopping him, while we are here: if the pawn says its movement input is ignored
+    -- then the gates are the answer and releasing them should have worked; if it does not, something
+    -- else is holding him and the level reload stays the only way out.
+    if pawn and pawn:IsValid() then
+        local ignored
+        pcall(function() ignored = pawn:IsMoveInputIgnored() end)
+        log("igc: pawn IsMoveInputIgnored = %s", tostring(ignored))
     end
 end
 

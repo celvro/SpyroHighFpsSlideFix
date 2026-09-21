@@ -280,7 +280,7 @@ local function stopFinished(pawn, pc, reason)
     if locked then
         if not run.igcReported then
             run.igcReported = true
-            igc.report()
+            igc.report(pawn)
         end
         igc.close(pc)
     end
