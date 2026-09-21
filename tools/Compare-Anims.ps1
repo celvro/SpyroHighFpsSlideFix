@@ -63,19 +63,21 @@ $caps = $rows | ForEach-Object { [int] $_.cap } | Sort-Object -Unique
 if ($caps -notcontains $Baseline) { throw "No $Baseline FPS pass in this run (caps: $($caps -join ', '))." }
 Write-Host "Caps: $($caps -join ', '); baseline $Baseline; characters: $Who"
 
-# Segments of one run never repeat a stop, so a key seen twice means two files hold the same stop
-# measured twice (two attempts at a run, not two segments of one). Merging those silently would make
-# the later attempt overwrite the baseline and compare passes that were never run against each other.
-$seen = @{}
+# A stop that is retried writes its samples twice: the recovery for a conversation that will not close
+# loads the level and plays the stop again, and the abandoned attempt is already in the CSV. Keep the
+# last of each (cap, stop, t, who), which is the attempt that ran to the end. Mixing two separate runs
+# of the same stops collapses the same way, so pass one file per stop range if that is what you have.
+$byKey = [ordered] @{}
 $dupes = 0
 foreach ($r in $rows) {
     $key = "$($r.cap)|$($r.stop)|$($r.t)|$($r.who)"
-    if ($seen.ContainsKey($key)) { $dupes++ } else { $seen[$key] = $true }
+    if ($byKey.Contains($key)) { $dupes++ }
+    $byKey[$key] = $r
 }
 if ($dupes -gt 0) {
-    Write-Warning ("{0} samples are measured more than once across these files: they are repeats of the same stops, not segments of one run. Pass one file per stop range." -f $dupes)
+    Write-Host ("Dropped {0} samples of abandoned attempts (a stop retried after a level reload writes twice)." -f $dupes)
+    $rows = @($byKey.Values)
 }
-
 # A montage played through a slot rather than from an asset is a runtime object named AnimMontage_<n>,
 # where n is a counter that keeps climbing for as long as the game is running. The 30 FPS pass got
 # AnimMontage_0..9 and the 320 pass AnimMontage_33..41 for the same NPC dialogue, so comparing the names
