@@ -22,12 +22,11 @@
 --                         enemy state, where they have moved to). Compared with tools/Compare-Anims.ps1.
 --   "autotest" lines      start/stop, each cap, each stop (or why it was skipped), and the run total
 --
--- A stop that ends "could not move" is one where he was held forward and stayed put. One on its own is
--- usually geometry: charging at something across water, or a spot facing a rock. Otherwise the game has
--- taken input away, almost always a conversation that never closed. The next stop then starts by pushing
--- forward for a moment: if he moves, the conversation ended with the stop and nothing is lost; if he
--- does not, the level is loaded again, which is the only thing that reliably clears one. Without any of
--- it, every stop after the first records a Spyro who cannot move and the log still calls them played.
+-- A stop that ends "could not move" is one where he was held forward and stayed put with nothing near
+-- him to explain it. Walking into the character he was sent at is not that: a character has collision
+-- and he stops against it further out than ARRIVE, which reads as arriving, not as being stuck. What is
+-- left is a spot facing a rock, or the rarer case of the game taking input away. The next stop then
+-- starts by pushing forward for a moment, and if he still cannot move the level is loaded again.
 --
 -- autotest.txt may hold options, one per line or space separated:
 --   restart          start from the beginning instead of resuming autotest_progress.txt
@@ -74,6 +73,11 @@ local DEATH_SETTLE = 1.0    -- seconds on his feet again after a death before th
 local ARRIVE = 100         -- distance to the stop target at which the walk stops (it has been reached).
                            -- 170 stopped him short of the range an NPC starts talking at, so the stops
                            -- meant to open a dialogue never opened one.
+local BLOCKED_BY_TARGET = 300 -- but a character has collision, and he stops against it further out than
+                           -- ARRIVE. Standing still this close to the one he was sent at is arriving,
+                           -- not being stuck: without this he pushes into it for the whole stop and the
+                           -- stop is thrown away as one where the game took input off him.
+local BLOCKED_AFTER = 1.0  -- seconds of walking before that counts, so a standing start is not "blocked"
 -- Dialogue is an in-game cinematic (Spyro_IGC_Base has SkipCheck and StartSkipTimer) and it takes input
 -- away until it closes. Holding each face button to skip one was tried and measured: 29 of 32 attempts
 -- failed, at six and a half seconds each, so the holds are gone. Loading the level again is what works.
@@ -476,12 +480,17 @@ end
 local function drive(pawn, pc, phase, into, r)
     local distance = targetDistance(r)
     local edge = not run.arrived and atEdge(pawn, r)
-    local arrived = run.arrived or edge or (distance and distance <= ARRIVE)
+    -- Walking into a character stops against its collision, which can be further out than ARRIVE: he
+    -- never gets to the distance that counts as arrived, so he is left pushing into it for the whole
+    -- stop and read as "cannot move". Standing still this close to what he was sent at IS arriving.
+    local blocked = not run.arrived and distance and distance <= BLOCKED_BY_TARGET
+        and (r.speed or 0) < LOCKED_SPEED and run.elapsed > BLOCKED_AFTER
+    local arrived = run.arrived or edge or blocked or (distance and distance <= ARRIVE)
     if arrived and not run.arrived then
         run.arrived = run.elapsed
         log("autotest: %s after %.1f s, no more walking for the rest of the stop",
             edge and "stopped at the edge of a drop" or
-            ("reached " .. currentEntry().stop.note), run.elapsed)
+            ((blocked and "up against " or "reached ") .. currentEntry().stop.note), run.elapsed)
     end
     -- Reaching the character (or a drop) lets go of the sticks, but the script's buttons carry on: a
     -- dialogue or minigame script has to keep tapping once it is standing in front of whoever starts it,
