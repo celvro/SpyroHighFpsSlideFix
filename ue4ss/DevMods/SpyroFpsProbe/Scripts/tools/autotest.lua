@@ -16,9 +16,11 @@
 --                         enemy state, where they have moved to). Compared with tools/Compare-Anims.ps1.
 --   "autotest" lines      start/stop, each cap, each stop (or why it was skipped), and the run total
 --
--- A stop that ends "input ignored" is one where he was held forward and did not move: the game had taken
--- input away, almost always a conversation that never closed. Three of those in a row load the level
--- again, which clears it; without that, every stop after the first one records a Spyro who cannot move.
+-- A stop that ends "could not move" is one where he was held forward and stayed put. One on its own is
+-- usually geometry: charging at something across water, or a spot facing a rock. Three in a row is the
+-- game having taken input away, almost always a conversation that never closed, and that loads the level
+-- again to clear it. Without that, every stop after the first records a Spyro who cannot move and the
+-- log still calls them played.
 --
 -- autotest.txt may hold options, one per line or space separated:
 --   restart          start from the beginning instead of resuming autotest_progress.txt
@@ -570,7 +572,7 @@ local function update(pawn, pc, cmc, r, setFpsCap)
         -- Held forward for this long without moving: he is not going to, and the stops after this one
         -- would all record the same frozen Spyro. End the stop and let nextStop count it.
         if (run.lockedFor or 0) >= LOCKED_SECONDS then
-            stopFinished(pawn, pc, "input ignored (still in a conversation?)")
+            stopFinished(pawn, pc, "could not move (blocked, or input taken away)")
             return
         end
         local phase, into = scripts.phaseAt(entry.stop.script, run.elapsed)
