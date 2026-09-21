@@ -126,10 +126,10 @@ local function sample()
     local frameTime = prev and r.time - prev.time or 0
     movement.update(r, util.isGrounded(r.mode))
     -- The scripted tour teleports Spyro onto a thousand stops and walks him at a character. His jump
-    -- height, glide, charge and camera belong to the level, not the character, so they run on the first
-    -- stop of each level at each framerate instead of at every character for the hours a tour takes.
+    -- height, glide, charge and camera belong to the level, not the character, so they run on the first few
+    -- stops of each level at each framerate instead of at every character for the hours a tour takes.
     local touring = autotest.running()
-    local measureLevel = (not touring) or autotest.firstOfLevel()
+    local measureLevel = (not touring) or autotest.measuring()
     if measureLevel then
         glide.update(r, prev, util.isGrounded(r.mode))
         supercharge.update(r, prev)

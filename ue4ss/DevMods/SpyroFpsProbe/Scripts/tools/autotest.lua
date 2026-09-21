@@ -74,6 +74,8 @@ local ARRIVE = 100         -- distance to the stop target at which the walk stop
 -- could not move holds each of these in turn before the next teleport.
 local DISMISS_BUTTONS = { "flame", "jump", "charge", "shoulderR" }
 local DISMISS_HOLD = 1.5   -- seconds each is held (StartSkipTimer implies a hold, not a tap)
+local MEASURE_STOPS = 3    -- stops per level per framerate that also run the camera and jump trackers:
+                           -- they measure the level, not the character standing in it
 local LOST_HEIGHT = 1000   -- drop from the stop that means he is out of the level, not playing the script
 local LOST_DISTANCE = 5000 -- and the same sideways (a respawn puts him at the level entrance)
 local LOCKED_SPEED = 5     -- below this while being told to walk, he is not walking at all
@@ -197,7 +199,7 @@ local function buildPlan(stops, caps)
         while last < #stops and stops[last + 1].stop.level == level do last = last + 1 end
         for _, cap in ipairs(caps) do
             for i = index, last do
-                plan[#plan + 1] = { entry = stops[i], cap = cap, first = (i == index) }
+                plan[#plan + 1] = { entry = stops[i], cap = cap, measure = (i - index) < MEASURE_STOPS }
             end
         end
         index = last + 1
@@ -690,12 +692,12 @@ function autotest.running()
     return run ~= nil and run.stops ~= nil
 end
 
--- The camera and jump trackers measure the level, not the character: one stop in a level says as much
+-- The camera and jump trackers measure the level, not the character: a few stops in a level say as much
 -- as fifty do, and running them at every character costs the whole length of a tour. True on the first
--- stop of each level at each framerate, which is the one that is worth measuring.
-function autotest.firstOfLevel()
+-- MEASURE_STOPS stops of each level at each framerate.
+function autotest.measuring()
     local step = run and run.plan and run.plan[run.index]
-    return step ~= nil and step.first == true
+    return step ~= nil and step.measure == true
 end
 
 return autotest
