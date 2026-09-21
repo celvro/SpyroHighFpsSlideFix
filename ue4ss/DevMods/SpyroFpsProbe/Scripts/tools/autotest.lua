@@ -9,6 +9,10 @@
 -- teleport, facing the same way, at a standstill, so the passes line up; tools/Compare-Autotest.ps1 and
 -- tools/Compare-Anims.ps1 join them on (level, stop, script, t).
 --
+-- Each level starts with Spyro on his own: a flame, a charge, a short hop and a glide, once each, before
+-- any stop walks into a character. Those are what the camera and jump trackers measure, and they belong
+-- to the level rather than to each of its fifty characters. They run first so no conversation is open.
+--
 -- Each stop is: travel to its level (unless already there), teleport onto it, wait SETTLE seconds for
 -- the camera and the ground check, then play the script while sampling every SAMPLE seconds.
 --
@@ -31,7 +35,7 @@
 --   game=2           only stops in that game's levels (1 = LS1xx, 2 = LS2xx, 3 = LS3xx)
 --   script=jump      only stops with this script (a comma list is allowed: script=walk,enterPlay)
 --
--- Spyro 1 and 3 each keep their own segment too: a run must not cross from one game into another: travelling live from LS135 into LS201 sets the game
+-- A run must not cross from one game into another: travelling live from LS135 into LS201 sets the game
 -- index, streams the level in and then leaves Spyro falling in a black void, because the checkpoint it
 -- starts at belongs to the game he was in. Restarting switches games properly (lib/resume.lua notes the
 -- game index), so run each game as its own segment: game=1, restart, game=2, restart, game=3. Stop
@@ -74,8 +78,10 @@ local ARRIVE = 100         -- distance to the stop target at which the walk stop
 -- could not move holds each of these in turn before the next teleport.
 local DISMISS_BUTTONS = { "flame", "jump", "charge", "shoulderR" }
 local DISMISS_HOLD = 1.5   -- seconds each is held (StartSkipTimer implies a hold, not a tap)
-local MEASURE_STOPS = 3    -- stops per level per framerate that also run the camera and jump trackers:
-                           -- they measure the level, not the character standing in it
+-- Spyro's own abilities, run once each at the start of every level at every framerate, on the first
+-- stop's spot. Running them at every character instead measured the same thing fifty times a level and
+-- was most of what a tour spent its hours on.
+local LEAD_SCRIPTS = { "flame", "charge", "hop", "glide" }
 local LOST_HEIGHT = 1000   -- drop from the stop that means he is out of the level, not playing the script
 local LOST_DISTANCE = 5000 -- and the same sideways (a respawn puts him at the level entrance)
 local LOCKED_SPEED = 5     -- below this while being told to walk, he is not walking at all
@@ -198,8 +204,20 @@ local function buildPlan(stops, caps)
         local last = index
         while last < #stops and stops[last + 1].stop.level == level do last = last + 1 end
         for _, cap in ipairs(caps) do
+            -- Spyro's own abilities, once each at the start of the level, on the first stop's spot:
+            -- flame, charge, a short hop and a glide. These are what the camera and jump trackers are
+            -- for, and they belong to the level rather than to whichever character is standing there,
+            -- so they are run once instead of at every stop. They come first, before any stop can walk
+            -- into an NPC and start a conversation that would eat the inputs.
+            for _, script in ipairs(LEAD_SCRIPTS) do
+                local stop = {}
+                for key, value in pairs(stops[index].stop) do stop[key] = value end
+                stop.script = script
+                stop.note = "Spyro " .. script
+                plan[#plan + 1] = { entry = { stop = stop, id = stops[index].id }, cap = cap, measure = true }
+            end
             for i = index, last do
-                plan[#plan + 1] = { entry = stops[i], cap = cap, measure = (i - index) < MEASURE_STOPS }
+                plan[#plan + 1] = { entry = stops[i], cap = cap }
             end
         end
         index = last + 1
@@ -692,9 +710,8 @@ function autotest.running()
     return run ~= nil and run.stops ~= nil
 end
 
--- The camera and jump trackers measure the level, not the character: a few stops in a level say as much
--- as fifty do, and running them at every character costs the whole length of a tour. True on the first
--- MEASURE_STOPS stops of each level at each framerate.
+-- True during the LEAD_SCRIPTS stops at the head of each level, which are the ones the camera and jump
+-- trackers exist to measure. They measure the level, not the character standing in it.
 function autotest.measuring()
     local step = run and run.plan and run.plan[run.index]
     return step ~= nil and step.measure == true

@@ -55,9 +55,9 @@ scripts.list = {
     -- Minigames and anything that starts with dialogue: walk into the trigger, then keep skipping.
     -- The stop is recorded in front of the character who starts it (Hunter for the skateboard, and so on).
     enterTalk = { STILL, { dur = 2.5, axes = { leftY = 1 } },
-                  { dur = 12.0, tap = { button = "flame", period = 0.4, width = 0.1 } },
+                  { dur = 6.0, tap = { button = "flame", period = 0.4, width = 0.1 } },
                   { dur = 3.0 }, STILL },
-    talk = { STILL, { dur = 12.0, tap = { button = "flame", period = 0.4, width = 0.1 } }, { dur = 3.0 }, STILL },
+    talk = { STILL, { dur = 6.0, tap = { button = "flame", period = 0.4, width = 0.1 } }, { dur = 3.0 }, STILL },
     -- Once a minigame is running: hold forward and keep jumping, which is "play" in most of them. Three
     -- jumps is enough to see what a jump animates like; ten was most of the time each stop took.
     play = { STILL, { dur = 3.0, axes = { leftY = 1 }, tap = { button = "jump", period = 1.0, width = 0.2 } }, STILL },
@@ -66,7 +66,7 @@ scripts.list = {
     -- is the only way a minigame's own animations are reached, which is why tools/scan.lua gives it to
     -- every NPC it finds.
     enterPlay = { STILL, { dur = 2.5, axes = { leftY = 1 } },
-                  { dur = 12.0, tap = { button = "flame", period = 0.4, width = 0.1 } },
+                  { dur = 6.0, tap = { button = "flame", period = 0.4, width = 0.1 } },
                   { dur = 3.0, axes = { leftY = 1 }, tap = { button = "jump", period = 1.0, width = 0.2 } },
                   { dur = 2.0 }, STILL },
 
