@@ -250,12 +250,18 @@ local function startStop(pawn, pc, cmc)
         run.lockedStops = 0
         log("autotest: %d stops in a row could not move, loading %s again to clear it",
             LOCKED_STOPS, stop.level)
+        -- Let go of the character first: reloading destroys everything in the level, and a held
+        -- reference to an actor that is being torn down is a pointer into freed memory.
+        anim.release(run.targetHeld)
+        run.targetHeld, run.targetOrigin, run.target = nil, nil, nil
         if quicksave.travel(pawn, stop.level) then
             run.phase = "travel"
             return
         end
     end
     if levels.current(pawn) ~= stop.level then
+        anim.release(run.targetHeld) -- the level it lives in is about to go away
+        run.targetHeld, run.targetOrigin, run.target = nil, nil, nil
         if not quicksave.travel(pawn, stop.level) then
             run.skipLevel = stop.level
             log("autotest: %s skipped, travel failed (the rest of the level too)", stop.level)
