@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Compares what the characters were animating in each framerate pass of a scripted tour
     (the probe's autotest_anims_<stamp>.csv).
@@ -21,13 +21,17 @@
     looking at (and re-running), not as a verdict; tools/Compare-Animtest.ps1 is the controlled measurement.
 
 .PARAMETER Path
-    The CSV. Without it, the newest autotest_anims_*.csv in the deployed probe folder.
+    The CSVs, wildcards allowed. Without it, the newest autotest_anims_*.csv in the deployed probe
+    folder. A whole run is several files, one per game segment: pass them all.
 
 .EXAMPLE
     .\tools\Compare-Anims.ps1 -Who target
+
+.EXAMPLE
+    .\tools\Compare-Anims.ps1 -Path "...\SpyroFpsProbe\autotest_anims_*.csv"
 #>
 param(
-    [string] $Path,
+    [string[]] $Path,
     [ValidateSet('both', 'player', 'target')]
     [string] $Who = 'both',
     [double] $PosTolerance = 0.05,
@@ -39,20 +43,38 @@ param(
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\Config.ps1"
 
+# A run is split across files: each game is its own segment (a restart is the only way to cross from one
+# game into another, see tools/autotest.lua) and each restart stamps a new CSV. Stop numbers are the
+# route's own in every segment, so several files join into one comparison.
 if (-not $Path) {
     $probeDir = Join-Path $GameDir 'Falcon\Binaries\Win64\ue4ss\Mods\SpyroFpsProbe'
     $newest = Get-ChildItem (Join-Path $probeDir 'autotest_anims_*.csv') -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if (-not $newest) { throw "No autotest_anims_*.csv in $probeDir; pass -Path." }
-    $Path = $newest.FullName
+    $Path = @($newest.FullName)
 }
-Write-Host "Reading $Path"
+$files = @($Path | ForEach-Object { Get-ChildItem $_ -ErrorAction Stop } | Select-Object -ExpandProperty FullName -Unique)
+Write-Host "Reading $($files.Count) file(s):"
+foreach ($f in $files) { Write-Host "  $f" }
 
-$rows = Import-Csv $Path
+$rows = @($files | ForEach-Object { Import-Csv $_ })
 if ($Who -ne 'both') { $rows = $rows | Where-Object { $_.who -eq $Who } }
 $caps = $rows | ForEach-Object { [int] $_.cap } | Sort-Object -Unique
 if ($caps -notcontains $Baseline) { throw "No $Baseline FPS pass in this run (caps: $($caps -join ', '))." }
 Write-Host "Caps: $($caps -join ', '); baseline $Baseline; characters: $Who"
+
+# Segments of one run never repeat a stop, so a key seen twice means two files hold the same stop
+# measured twice (two attempts at a run, not two segments of one). Merging those silently would make
+# the later attempt overwrite the baseline and compare passes that were never run against each other.
+$seen = @{}
+$dupes = 0
+foreach ($r in $rows) {
+    $key = "$($r.cap)|$($r.stop)|$($r.t)|$($r.who)"
+    if ($seen.ContainsKey($key)) { $dupes++ } else { $seen[$key] = $true }
+}
+if ($dupes -gt 0) {
+    Write-Warning ("{0} samples are measured more than once across these files: they are repeats of the same stops, not segments of one run. Pass one file per stop range." -f $dupes)
+}
 
 $base = @{}
 foreach ($r in $rows) {
