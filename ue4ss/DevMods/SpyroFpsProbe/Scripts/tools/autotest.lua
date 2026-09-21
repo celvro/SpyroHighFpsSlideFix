@@ -16,6 +16,10 @@
 --                         enemy state, where they have moved to). Compared with tools/Compare-Anims.ps1.
 --   "autotest" lines      start/stop, each cap, each stop (or why it was skipped), and the run total
 --
+-- A stop that ends "input ignored" is one where he was held forward and did not move: the game had taken
+-- input away, almost always a conversation that never closed. Three of those in a row load the level
+-- again, which clears it; without that, every stop after the first one records a Spyro who cannot move.
+--
 -- autotest.txt may hold options, one per line or space separated:
 --   restart          start from the beginning instead of resuming autotest_progress.txt
 --   caps=30,144      run these framerate caps (0 is uncapped)
@@ -60,6 +64,9 @@ local DEATH_SETTLE = 1.0    -- seconds on his feet again after a death before th
 local ARRIVE = 170         -- distance to the stop target at which the walk stops (it has been reached)
 local LOST_HEIGHT = 1000   -- drop from the stop that means he is out of the level, not playing the script
 local LOST_DISTANCE = 5000 -- and the same sideways (a respawn puts him at the level entrance)
+local LOCKED_SPEED = 5     -- below this while being told to walk, he is not walking at all
+local LOCKED_SECONDS = 2.0 -- held forward for this long without moving: the game has taken input away
+local LOCKED_STOPS = 3     -- that many stops in a row: load the level again to clear whatever has him
 local TRIGGER = paths.modDir .. "\\autotest.txt"
 local STOP = paths.modDir .. "\\autotest.stop" -- an empty file that stops a run that is already going
 local PROGRESS = paths.modDir .. "\\autotest_progress.txt"
@@ -181,6 +188,15 @@ local function stopFinished(pawn, pc, reason)
     input.clear(pawn, pc)
     anim.release(run.targetHeld)
     run.targetHeld, run.targetOrigin = nil, nil
+    -- A locked Spyro stays locked, so count the stops in a row that could not move: one is bad luck
+    -- (he was against a wall), several in a row is the conversation still being open, and the level has
+    -- to be loaded again to clear it.
+    if run.lockedFor and run.lockedFor >= LOCKED_SECONDS then
+        run.lockedStops = (run.lockedStops or 0) + 1
+    else
+        run.lockedStops = 0
+    end
+    run.lockedFor = 0
     log("autotest %d FPS %s stop %d (%s, %s): %s after %.1f s, %d samples",
         run.caps[run.capIndex], entry.stop.level, entry.id, entry.stop.script, entry.stop.note,
         reason, run.elapsed or 0, run.samples or 0)
@@ -223,6 +239,17 @@ local function startStop(pawn, pc, cmc)
         return
     end
     run.skipLevel = nil
+    -- Several stops in a row that could not move: load the level again, which closes whatever had hold
+    -- of him. Travelling to the level he is already in is the cheapest reset available.
+    if (run.lockedStops or 0) >= LOCKED_STOPS then
+        run.lockedStops = 0
+        log("autotest: %d stops in a row could not move, loading %s again to clear it",
+            LOCKED_STOPS, stop.level)
+        if quicksave.travel(pawn, stop.level) then
+            run.phase = "travel"
+            return
+        end
+    end
     if levels.current(pawn) ~= stop.level then
         if not quicksave.travel(pawn, stop.level) then
             run.skipLevel = stop.level
@@ -366,6 +393,15 @@ local function drive(pawn, pc, phase, into, r)
     -- dialogue or minigame script has to keep tapping once it is standing in front of whoever starts it,
     -- and a flame or a jump is meant to happen where he ends up.
     input.hold(arrived and NO_AXES or phase.axes)
+    -- Being told to walk and not walking means the game has taken input away: a conversation that never
+    -- closed is the usual one (a Spyro 2 NPC holds him until the dialogue is dismissed, and every stop
+    -- after that records a Spyro who cannot move). Count the time it has been asked and refused.
+    local walking = not arrived and phase.axes and (phase.axes.leftY or phase.axes.leftX)
+    if walking and (r.speed or 0) < LOCKED_SPEED then
+        run.lockedFor = (run.lockedFor or 0) + r.dt
+    elseif walking then
+        run.lockedFor = 0
+    end
     local wanted = {}
     for _, button in ipairs(phase.hold or {}) do wanted[button] = true end
     local tap = phase.tap
@@ -529,6 +565,12 @@ local function update(pawn, pc, cmc, r, setFpsCap)
         if math.abs(r.z - run.z0) > LOST_HEIGHT or math.abs(r.x - run.x0) > LOST_DISTANCE
            or math.abs(r.y - run.y0) > LOST_DISTANCE then
             stopFinished(pawn, pc, "left the area (fell or respawned)")
+            return
+        end
+        -- Held forward for this long without moving: he is not going to, and the stops after this one
+        -- would all record the same frozen Spyro. End the stop and let nextStop count it.
+        if (run.lockedFor or 0) >= LOCKED_SECONDS then
+            stopFinished(pawn, pc, "input ignored (still in a conversation?)")
             return
         end
         local phase, into = scripts.phaseAt(entry.stop.script, run.elapsed)
