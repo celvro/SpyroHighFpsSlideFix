@@ -125,11 +125,17 @@ local function sample()
 
     local frameTime = prev and r.time - prev.time or 0
     movement.update(r, util.isGrounded(r.mode))
-    glide.update(r, prev, util.isGrounded(r.mode))
-    supercharge.update(r, prev)
-    charge.update(r, prev)
-    camera.updateTransition(r, prev)
-    camera.updateDump(pawn, r)
+    -- The scripted tour teleports Spyro onto a thousand stops and walks him at a character: his jump
+    -- height, glide, charge and camera are measured by their own tools and mean nothing here, so they
+    -- are not run once per character for the hours a tour takes. Movement and the stall tracker stay.
+    local touring = autotest.running()
+    if not touring then
+        glide.update(r, prev, util.isGrounded(r.mode))
+        supercharge.update(r, prev)
+        charge.update(r, prev)
+        camera.updateTransition(r, prev)
+        camera.updateDump(pawn, r)
+    end
     dragons.update(r.time, frameTime)
     -- A new pawn (level load, respawn) may come with new thieves, dragons or flame components.
     local pawnAddress = pawn:GetAddress()
@@ -141,8 +147,10 @@ local function sample()
         stalls.pawnChanged()
         flames.rescan()
     end
-    thieves.update(r, prev)
-    buzz.update(r, prev)
+    if not touring then
+        thieves.update(r, prev)
+        buzz.update(r, prev)
+    end
     stalls.update(r, prev, pawn)
     flames.update(r, frameTime)
     if KEEP_SPARX_FULL then invuln.update(pawn) end
@@ -159,9 +167,11 @@ local function sample()
         local okRecord, recordErr = pcall(routes.record, pawn, pc, r)
         if not okRecord then log("routes error: %s", tostring(recordErr)) end
     end
-    walkin.update(pc, cmc, r, prev)
-    flight.update(pawn, cmc, r, prev)
-    hits.update(r, prev)
+    if not touring then
+        walkin.update(pc, cmc, r, prev)
+        flight.update(pawn, cmc, r, prev)
+        hits.update(r, prev)
+    end
 
     trace.writeRow(r)
     state.prevRow = r

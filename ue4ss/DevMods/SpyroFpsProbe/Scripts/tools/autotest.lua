@@ -63,7 +63,15 @@ local DROP_AHEAD = 180     -- a drop deeper than this ahead of him counts as an 
 local FELL_HEIGHT = 90     -- below the stop AND falling: put him back before the water kills him. Walking
                            -- down steps and slopes is not falling, so it does not count.
 local DEATH_SETTLE = 1.0    -- seconds on his feet again after a death before the run carries on
-local ARRIVE = 170         -- distance to the stop target at which the walk stops (it has been reached)
+local ARRIVE = 100         -- distance to the stop target at which the walk stops (it has been reached).
+                           -- 170 stopped him short of the range an NPC starts talking at, so the stops
+                           -- meant to open a dialogue never opened one.
+-- Dialogue is an in-game cinematic (Spyro_IGC_Base has SkipCheck and StartSkipTimer), and a skip is a
+-- button HELD, not tapped: the script's taps could never close one, which is why a conversation stayed
+-- open and took input away for every stop after it. Which button is not in the asset, so a stop that
+-- could not move holds each of these in turn before the next teleport.
+local DISMISS_BUTTONS = { "flame", "jump", "charge", "shoulderR" }
+local DISMISS_HOLD = 0.8   -- seconds each is held
 local LOST_HEIGHT = 1000   -- drop from the stop that means he is out of the level, not playing the script
 local LOST_DISTANCE = 5000 -- and the same sideways (a respawn puts him at the level entrance)
 local LOCKED_SPEED = 5     -- below this while being told to walk, he is not walking at all
@@ -201,11 +209,18 @@ local function stopFinished(pawn, pc, reason)
     else
         run.lockedStops = 0
     end
+    local locked = (run.lockedStops or 0) > 0
     run.lockedFor = 0
     log("autotest %d FPS %s stop %d (%s, %s): %s after %.1f s, %d samples",
         run.caps[run.capIndex], entry.stop.level, entry.id, entry.stop.script, entry.stop.note,
         reason, run.elapsed or 0, run.samples or 0)
-    run.phase = "next"
+    -- Try to close whatever has him before the next teleport, rather than teleporting a Spyro who is
+    -- still in a conversation and recording another stop of him standing there too.
+    if locked then
+        run.phase, run.dismissIndex, run.dismissHeld = "dismiss", 1, 0
+    else
+        run.phase = "next"
+    end
     writeProgress()
 end
 
@@ -597,6 +612,25 @@ local function update(pawn, pc, cmc, r, setFpsCap)
             end
             drive(pawn, pc, phase, into, r)
             run.elapsed = run.elapsed + r.dt
+        end
+    end
+    -- Holding each candidate skip button in turn, before the next stop is teleported to. If one of them
+    -- closes the dialogue the stops after this are usable; if none do, the level reload still catches it.
+    if run.phase == "dismiss" then
+        local button = DISMISS_BUTTONS[run.dismissIndex]
+        if not button then
+            input.clear(pawn, pc)
+            run.phase = "next"
+        else
+            for name in pairs(input.BUTTONS) do
+                if name == button then input.press(name) else input.release(name) end
+            end
+            input.apply(pawn, pc)
+            run.dismissHeld = run.dismissHeld + r.dt
+            if run.dismissHeld >= DISMISS_HOLD then
+                run.dismissIndex, run.dismissHeld = run.dismissIndex + 1, 0
+            end
+            return
         end
     end
     if run.phase == "next" then nextStop(pawn, pc, cmc, setFpsCap) end
