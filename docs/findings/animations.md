@@ -112,6 +112,14 @@ blue thief that ran off gave a 161 m difference in where it ended up. A live lev
 test. Anything it flags goes back through the montage sweep, which is the measurement — both false
 positives above were caught that way.
 
+**What the sampling can and cannot see.** Over the first 25000 samples of the full run: every target row
+carries its enemy state (100%), but only 48% carry a montage, and Spyro carries one in 12% of his rows and
+has no state name at all. Most of the time a character is in its AnimGraph — a locomotion blend space,
+not a montage — so the montage column is empty and the state name is what says which animation it is in.
+For an enemy or an NPC that is enough. For Spyro the non-montage time is only described by his speed,
+movement mode and position, so a difference in his walk or glide pose would not show up here; that side of
+him is measured by position instead, in `sliding-walking.md`, `jump-glide.md` and `charge-turn-camera.md`.
+
 ## Still to do
 
 - The whole-game montage sweep: `animtest.txt` with no `here`, which tours every level, measures each
