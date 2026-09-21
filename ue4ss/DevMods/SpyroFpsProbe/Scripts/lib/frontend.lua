@@ -51,31 +51,40 @@ local function container()
     return nil
 end
 
--- True while the title screen is still up.
+-- True while the front end is still drawn over the level. Not just the title screen: a travel that
+-- takes a while (LS321 to LS305 took 108 s) leaves the menu on a different screen by the time anyone
+-- gets round to closing it, and a close that only knows about UI_Title_C then reports success with the
+-- menu still sitting there eating button presses. The container is what is actually on the screen.
 function frontend.open()
-    return titleScreen() ~= nil
+    if titleScreen() then return true end
+    return container() ~= nil
 end
 
--- Closes it. Returns true once the title screen is gone.
+-- Closes it. Returns true once nothing of the front end is on the screen.
 function frontend.close(worldContext)
+    if not frontend.open() then return true end
     local title = titleScreen()
-    if not title then return true end
-    local removed = false
+    local removed, detached = false, false
     local box = container()
-    if box then
+    if title and box then
         removed = pcall(function() box:RemoveScreen(title:GetClass(), true) end)
     end
-    local detached = false
     if titleScreen() then
         detached = pcall(function() title:RemoveFromParent() end)
+    end
+    -- Whatever screen it is on now, the container is the widget in the viewport: take it out.
+    local closed = false
+    box = container()
+    if box then
+        closed = pcall(function() box:RemoveFromParent() end)
     end
     local unpaused = pcall(function()
         local gs = UEHelpers.GetGameplayStatics():GetGameState(worldContext)
         gs["pause game for menu"](gs, false, true)
     end)
     local stillUp = frontend.open()
-    log("frontend: %s RemoveScreen=%s RemoveFromParent=%s unpause=%s -> %s", TITLE, tostring(removed),
-        tostring(detached), tostring(unpaused), stillUp and "still on screen" or "closed")
+    log("frontend: RemoveScreen=%s RemoveFromParent=%s container=%s unpause=%s -> %s", tostring(removed),
+        tostring(detached), tostring(closed), tostring(unpaused), stillUp and "still on screen" or "closed")
     return not stillUp
 end
 

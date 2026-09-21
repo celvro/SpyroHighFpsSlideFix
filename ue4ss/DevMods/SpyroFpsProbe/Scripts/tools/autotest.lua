@@ -48,6 +48,7 @@
 -- (tools/Restart-Game.ps1 with lib/resume.lua) picks the run up where it stopped.
 local ground = require("lib.ground")
 local igc = require("lib.igc")
+local subworld = require("lib.subworld")
 local invuln = require("lib.invuln")
 local input = require("lib.input")
 local anim = require("lib.anim")
@@ -92,6 +93,8 @@ local LOCKED_SPEED = 5     -- below this while being told to walk, he is not wal
 local LOCKED_SECONDS = 2.0 -- held forward for this long without moving: the game has taken input away
 local LOCKED_STOPS = 2     -- that many stops in a row, or a failed check, and the level is loaded again
 local TALK_SECONDS = 25.0  -- longest a stop waits for a conversation it started to finish
+local SUBWORLD_SECONDS = 12.0 -- how long to play as whoever a subworld handed the controller to
+local LEAVE_SECONDS = 20.0    -- how long to wait for the subworld to hand control back afterwards
 local CLEAR_SECONDS = 3.0  -- waiting for a conversation to finish before a teleport
 local CLEAR_RETRY = 0.5    -- seconds between asking it to finish
 local MAX_RELOADS = 2      -- but no more than this per level: past that the spots are the problem
@@ -194,6 +197,19 @@ local function fodder(note)
     return false
 end
 
+-- The other playable characters. Walking into one starts its minigame and hands the controller over,
+-- which is the only way into a subworld: the tour cannot record a stop inside one, because it is not
+-- running when the level is scanned. The scan gave most of them a plain walk, which stops short of the
+-- conversation, so they are promoted to enterPlay.
+local SUBWORLD_ENTRIES = { "Sheila", "SgtByrd", "Bentley", "Agent9" }
+
+local function subworldEntry(note)
+    for _, name in ipairs(SUBWORLD_ENTRIES) do
+        if tostring(note):find(name, 1, true) then return true end
+    end
+    return false
+end
+
 local function prompts(note)
     for _, name in ipairs(PROMPTS) do
         if tostring(note):find(name, 1, true) then return true end
@@ -215,6 +231,7 @@ local function buildStops(options)
     end
     for index, stop in ipairs(all) do
         local duplicateWalk = stop.script == "walk" and alsoTalks[stop.level .. "|" .. stop.note]
+            and not subworldEntry(stop.note)
         -- Walking into a save fairy or into Moneybags opens a prompt that pauses the world, and a
         -- paused world does not tick this mod: the tour's own clock stops, the stop never ends, and the
         -- run sits in a text box until somebody presses a button. Nothing in Lua can close it, because
@@ -222,6 +239,7 @@ local function buildStops(options)
         -- them, so their own animations are still sampled.
         local script = stop.script
         if prompts(stop.note) and script ~= "idle" then script = "idle" end
+        if script == "walk" and subworldEntry(stop.note) then script = "enterPlay" end
         local wanted = (not options.level or stop.level == options.level)
             and (not game or stop.level:match("^LS(%d)") == tostring(game))
             and (not only or only[stop.script])
@@ -455,6 +473,7 @@ local function startStop(pawn, pc, cmc)
     end
     run.phase, run.settled, run.elapsed, run.samples, run.nextSample = "settle", 0, 0, 0, 0
     run.arrived, run.everMoved, run.talking = nil, nil, nil
+    run.character, run.inSubworld, run.leaving = subworld.character(pawn), nil, nil
     run.spot = spot
 end
 
@@ -744,6 +763,65 @@ local function update(pawn, pc, cmc, r, setFpsCap)
         return
     end
     if run.phase == "play" then
+        -- Somebody else is holding the controller: the conversation handed over to Sheila, Sgt Byrd,
+        -- Bentley or Agent 9 and their minigame is running in a sublevel of this same level. Play it
+        -- for a while, sampling as usual -- these animations are reachable no other way, because the
+        -- tour cannot record a stop inside a minigame that is not running when the level is scanned --
+        -- and then leave through the pause menu (lib/subworld.lua).
+        local now = subworld.character(pawn)
+        if now and run.character and now ~= run.character and not run.inSubworld then
+            run.inSubworld, run.subworldFor = now, 0
+            log("autotest: %s took over at stop %d; playing its minigame", now, entry.id)
+        end
+        if run.inSubworld then
+            -- Back to whoever the stop started with: the exit worked, whatever the call said. Asking
+            -- the game who is holding the controller is the only honest check -- the menu call itself
+            -- reports nothing about whether the subworld actually let go.
+            if run.leaving then
+                if now == run.character then
+                    log("autotest: out of the %s subworld after %.1f s", run.inSubworld, run.leaving)
+                    run.inSubworld, run.leaving = nil, nil
+                    stopFinished(pawn, pc, "played a subworld")
+                    return
+                end
+                run.leaving = run.leaving + r.dt
+                if run.leaving >= LEAVE_SECONDS then
+                    -- The menu would not let go. Teleporting the next stop while somebody else is
+                    -- holding the controller would measure that character in Spyro's spots and call it
+                    -- Spyro, so load the level again instead: that always gives him back.
+                    log("autotest: still %s after asking to leave for %.0f s; loading %s again",
+                        tostring(now), LEAVE_SECONDS, entry.stop.level)
+                    run.inSubworld, run.leaving = nil, nil
+                    stopFinished(pawn, pc, "a subworld would not let go (loading the level again)")
+                    run.lockedStops = LOCKED_STOPS -- startStop reloads on this
+                end
+                return
+            end
+            if subworld.exiting() then
+                local done = subworld.updateExit(pc)
+                if done then
+                    log("autotest: asked the %s subworld to exit: %s", run.inSubworld, done)
+                    run.leaving = 0
+                end
+                return
+            end
+            if run.elapsed >= run.nextSample then
+                sample(r, entry, run.nextSample)
+                sampleAnims(pawn, entry, run.nextSample)
+                run.nextSample = run.nextSample + SAMPLE
+            end
+            run.subworldFor = run.subworldFor + r.dt
+            run.elapsed = run.elapsed + r.dt
+            if run.subworldFor >= SUBWORLD_SECONDS then
+                input.clear(pawn, pc)
+                subworld.beginExit()
+                return
+            end
+            -- Whatever the character is, forward and jumping is playing it.
+            local playPhase, playInto = scripts.phaseAt("play", run.subworldFor % scripts.duration("play"))
+            if playPhase then drive(pawn, pc, playPhase, playInto, r) end
+            return
+        end
         local health = invuln.health(pawn)
         if health and health <= 0 then
             local entryStop = entry.stop
