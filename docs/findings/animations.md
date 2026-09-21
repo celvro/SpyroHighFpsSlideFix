@@ -88,10 +88,33 @@ particle components at 30 FPS (20, 18, 18, 16 over four runs) and exactly 16 at 
 framerates, but a montage whose dust count is not fixed is worth a second look if the whole-game sweep
 turns up more like it.
 
+## The route the scripted tour runs (2026-09-20)
+
+One level tour (**T**, `tour.txt` with `dwell=3`) travelled all 101 levels in 22 minutes and scanned each
+one into `routes.txt`: **1789 stops over 84 levels and 577 distinct kinds of character** — 707 `walk`,
+375 `flame`, 375 `charge`, 332 `enterPlay`. What is not in it:
+
+- the 13 flight levels and speedways, skipped on purpose (Spyro never walks there, so a stop can never be
+  arrived at, and a crash there ends on a Retry screen that would stop the tour);
+- LS222, the one level travel never arrived in;
+- LS318, LS327 and LS336, which hold one character each that was already covered in an earlier level.
+
+At about 8 stops a minute, both framerate passes over the whole route take roughly 7.5 hours. `script=`
+takes a comma list (`script=walk,enterPlay`) when a run has to be cut down to the stops that start a
+chase or a minigame.
+
+### Reading the tour comparison
+
+`Compare-Anims.ps1` is a screen, not a verdict, and the LS104 validation set shows why: it flagged 20 of
+26 stop/character groups, and almost all of it was gameplay diverging rather than animation. At 320 Spyro
+took a `Damage_Knockback` at one stop and a `Damage_Drown` at another that he never took at 30, and a
+blue thief that ran off gave a 161 m difference in where it ended up. A live level is not a controlled
+test. Anything it flags goes back through the montage sweep, which is the measurement — both false
+positives above were caught that way.
+
 ## Still to do
 
-- The whole-game sweep: `animtest.txt` with no `here`, which tours every level, measures each montage once
-  per cap and skips the shared ones it already has (`animtest_done.txt`).
-- The scripted tour at 30 and 320 with the animation sampling, once the route file covers more than LS104
-  (the tour, **T**, builds it by scanning each level it visits).
-- Minigames: `enterPlay` stops exist only once a level with a minigame NPC has been scanned.
+- The whole-game montage sweep: `animtest.txt` with no `here`, which tours every level, measures each
+  montage once per cap and skips the shared ones it already has (`animtest_done.txt`). Reached LS106 with
+  216 montage-cap measurements banked; the dedupe works (LS106 needed only 24 of its 92 montages).
+- The scripted tour over the full 1789-stop route at 30 and 320: started 2026-09-20 21:49.
