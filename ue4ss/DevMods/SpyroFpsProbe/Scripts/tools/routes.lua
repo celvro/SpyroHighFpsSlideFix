@@ -6,7 +6,7 @@
 --   level|x|y|z|yaw|ctrlPitch|ctrlYaw|originX|originY|script|note
 --
 -- M records the spot with the "walk" script; open routes.txt and change that word to any script name in
--- tools/scripts.lua ("jump", "glide", "charge", "enterTalk", ...), and the note to whatever the stop is
+-- tools/scripts.lua ("jump", "glide", "charge", "enterPlay", ...), and the note to whatever the stop is
 -- ("in front of Hunter"). One place can have several lines with different scripts.
 --
 -- Positions are stored relative to the level's own LevelTransform, like the quicksave spot, because a

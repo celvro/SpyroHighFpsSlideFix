@@ -91,6 +91,8 @@ local LOST_DISTANCE = 5000 -- and the same sideways (a respawn puts him at the l
 local LOCKED_SPEED = 5     -- below this while being told to walk, he is not walking at all
 local LOCKED_SECONDS = 2.0 -- held forward for this long without moving: the game has taken input away
 local LOCKED_STOPS = 2     -- that many stops in a row, or a failed check, and the level is loaded again
+local CLEAR_SECONDS = 3.0  -- waiting for a conversation to finish before a teleport
+local CLEAR_RETRY = 0.5    -- seconds between asking it to finish
 local MAX_RELOADS = 2      -- but no more than this per level: past that the spots are the problem
 local TRIGGER = paths.modDir .. "\\autotest.txt"
 local STOP = paths.modDir .. "\\autotest.stop" -- an empty file that stops a run that is already going
@@ -275,6 +277,13 @@ local function currentEntry()
     return step and step.entry
 end
 
+-- True on the lead stops at the head of a level: Spyro performing his own abilities, rather than a stop
+-- aimed at a character.
+local function currentlyMeasuring()
+    local step = run.plan and run.plan[run.index]
+    return step ~= nil and step.measure == true
+end
+
 local function currentCap()
     local step = run.plan[run.index]
     return step and step.cap or 0
@@ -396,6 +405,28 @@ local function startStop(pawn, pc, cmc)
         run.phase = "travel"
         return
     end
+    -- Never teleport out of a conversation. A cinematic holds the camera and the input, and it keeps
+    -- holding them wherever he is put next, so the stop after this one is lost as well -- which is how
+    -- one NPC used to cost a whole run. Finish it first and only then move him.
+    if igc.active(stop.level) then
+        local now = os.clock()
+        if not run.clearing then
+            run.clearing, run.nextClear = now + CLEAR_SECONDS, 0
+            log("autotest: a conversation is still running; finishing it before the teleport")
+        end
+        -- Asked again every so often rather than every frame: the cinematic reads SkipCheck on its own
+        -- 0.05 s tick, and close() escalates to EndIGC once asking politely has not worked.
+        if now >= run.nextClear then
+            run.nextClear = now + CLEAR_RETRY
+            igc.close(pc, pawn, stop.level)
+        end
+        if now < run.clearing then
+            run.phase = "clearing"
+            return
+        end
+        log("autotest: the conversation would not finish in %.0f s; teleporting anyway", CLEAR_SECONDS)
+    end
+    run.clearing, run.nextClear = nil, nil
     local _, origin = levels.current(pawn)
     local x, y = routes.place(stop, origin)
     run.target = findTarget(pawn, stop, x, y)
@@ -637,6 +668,11 @@ local function update(pawn, pc, cmc, r, setFpsCap)
         if run.grace <= 0 then startStop(pawn, pc, cmc) end
         return
     end
+    -- Waiting for a conversation to finish before the teleport (startStop).
+    if run.phase == "clearing" then
+        startStop(pawn, pc, cmc)
+        return
+    end
     if run.phase == "settle" then
         run.settled = run.settled + r.dt
         -- A stop can still land over a drop (the scan's ground check only traces straight down), and a
@@ -730,7 +766,13 @@ local function update(pawn, pc, cmc, r, setFpsCap)
         -- moved at all is one the game has taken input from, and that is the one worth ending early and
         -- recovering from.
         if (run.lockedFor or 0) >= LOCKED_SECONDS then
-            if run.everMoved then
+            -- A lead stop is not trying to reach anybody: it is Spyro performing one of his own
+            -- abilities, and its walk exists only so the button press lands while he is moving. Wedged
+            -- or not, the flame and the charge still have to happen, so it keeps holding the stick and
+            -- plays the script out rather than ending the stop or giving up on the walk.
+            if currentlyMeasuring() then
+                run.lockedFor = 0
+            elseif run.everMoved then
                 run.arrived = run.elapsed
                 run.lockedFor = 0
                 log("autotest: up against something after %.1f s, no more walking for the rest of the stop",
@@ -805,8 +847,7 @@ end
 -- True during the LEAD_SCRIPTS stops at the head of each level, which are the ones the camera and jump
 -- trackers exist to measure. They measure the level, not the character standing in it.
 function autotest.measuring()
-    local step = run and run.plan and run.plan[run.index]
-    return step ~= nil and step.measure == true
+    return run ~= nil and run.plan ~= nil and currentlyMeasuring()
 end
 
 return autotest

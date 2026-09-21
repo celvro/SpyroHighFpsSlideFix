@@ -98,6 +98,15 @@ local function instances(level)
     return list
 end
 
+-- Whether a cinematic is running right now: a conversation holds the camera and the input, and it keeps
+-- holding them through a teleport, so the next stop is lost too. Cheap after the first call in a level.
+function igc.active(level)
+    for _, object in ipairs(instances(level)) do
+        if isActive(object) then return true end
+    end
+    return false
+end
+
 -- The level has changed (or is about to), so the actors kept above are gone.
 function igc.forget()
     found, foundFor, tries, quiet = nil, nil, {}, false
