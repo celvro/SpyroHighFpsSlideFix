@@ -91,6 +91,7 @@ local LOST_DISTANCE = 5000 -- and the same sideways (a respawn puts him at the l
 local LOCKED_SPEED = 5     -- below this while being told to walk, he is not walking at all
 local LOCKED_SECONDS = 2.0 -- held forward for this long without moving: the game has taken input away
 local LOCKED_STOPS = 2     -- that many stops in a row, or a failed check, and the level is loaded again
+local MAX_RELOADS = 2      -- but no more than this per level: past that the spots are the problem
 local TRIGGER = paths.modDir .. "\\autotest.txt"
 local STOP = paths.modDir .. "\\autotest.stop" -- an empty file that stops a run that is already going
 local PROGRESS = paths.modDir .. "\\autotest_progress.txt"
@@ -332,10 +333,24 @@ local function startStop(pawn, pc, cmc)
     run.skipLevel = nil
     -- Several stops in a row that could not move: load the level again, which closes whatever had hold
     -- of him. Travelling to the level he is already in is the cheapest reset available.
-    if (run.lockedStops or 0) >= LOCKED_STOPS then
+    -- but only so many times in one level. A stop teleported hard against a wall never moves from its
+    -- first frame, which looks exactly like being held, and reloading does not help it: LS321 spent 13
+    -- reloads on an ice wall, a coal pit and a boxing arena. Two is enough to clear a conversation that
+    -- really is stuck; past that the level is telling us the spots are the problem, not the game.
+    if run.reloadLevel ~= stop.level then
+        run.reloadLevel, run.reloads, run.reloadsNoted = stop.level, 0, nil
+    end
+    if (run.lockedStops or 0) >= LOCKED_STOPS and run.reloads >= MAX_RELOADS then
         run.lockedStops = 0
-        log("autotest: %d stops in a row could not move, loading %s again to clear it",
-            LOCKED_STOPS, stop.level)
+        if not run.reloadsNoted then
+            run.reloadsNoted = true
+            log("autotest: %s has had its %d reloads; the stops that cannot move here are the spots",
+                stop.level, MAX_RELOADS)
+        end
+    elseif (run.lockedStops or 0) >= LOCKED_STOPS then
+        run.lockedStops, run.reloads = 0, run.reloads + 1
+        log("autotest: %d stops in a row could not move, loading %s again to clear it (%d of %d)",
+            LOCKED_STOPS, stop.level, run.reloads, MAX_RELOADS)
         -- Let go of the character first: reloading destroys everything in the level, and a held
         -- reference to an actor that is being torn down is a pointer into freed memory.
         anim.release(run.targetHeld)
