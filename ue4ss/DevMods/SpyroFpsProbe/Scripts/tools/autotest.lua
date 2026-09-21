@@ -73,12 +73,12 @@ local ARRIVE = 100         -- distance to the stop target at which the walk stop
 -- open and took input away for every stop after it. Which button is not in the asset, so a stop that
 -- could not move holds each of these in turn before the next teleport.
 local DISMISS_BUTTONS = { "flame", "jump", "charge", "shoulderR" }
-local DISMISS_HOLD = 0.8   -- seconds each is held
+local DISMISS_HOLD = 1.5   -- seconds each is held (StartSkipTimer implies a hold, not a tap)
 local LOST_HEIGHT = 1000   -- drop from the stop that means he is out of the level, not playing the script
 local LOST_DISTANCE = 5000 -- and the same sideways (a respawn puts him at the level entrance)
 local LOCKED_SPEED = 5     -- below this while being told to walk, he is not walking at all
 local LOCKED_SECONDS = 2.0 -- held forward for this long without moving: the game has taken input away
-local LOCKED_STOPS = 3     -- that many stops in a row: load the level again to clear whatever has him
+local LOCKED_STOPS = 2     -- that many stops in a row: the dismiss holds did not work, so load the level
 local TRIGGER = paths.modDir .. "\\autotest.txt"
 local STOP = paths.modDir .. "\\autotest.stop" -- an empty file that stops a run that is already going
 local PROGRESS = paths.modDir .. "\\autotest_progress.txt"
@@ -236,9 +236,6 @@ local function stopFinished(pawn, pc, reason)
     -- to be loaded again to clear it.
     if run.lockedFor and run.lockedFor >= LOCKED_SECONDS then
         run.lockedStops = (run.lockedStops or 0) + 1
-        -- A dialogue stop that cannot move is a conversation by construction: it walked into whoever
-        -- starts one and then could not walk away. No need to spend two more stops confirming it.
-        if entry.stop.script == "enterPlay" then run.lockedStops = LOCKED_STOPS end
     else
         run.lockedStops = 0
     end
@@ -250,6 +247,7 @@ local function stopFinished(pawn, pc, reason)
     -- Try to close whatever has him before the next teleport, rather than teleporting a Spyro who is
     -- still in a conversation and recording another stop of him standing there too.
     if locked then
+        log("autotest: holding %s in turn to close whatever has him", table.concat(DISMISS_BUTTONS, "/"))
         run.phase, run.dismissIndex, run.dismissHeld = "dismiss", 1, 0
     else
         run.phase = "next"
