@@ -173,7 +173,7 @@ local function sample()
     if requestClose then
         requestClose = false
         igc.forget() -- asked for by hand, so never trust a list from an earlier level
-        igc.close(pc, pawn, levels.current(pawn))
+        igc.close(pc, pawn, levels.current(pawn), true) -- asked for by hand, so take input back too
     end
     if requestRecord then
         requestRecord = false

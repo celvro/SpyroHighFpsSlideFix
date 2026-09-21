@@ -130,21 +130,28 @@ end
 -- finish. A second attempt on the same one escalates from the skip to EndIGC, which is what the
 -- cinematic calls on itself when it is done.
 -- Returns how many cinematics were asked to finish.
-function igc.close(pc, pawn, level)
+-- `takeInput` forces the controller back to game-only input. That is a blunt thing to do: it clears
+-- whatever widget had focus, and a text box that has not opened yet may be expecting to take it. So it
+-- is NOT done on the automatic paths -- only F3, where somebody has looked at a dead pad and asked.
+function igc.close(pc, pawn, level, takeInput)
     if pc and pc:IsValid() then
         pcall(function() pc:ResetIgnoreMoveInput() end)
         pcall(function() pc:ResetIgnoreLookInput() end)
         -- SetCinematicMode(inCinematicMode, hidePlayer, affectsHUD, affectsMovement, affectsTurning)
         pcall(function() pc:SetCinematicMode(false, false, false, true, true) end)
-        -- And put input back on the game. A text box that took focus for itself leaves the controller
-        -- in UI-only mode, where the pad goes to a widget that is no longer on the screen and the game
-        -- gets nothing -- which looks exactly like input being dead, without IsMoveInputIgnored or any
-        -- cinematic saying anything is wrong.
-        pcall(function()
-            local umg = StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")
-            if umg and umg:IsValid() then umg:SetInputMode_GameOnly(pc) end
-        end)
-        pcall(function() pc.bShowMouseCursor = false end)
+        -- A text box that took focus for itself leaves the controller in UI-only mode, where the pad
+        -- goes to a widget that is no longer on the screen and the game gets nothing -- which looks
+        -- exactly like input being dead while IsMoveInputIgnored says false and no cinematic reports
+        -- itself running. Taking input back fixes that, and costs any widget that WANTED focus its
+        -- focus, so it is only done when asked for.
+        if takeInput then
+            pcall(function()
+                local umg = StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")
+                if umg and umg:IsValid() then umg:SetInputMode_GameOnly(pc) end
+            end)
+            pcall(function() pc.bShowMouseCursor = false end)
+            log("igc: input taken back for the game")
+        end
     end
     local asked = 0
     for _, object in ipairs(instances(level)) do
