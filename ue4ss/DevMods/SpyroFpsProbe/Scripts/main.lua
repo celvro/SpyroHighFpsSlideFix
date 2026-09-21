@@ -3,6 +3,7 @@
 -- leave it off when profiling the fix mod (its per-frame garbage lands in the fixes' timed region).
 --
 -- Keys (game window focused; not F11, which toggles fullscreen, nor anything DefaultInput.ini binds):
+--   F3                 close whatever conversation has hold of Spyro (lib/igc.lua)
 --   F5 / F6 / F7 / F8  set t.MaxFPS to 30 / 60 / 120 / 0 (uncapped); F4 sets 320
 --   F9                 dump Spyro's FollowCameraComponent properties to camdump_*_manual.txt
 --   F10                rescan for flame particle components (if a flame isn't picked up automatically)
@@ -48,6 +49,8 @@
 
 local UEHelpers = require("UEHelpers")
 local log = require("lib.log")
+local levels = require("lib.levels")
+local igc = require("lib.igc")
 local invuln = require("lib.invuln")
 local mouse = require("lib.mouse")
 local paths = require("lib.paths")
@@ -88,6 +91,7 @@ local DEFAULT_SIM_STEP = 0.05 -- engine default MaxSimulationTimeStep; the game 
 local RECENT_FRAMES = 10
 local setFpsCap -- defined with the key binds below; the tour sets uncapped
 local requestRecord = false -- P: record this spot as a tour stop (tools/routes.lua)
+local requestClose = false -- F3: close whatever conversation has hold of Spyro (lib/igc.lua)
 
 local function sample()
     mouse.register()
@@ -163,6 +167,11 @@ local function sample()
     autotest.update(pawn, pc, cmc, r, setFpsCap)
     animtest.update(pawn, pc, r, setFpsCap)
     scan.update(pawn, pc)
+    if requestClose then
+        requestClose = false
+        igc.forget() -- asked for by hand, so never trust a list from an earlier level
+        igc.close(pc, pawn, levels.current(pawn))
+    end
     if requestRecord then
         requestRecord = false
         local okRecord, recordErr = pcall(routes.record, pawn, pc, r)
@@ -209,6 +218,7 @@ RegisterKeyBind(Key.U, spawntest.toggle)
 RegisterKeyBind(Key.J, slide.request)
 RegisterKeyBind(Key.O, autotest.toggle)
 RegisterKeyBind(Key.M, function() requestRecord = true end)
+RegisterKeyBind(Key.F3, function() requestClose = true end)
 RegisterKeyBind(Key.H, scan.request)
 RegisterKeyBind(Key.I, animtest.toggle)
 

@@ -1,121 +1,147 @@
 -- Getting control back when an in-game cinematic has taken it, which is what a conversation with an NPC
--- does.
+-- does, and what a save fairy does.
 --
--- Talking to an NPC plays a Spyro_IGC_Dialogue, and while it runs the game takes input away. A scripted
+-- Talking to an NPC plays an in-game cinematic, and while it runs the game takes input away. A scripted
 -- tour that walks into an NPC therefore loses not just that stop but every stop after it, because nothing
 -- in the tour's own inputs closes one: the skip is a button HELD (Spyro_IGC_Base has SkipCheck and
--- StartSkipTimer), and holding each face button for a second and a half failed 29 times in 32.
+-- StartSkipTimer), and holding each face button for a second and a half failed 29 times in 32. Worse, a
+-- tour that ENDS in one leaves the game sitting in a text box for as long as nobody is watching.
 --
--- Loading the level again does clear it, at about twelve seconds a time, and Spyro 3 spent most of its
--- run doing that. This is the cheaper way. From the disassembly of Spyro_IGC_Base's ubergraph:
+-- Loading the level again does clear it, at about twelve seconds a time. This is the cheaper way. From
+-- the disassembly of Spyro_IGC_Base's ubergraph:
 --
 --     956: this.SkipCheck = true
 --     968: if not (this.SkipCheck) goto 997
 --     982: Dialogue Complete()
 --
--- so setting SkipCheck on the running cinematic makes it finish itself on its next 0.05 s tick, which is
--- what the skip button would have done. It is a property write rather than a call with arguments guessed
--- from a signature, which is why it is the one worth trying first.
+-- so setting SkipCheck makes it finish itself on its next 0.05 s tick, which is what the skip button
+-- would have done, and "Dialogue Complete" is the same step called outright.
 --
---   "igc" lines  what was found and what was set, once per attempt
+-- Finding the running one is the part that took two tries. FindAllOf matches a class name exactly, and
+-- no instance is ever a plain Spyro_IGC_Base_C: every one is of the level's own subclass (LS321 has
+-- BP_LS321_IGCBoxing_C), and a save fairy is a Spyro_IGC_SavePoint0_C. Listing the names that exist and
+-- adding them here would only ever cover the levels already looked at, so instead every actor is asked
+-- whether it HAS SkipCheck. Only a Spyro_IGC_Base subclass does, whatever it calls itself.
+--
+--   "igc" lines  what was found, what was set, and what was still active afterwards
 local log = require("lib.log")
 
 local igc = {}
 
--- Every IGC is a Spyro_IGC_Base_C, but instances are of the level's own subclass, and UE4SS matches
--- FindAllOf by class name. Ask for the base first (some builds do match subclasses), then for the types
--- a conversation actually uses.
-local CLASSES = {
-    "Spyro_IGC_Base_C",
-    "Spyro_IGC_Dialogue_C",
-    "Spyro_IGC_Sequence_C",
-    "Spyro_IGC_MissionStart_C",
-}
+-- The sweep is a walk of every actor in the level (~1400 of them), so it is done once per level and the
+-- objects kept: an IGC is a level actor, placed at load and gone when the level goes.
+local found = nil
+local foundFor = nil
+local tries = {} -- address -> how many times close() has asked this one to finish
+local quiet = false -- whether "nothing is running" has already been said for this level
 
-local function instances()
-    local found, seen = {}, {}
-    for _, name in ipairs(CLASSES) do
-        local ok, list = pcall(FindAllOf, name)
-        if ok and list then
-            for _, object in ipairs(list) do
-                local valid = false
-                pcall(function() valid = object:IsValid() end)
-                if valid then
-                    local address = object:GetAddress()
-                    if not seen[address] then
-                        seen[address] = true
-                        found[#found + 1] = object
-                    end
-                end
+-- Whether a class is Spyro_IGC_Base_C or descends from it. Reading a property off an actor that does
+-- not have one does NOT come back nil in this UE4SS build (every actor in LS321 answered SkipCheck), so
+-- the class chain is the only honest test. Answers are cached per class, not per actor.
+local isBase = {}
+
+local function derivesFromBase(object)
+    local class
+    if not pcall(function() class = object:GetClass() end) or not class then return false end
+    local key
+    if not pcall(function() key = class:GetAddress() end) then return false end
+    if isBase[key] ~= nil then return isBase[key] end
+    local answer, at = false, class
+    for _ = 1, 16 do
+        if not at then break end
+        local name
+        if not pcall(function() name = at:GetFName():ToString() end) then break end
+        if name == "Spyro_IGC_Base_C" then answer = true; break end
+        -- Belt and braces while the chain walk is new: a class whose own name says IGC counts too, so a
+        -- build where GetSuperStruct is unavailable still finds the level subclasses.
+        if name and name:find("IGC") then answer = true; break end
+        local super
+        if not pcall(function() super = at:GetSuperStruct() end) then break end
+        if not super or not super:IsValid() then break end
+        at = super
+    end
+    isBase[key] = answer
+    return answer
+end
+
+local function isActive(object)
+    local ok, value = pcall(function() return object.CurrentlyActiveIGC end)
+    return ok and value == true
+end
+
+-- Every actor that is a Spyro_IGC_Base subclass, whatever its own class is called.
+local function instances(level)
+    if found and foundFor == level then return found end
+    local list = {}
+    local ok, actors = pcall(FindAllOf, "Actor")
+    if ok and actors then
+        for _, actor in ipairs(actors) do
+            local valid = false
+            pcall(function() valid = actor:IsValid() end)
+            if valid and derivesFromBase(actor) then
+                list[#list + 1] = actor
             end
         end
+        found, foundFor, quiet = list, level, false
+        local kinds, order = {}, {}
+        for _, object in ipairs(list) do
+            local name = "?"
+            pcall(function() name = object:GetClass():GetFName():ToString() end)
+            if not kinds[name] then kinds[name] = 0; order[#order + 1] = name end
+            kinds[name] = kinds[name] + 1
+        end
+        local parts = {}
+        for _, name in ipairs(order) do parts[#parts + 1] = string.format("%s x%d", name, kinds[name]) end
+        log("igc: %d cinematic(s) in %s out of %d actors: %s", #list, tostring(level), #actors,
+            #parts > 0 and table.concat(parts, ", ") or "none")
     end
-    return found
+    return list
 end
 
--- Whatever is holding him, let go. Three things are tried, cheapest first, because which one applies is
--- not knowable from outside: the cinematic is found by class name only if UE4SS matches the level's own
--- subclass, and a conversation takes input away through the player controller whether it is found or not.
--- Returns what was done, so a caller can fall back to reloading the level.
-function igc.close(pc)
-    local done = {}
-    -- The controller's own input gates. A cinematic raises these and lowers them when it ends; if it
-    -- never ends, lowering them by hand gives control back even though the cinematic is still there.
+-- The level has changed (or is about to), so the actors kept above are gone.
+function igc.forget()
+    found, foundFor, tries, quiet = nil, nil, {}, false
+end
+
+-- Whatever is holding him, let go. The controller gates are released first because they are cheap and
+-- cost nothing when they were never raised; then each cinematic that says it is running is told to
+-- finish. A second attempt on the same one escalates from the skip to EndIGC, which is what the
+-- cinematic calls on itself when it is done.
+-- Returns how many cinematics were asked to finish.
+function igc.close(pc, pawn, level)
     if pc and pc:IsValid() then
-        if pcall(function() pc:ResetIgnoreMoveInput() end) then done[#done + 1] = "move input" end
-        if pcall(function() pc:ResetIgnoreLookInput() end) then done[#done + 1] = "look input" end
+        pcall(function() pc:ResetIgnoreMoveInput() end)
+        pcall(function() pc:ResetIgnoreLookInput() end)
         -- SetCinematicMode(inCinematicMode, hidePlayer, affectsHUD, affectsMovement, affectsTurning)
-        if pcall(function() pc:SetCinematicMode(false, false, false, true, true) end) then
-            done[#done + 1] = "cinematic mode"
+        pcall(function() pc:SetCinematicMode(false, false, false, true, true) end)
+    end
+    local asked = 0
+    for _, object in ipairs(instances(level)) do
+        if isActive(object) then
+            local address = object:GetAddress()
+            tries[address] = (tries[address] or 0) + 1
+            local name = "?"
+            pcall(function() name = object:GetFullName() end)
+            pcall(function() object.SkipCheck = true end)
+            if tries[address] == 1 then
+                pcall(function() object["Dialogue Complete"](object) end)
+                log("igc: %s is running; skipped it", name)
+            else
+                pcall(function() object["EndIGC"](object, object) end)
+                log("igc: %s is still running after %d tries; ended it", name, tries[address])
+            end
+            asked = asked + 1
         end
     end
-    local closed = 0
-    for _, object in ipairs(instances()) do
-        if pcall(function() object.SkipCheck = true end) then closed = closed + 1 end
-    end
-    if closed > 0 then done[#done + 1] = string.format("%d cinematic(s)", closed) end
-    if #done > 0 then log("igc: released %s", table.concat(done, ", ")) end
-    return #done
-end
-
--- What is loaded right now, for working out whether the class names above are the right ones. Logged by
--- the first attempt in a run so a tour that never finds one says so instead of silently falling back.
-function igc.report(pawn)
-    local list = instances()
-    log("igc: %d cinematic object(s) found by name", #list)
-    for i, object in ipairs(list) do
-        if i > 5 then break end
-        local name = "?"
-        pcall(function() name = object:GetFullName() end)
-        log("igc:   %s", tostring(name))
-    end
-    -- Nothing found by name means the guesses are wrong: an instance is of the level's own subclass.
-    -- Sweep every actor once and log the ones whose name says cinematic, so the real class name can be
-    -- read off the log instead of guessed at. Expensive, which is why it only runs when the names fail.
-    if #list > 0 then return end
-    local ok, actors = pcall(FindAllOf, "Actor")
-    if not ok or not actors then
-        log("igc: could not list actors to look for one")
-        return
-    end
-    local shown = 0
-    for _, actor in ipairs(actors) do
-        local name
-        pcall(function() name = actor:GetFullName() end)
-        if name and (name:find("IGC") or name:find("Dialog") or name:find("Cinemat")) then
-            shown = shown + 1
-            if shown <= 10 then log("igc: candidate %s", name) end
-        end
-    end
-    log("igc: %d of %d actors look like a cinematic", shown, #actors)
-    -- What is actually stopping him, while we are here: if the pawn says its movement input is ignored
-    -- then the gates are the answer and releasing them should have worked; if it does not, something
-    -- else is holding him and the level reload stays the only way out.
-    if pawn and pawn:IsValid() then
+    if asked == 0 and not quiet and pawn and pawn:IsValid() then
+        -- Nothing said it was running, so if he still cannot move it is not a conversation. Said once
+        -- per level: close() is called at the end of every stop, and a line each would drown the log.
+        quiet = true
         local ignored
         pcall(function() ignored = pawn:IsMoveInputIgnored() end)
-        log("igc: pawn IsMoveInputIgnored = %s", tostring(ignored))
+        log("igc: nothing is running (pawn IsMoveInputIgnored = %s)", tostring(ignored))
     end
+    return asked
 end
 
 return igc

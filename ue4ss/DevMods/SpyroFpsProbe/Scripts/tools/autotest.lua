@@ -175,8 +175,19 @@ local function wantedScripts(text)
 end
 
 -- The stops this run covers, in level order so each level is travelled to once.
+-- Characters whose prompt pauses the world: the save fairies (Zoe is one, and a level's own save point
+-- is a SaveFairy) and Moneybags, whose "pay?" box is the same kind of modal choice.
+local PROMPTS = { "Zoe", "SaveFairy", "Moneybags" }
+
+local function prompts(note)
+    for _, name in ipairs(PROMPTS) do
+        if tostring(note):find(name, 1, true) then return true end
+    end
+    return false
+end
+
 local function buildStops(options)
-    local all, picked = routes.all(), {}
+    local all, picked, prompted = routes.all(), {}, 0
     local only = wantedScripts(options.script)
     local game = tonumber(options.game)
     -- A walk stop in front of a character that also has an enterPlay stop does the same thing twice:
@@ -189,17 +200,35 @@ local function buildStops(options)
     end
     for index, stop in ipairs(all) do
         local duplicateWalk = stop.script == "walk" and alsoTalks[stop.level .. "|" .. stop.note]
+        -- Walking into a save fairy or into Moneybags opens a prompt that pauses the world, and a
+        -- paused world does not tick this mod: the tour's own clock stops, the stop never ends, and the
+        -- run sits in a text box until somebody presses a button. Nothing in Lua can close it, because
+        -- nothing in Lua runs. So these are never walked into; they keep a stop, standing in front of
+        -- them, so their own animations are still sampled.
+        local script = stop.script
+        if prompts(stop.note) and script ~= "idle" then script = "idle" end
         local wanted = (not options.level or stop.level == options.level)
             and (not game or stop.level:match("^LS(%d)") == tostring(game))
             and (not only or only[stop.script])
             and not duplicateWalk
         if wanted then
-            if scripts.exists(stop.script) then
+            if scripts.exists(script) then
+                if script ~= stop.script then
+                    local copy = {}
+                    for key, value in pairs(stop) do copy[key] = value end
+                    copy.script = script
+                    stop = copy
+                    prompted = prompted + 1
+                end
                 picked[#picked + 1] = { stop = stop, id = index }
             else
-                log("autotest: stop %d (%s) has no script %q, skipped", index, stop.level, tostring(stop.script))
+                log("autotest: stop %d (%s) has no script %q, skipped", index, stop.level, tostring(script))
             end
         end
+    end
+    if prompted > 0 then
+        log("autotest: %d stop(s) stand and watch instead of walking in (their prompt pauses the game)",
+            prompted)
     end
     table.sort(picked, function(a, b)
         if a.stop.level ~= b.stop.level then return a.stop.level < b.stop.level end
@@ -280,17 +309,10 @@ local function stopFinished(pawn, pc, reason)
     log("autotest %d FPS %s stop %d (%s, %s): %s after %.1f s, %d samples",
         currentCap(), entry.stop.level, entry.id, entry.stop.script, entry.stop.note,
         reason, run.elapsed or 0, run.samples or 0)
-    -- Tell the conversation to finish (lib/igc.lua), then ask at the next stop whether it did. Asking
-    -- here only ever said he was still held, because the NPC was still standing there saying it.
-    if locked then
-        -- Report on the first lock at a dialogue stop, not the first lock of any kind: a lead stop that
-        -- cannot charge is a bad spot, and diagnosing that tells us nothing about conversations.
-        if not run.igcReported and entry.stop.script == "enterPlay" then
-            run.igcReported = true
-            igc.report(pawn)
-        end
-        igc.close(pc)
-    end
+    -- Close whatever conversation this stop opened, whether or not it went wrong: a stop that ends in a
+    -- text box takes the next one with it, and the last one leaves the game sitting in it. After the
+    -- first sweep of a level this costs a bool read per cinematic (lib/igc.lua).
+    igc.close(pc, pawn, entry.stop.level)
     run.checkNext = locked or nil
     run.phase = "next"
     writeProgress()
@@ -355,6 +377,7 @@ local function startStop(pawn, pc, cmc)
         -- reference to an actor that is being torn down is a pointer into freed memory.
         anim.release(run.targetHeld)
         run.targetHeld, run.targetOrigin, run.target = nil, nil, nil
+        igc.forget()
         if quicksave.travel(pawn, stop.level) then
             run.phase = "travel"
             return
@@ -363,6 +386,7 @@ local function startStop(pawn, pc, cmc)
     if levels.current(pawn) ~= stop.level then
         anim.release(run.targetHeld) -- the level it lives in is about to go away
         run.targetHeld, run.targetOrigin, run.target = nil, nil, nil
+        igc.forget()
         if not quicksave.travel(pawn, stop.level) then
             run.skipLevel = stop.level
             log("autotest: %s skipped, travel failed (the rest of the level too)", stop.level)
@@ -392,6 +416,9 @@ local function nextStop(pawn, pc, cmc, setFpsCap)
     if run.index > #run.plan then
         log("autotest: done, %d stops at %d framerates; %s", #run.stops, #run.caps, CSV)
         input.clear(pawn, pc)
+        -- Never leave the game in a text box because the route happened to end at an NPC.
+        igc.close(pc, pawn, levels.current(pawn))
+        igc.forget()
         invuln.clear()
         os.remove(PROGRESS)
         run = nil
