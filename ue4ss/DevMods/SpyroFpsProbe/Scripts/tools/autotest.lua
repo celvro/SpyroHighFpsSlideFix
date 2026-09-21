@@ -278,7 +278,9 @@ local function stopFinished(pawn, pc, reason)
     -- Tell the conversation to finish (lib/igc.lua), then ask at the next stop whether it did. Asking
     -- here only ever said he was still held, because the NPC was still standing there saying it.
     if locked then
-        if not run.igcReported then
+        -- Report on the first lock at a dialogue stop, not the first lock of any kind: a lead stop that
+        -- cannot charge is a bad spot, and diagnosing that tells us nothing about conversations.
+        if not run.igcReported and entry.stop.script == "enterPlay" then
             run.igcReported = true
             igc.report(pawn)
         end
