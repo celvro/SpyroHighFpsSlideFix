@@ -20,7 +20,17 @@
 --   restart          start from the beginning instead of resuming autotest_progress.txt
 --   caps=30,144      run these framerate caps (0 is uncapped)
 --   level=LS102      only stops in this level
+--   game=2           only stops in that game's levels (1 = LS1xx, 2 = LS2xx, 3 = LS3xx)
 --   script=jump      only stops with this script (a comma list is allowed: script=walk,enterPlay)
+--
+-- A run must not cross from one game into another: travelling live from LS135 into LS201 sets the game
+-- index, streams the level in and then leaves Spyro falling in a black void, because the checkpoint it
+-- starts at belongs to the game he was in. Restarting switches games properly (lib/resume.lua notes the
+-- game index), so run each game as its own segment: game=1, restart, game=2, restart, game=3. Stop
+-- numbers are the route's own, so segments still line up with each other in the CSVs.
+--
+-- An empty autotest.stop file stops a run that is already going (the trigger file is only read between
+-- runs, so dropping autotest.txt again would start a second one).
 --
 -- Progress is written to autotest_progress.txt after every stop, so a crash or a restart
 -- (tools/Restart-Game.ps1 with lib/resume.lua) picks the run up where it stopped.
@@ -51,6 +61,7 @@ local ARRIVE = 170         -- distance to the stop target at which the walk stop
 local LOST_HEIGHT = 1000   -- drop from the stop that means he is out of the level, not playing the script
 local LOST_DISTANCE = 5000 -- and the same sideways (a respawn puts him at the level entrance)
 local TRIGGER = paths.modDir .. "\\autotest.txt"
+local STOP = paths.modDir .. "\\autotest.stop" -- an empty file that stops a run that is already going
 local PROGRESS = paths.modDir .. "\\autotest_progress.txt"
 local DEATHS = paths.modDir .. "\\autotest_deaths.txt" -- one line per death: the stop and the character
 local CSV = string.format("%s\\autotest_%s.csv", paths.modDir, paths.stamp)
@@ -134,8 +145,10 @@ end
 local function buildStops(options)
     local all, picked = routes.all(), {}
     local only = wantedScripts(options.script)
+    local game = tonumber(options.game)
     for index, stop in ipairs(all) do
         local wanted = (not options.level or stop.level == options.level)
+            and (not game or stop.level:match("^LS(%d)") == tostring(game))
             and (not only or only[stop.script])
         if wanted then
             if scripts.exists(stop.script) then
@@ -205,9 +218,15 @@ local function startStop(pawn, pc, cmc)
     local entry = run.stops[run.index]
     if not entry then return end
     local stop = entry.stop
+    if run.skipLevel == stop.level then
+        run.phase = "next"
+        return
+    end
+    run.skipLevel = nil
     if levels.current(pawn) ~= stop.level then
         if not quicksave.travel(pawn, stop.level) then
-            log("autotest: %s stop %d skipped, travel failed", stop.level, entry.id)
+            run.skipLevel = stop.level
+            log("autotest: %s skipped, travel failed (the rest of the level too)", stop.level)
             run.phase = "next"
             return
         end
@@ -360,12 +379,23 @@ local function drive(pawn, pc, phase, into, r)
 end
 
 local function update(pawn, pc, cmc, r, setFpsCap)
-    if not run and os.clock() >= nextPoll then
+    -- The trigger file between runs, the stop file during one: a run of a thousand stops has to be
+    -- stoppable from outside the game, and reading the trigger while one is going would restart it.
+    if os.clock() >= nextPoll then
         nextPoll = os.clock() + 1
-        local options = readOptions()
-        if options then
-            requested = true
-            run = { options = options }
+        if run then
+            local file = io.open(STOP, "r")
+            if file then
+                file:close()
+                os.remove(STOP)
+                requested = true
+            end
+        else
+            local options = readOptions()
+            if options then
+                requested = true
+                run = { options = options }
+            end
         end
     end
     if requested then
@@ -407,7 +437,11 @@ local function update(pawn, pc, cmc, r, setFpsCap)
     if run.phase == "travel" then
         if quicksave.travelling() then return end
         if levels.current(pawn) ~= entry.stop.level then
-            log("autotest: %s stop %d skipped, never arrived", entry.stop.level, entry.id)
+            -- A level that can't be travelled to can't be travelled to for any of its stops, and each
+            -- attempt costs the whole travel timeout. Give up on the level, not on one stop at a time:
+            -- LS201 cost 90 s a stop for every stop in it before this.
+            run.skipLevel = entry.stop.level
+            log("autotest: %s skipped, never arrived (the rest of the level too)", entry.stop.level)
             run.phase = "next"
         else
             run.phase, run.grace = "grace", TRAVEL_GRACE
