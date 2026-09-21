@@ -814,7 +814,7 @@ local function update(pawn, pc, cmc, r, setFpsCap)
             run.elapsed = run.elapsed + r.dt
             if run.subworldFor >= SUBWORLD_SECONDS then
                 input.clear(pawn, pc)
-                subworld.beginExit()
+                subworld.beginExit(pc)
                 return
             end
             -- Whatever the character is, forward and jumping is playing it.
