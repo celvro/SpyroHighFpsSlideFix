@@ -1,0 +1,387 @@
+-- Recording a minigame by hand.
+--
+-- The scripted tour cannot play a minigame. It teleports in front of a character and walks into them,
+-- which starts the ones that hand a character over (Sheila, Sgt Byrd, Bentley, Agent 9) but does nothing
+-- at all for the ones you board -- the Spyro 2 trolley, the shark and its boat -- and even where it does
+-- get in, forward-and-jump is not playing a minigame in any sense that would show a bug up.
+--
+-- So this does the part a program is good at and leaves the rest alone: it travels to the level, puts
+-- Spyro on the recorded spot, walks him into whoever starts it, and then LETS GO. From there it is your
+-- controller. Press M and it records everything, the same way the tour samples a stop and into the same
+-- CSV shape, so tools/Compare-Anims.ps1 reads a hand-played take at 30 and at 320 exactly as it reads
+-- the tour's stops.
+--
+--   M   start or stop recording (a take)
+--   F1  mark this moment: something went wrong just now
+--   F2  retry -- put me back at the start of this minigame
+--   C   drop into the next minigame on the list
+--
+-- minigame.txt in this mod folder does the same from outside: a level name (LS305), "next", or "list".
+--
+-- Takes are numbered within a run and every row carries the framerate cap, so playing one minigame at 30
+-- and then the same one at 320 gives two takes that line up. A retry is just another take. Marks go to
+-- minigame_notes_<stamp>.txt with the take, the time into it, the cap and the montage that was playing,
+-- which is enough to say afterwards which moment a glitch was.
+--
+--   "minigame" lines  which one, who is holding the controller, and every mark
+local anim = require("lib.anim")
+local input = require("lib.input")
+local levels = require("lib.levels")
+local log = require("lib.log")
+local paths = require("lib.paths")
+local routes = require("tools.routes")
+local subworld = require("lib.subworld")
+local quicksave = require("tools.quicksave")
+
+local minigame = {}
+
+local TRIGGER = paths.modDir .. "\\minigame.txt"
+local CSV = string.format("%s\\minigame_%s.csv", paths.modDir, paths.stamp)
+local ANIM_CSV = string.format("%s\\minigame_anims_%s.csv", paths.modDir, paths.stamp)
+local NOTES = string.format("%s\\minigame_notes_%s.txt", paths.modDir, paths.stamp)
+local HEADER = "cap,level,take,script,note,t,x,y,z,yaw,speed,mode\n"
+local ANIM_HEADER = "cap,level,stop,script,note,t,who,class,montage,montagePos,section,rate,rootMotion,"
+    .. "state,stateTime,x,y,z,yaw,speed,mode\n"
+
+local SAMPLE = 0.1       -- seconds of game time between rows, as the tour uses
+local SETTLE = 1.0       -- standing still after the teleport before walking in
+local WALK_IN = 6.0      -- seconds walking into whoever starts it before giving up and handing over
+local ARRIVE_STILL = 1.5 -- stopped moving this long while walking in means he is there
+local STILL_SPEED = 5
+
+-- The characters whose conversation hands the controller over, and the things you board. Everything on
+-- this list gets an entry; whether it takes over by itself is worked out at the time.
+local ENTRIES = { "Sheila", "SgtByrd", "Bentley", "Agent9", "SharkSub", "PlaneThief", "Trolley" }
+
+local state = nil   -- { list, index, phase, take, ... } while the tool is running
+local csv, animCsv = nil, nil
+local pending = nil -- a request from a key or the trigger file, handled in the game thread
+local ORIGIN = { x = 0, y = 0, z = 0 }
+local NO_AXES = {}            -- sticks centred, reused so a driven frame allocates nothing
+local FORWARD = { leftY = 1 }
+
+local function isEntry(note)
+    for _, name in ipairs(ENTRIES) do
+        if tostring(note):find(name, 1, true) then return true end
+    end
+    return false
+end
+
+-- One entry per (level, character): the route has a walk, a flame and a charge stop at most of them and
+-- they are all the same spot.
+local function buildList()
+    local list, seen = {}, {}
+    for index, stop in ipairs(routes.all()) do
+        local key = stop.level .. "|" .. stop.note
+        if isEntry(stop.note) and not seen[key] then
+            seen[key] = true
+            list[#list + 1] = { stop = stop, id = index }
+        end
+    end
+    table.sort(list, function(a, b)
+        if a.stop.level ~= b.stop.level then return a.stop.level < b.stop.level end
+        return a.id < b.id
+    end)
+    return list
+end
+
+local function openCsv(path, header)
+    local file = io.open(path, "a")
+    if not file then
+        log("minigame: could not write %s", path)
+        return nil
+    end
+    if file:seek("end") == 0 then file:write(header) end
+    return file
+end
+
+local function current()
+    return state and state.list and state.list[state.index]
+end
+
+-- "0" is what t.MaxFPS calls uncapped, which is not a framerate to compare anything against.
+local function capName(cap)
+    return (cap and cap > 0) and (cap .. " FPS") or "UNCAPPED (press F5 for 30 or F4 for 320 first)"
+end
+
+local function label()
+    local entry = current()
+    if not entry then return "?", "?" end
+    return entry.stop.level, entry.stop.note
+end
+
+local function sample(r)
+    csv = csv or openCsv(CSV, HEADER)
+    if not csv then return end
+    local level, note = label()
+    csv:write(string.format("%d,%s,%d,minigame,%s,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d\n",
+        state.cap or 0, level, state.take, note:gsub(",", " "), state.recorded,
+        r.x - ORIGIN.x, r.y - ORIGIN.y, r.z - ORIGIN.z, r.yaw, r.speed or 0, r.mode))
+    state.rows = state.rows + 1
+end
+
+local function sampleAnim(pawn)
+    if not (pawn and pawn:IsValid()) then return end
+    animCsv = animCsv or openCsv(ANIM_CSV, ANIM_HEADER)
+    if not animCsv then return end
+    local level, note = label()
+    local s = anim.state(pawn)
+    local class = "?"
+    pcall(function() class = pawn:GetClass():GetFName():ToString() end)
+    local loc = pawn:K2_GetActorLocation()
+    local yaw, speed, mode = 0, 0, 0
+    pcall(function() yaw = pawn:K2_GetActorRotation().Yaw end)
+    pcall(function()
+        local cmc = pawn.CharacterMovement
+        local v = cmc.Velocity
+        speed = math.sqrt(v.X * v.X + v.Y * v.Y)
+        mode = cmc.MovementMode
+    end)
+    animCsv:write(string.format(
+        "%d,%s,%d,minigame,%s,%.3f,player,%s,%s,%.4f,%s,%.3f,%s,%s,%.3f,%.2f,%.2f,%.2f,%.2f,%.2f,%d\n",
+        state.cap or 0, level, state.take, note:gsub(",", " "), state.recorded, class, s.montage,
+        s.position, s.section, s.rate, tostring(s.rootMotion), s.enemyState, s.enemyStateTime,
+        loc.X - ORIGIN.x, loc.Y - ORIGIN.y, loc.Z - ORIGIN.z, yaw, speed, mode))
+end
+
+local function flush()
+    if csv then csv:flush() end
+    if animCsv then animCsv:flush() end
+end
+
+-- Puts him on the stop, facing the way it was recorded, with the camera behind him.
+local function place(pawn, pc, cmc, stop)
+    local level, origin = levels.current(pawn)
+    if level ~= stop.level or not origin then return false end
+    local x, y, z = routes.place(stop, origin)
+    pawn:K2_TeleportTo({ X = x, Y = y, Z = z }, { Pitch = 0, Yaw = stop.yaw, Roll = 0 })
+    cmc.Velocity = { X = 0, Y = 0, Z = 0 }
+    pc:SetControlRotation({ Pitch = stop.ctrlPitch, Yaw = stop.yaw, Roll = 0 })
+    pcall(function() pawn.FollowCamera:ResetBehind(true) end)
+    ORIGIN.x, ORIGIN.y, ORIGIN.z = x, y, z
+    return true
+end
+
+local function startEntry(pawn, pc, cmc)
+    local entry = current()
+    if not entry then
+        log("minigame: that was the last one on the list")
+        state = nil
+        return
+    end
+    local stop = entry.stop
+    if levels.current(pawn) ~= stop.level then
+        if not quicksave.travel(pawn, stop.level) then
+            log("minigame: cannot travel to %s, skipping it", stop.level)
+            state.index = state.index + 1
+            return
+        end
+        state.phase = "travel"
+        return
+    end
+    if not place(pawn, pc, cmc, stop) then
+        log("minigame: cannot place %s %s, skipping it", stop.level, stop.note)
+        state.index = state.index + 1
+        return
+    end
+    state.phase, state.waited, state.walked, state.stillFor = "settle", 0, 0, 0
+    state.character = subworld.character(pawn)
+    log("minigame: %s, %s -- walking in", stop.level, stop.note)
+end
+
+-- Hand the controller back and say what to do with it.
+local function handOver(pawn, pc, why)
+    input.clear(pawn, pc)
+    state.phase = "ready"
+    local level, note = label()
+    log("minigame: %s, %s -- %s. You have the controller as %s.", level, note, why,
+        subworld.character(pawn) or "?")
+    log("minigame: M records a take, F1 marks a glitch, F2 retries this one, C moves on.")
+end
+
+function minigame.request(what) pending = what end
+function minigame.toggleRecord() pending = "record" end
+function minigame.mark() pending = "mark" end
+function minigame.retry() pending = "retry" end
+
+function minigame.running() return state ~= nil end
+function minigame.recording() return state ~= nil and state.recording == true end
+
+local function doMark(pawn)
+    local level, note = label()
+    local s = anim.state(pawn)
+    state.marks = (state.marks or 0) + 1
+    local line = string.format("mark %d | %s | %s %s | take %d | %s | t=%.2f | %d FPS | %s at %.3f%s\n",
+        state.marks, os.date("%Y-%m-%d %H:%M:%S"), level, note, state.take,
+        subworld.character(pawn) or "?", state.recorded or 0, state.cap or 0,
+        s.montage ~= "" and s.montage or "(no montage)", s.position,
+        s.section ~= "" and (" [" .. s.section .. "]") or "")
+    local file = io.open(NOTES, "a")
+    if file then file:write(line); file:close() end
+    log("minigame: MARK %d at t=%.2f of take %d (%s, %s at %.3f)", state.marks, state.recorded or 0,
+        state.take, subworld.character(pawn) or "?",
+        s.montage ~= "" and s.montage or "no montage", s.position)
+end
+
+local function handle(pawn, pc, cmc)
+    local what = pending
+    pending = nil
+    if not what then return end
+
+    if what == "list" then
+        local list = buildList()
+        log("minigame: %d minigames on the list", #list)
+        for i, entry in ipairs(list) do
+            log("minigame:   %2d %s %s", i, entry.stop.level, entry.stop.note)
+        end
+        return
+    end
+
+    if what == "record" then
+        if not state or (state.phase ~= "ready" and state.phase ~= "recording") then
+            log("minigame: nothing to record yet -- drop into one first (C, or minigame.txt)")
+            return
+        end
+        if state.recording then
+            state.recording, state.phase = false, "ready"
+            flush()
+            log("minigame: take %d stopped: %.1f s, %d rows, %d mark(s). %s",
+                state.take, state.recorded, state.rows, state.marks or 0, CSV)
+        else
+            state.take = (state.take or 0) + 1
+            state.recording, state.recorded, state.rows, state.marks = true, 0, 0, 0
+            state.nextSample, state.phase = 0, "recording"
+            local level, note = label()
+            log("minigame: take %d recording -- %s %s as %s at %s. M again to stop.",
+                state.take, level, note, subworld.character(pawn) or "?", capName(state.cap))
+        end
+        return
+    end
+
+    if what == "mark" then
+        if not minigame.recording() then
+            log("minigame: not recording, so there is nothing to mark")
+            return
+        end
+        doMark(pawn)
+        return
+    end
+
+    if what == "retry" then
+        if not state then
+            log("minigame: not in one")
+            return
+        end
+        if state.recording then
+            state.recording = false
+            flush()
+            log("minigame: take %d abandoned", state.take)
+        end
+        local level, note = label()
+        log("minigame: retrying %s %s", level, note)
+        startEntry(pawn, pc, cmc)
+        return
+    end
+
+    if what == "next" then
+        if not state then
+            state = { list = buildList(), index = 0, take = 0 }
+            if #state.list == 0 then
+                log("minigame: no minigame entries found in routes.txt")
+                state = nil
+                return
+            end
+        end
+        if state.recording then state.recording = false; flush() end
+        state.index = state.index + 1
+        startEntry(pawn, pc, cmc)
+        return
+    end
+
+    -- Anything else is taken as a level name: start the list there.
+    local list = buildList()
+    for i, entry in ipairs(list) do
+        if entry.stop.level == what then
+            state = { list = list, index = i, take = (state and state.take) or 0 }
+            startEntry(pawn, pc, cmc)
+            return
+        end
+    end
+    log("minigame: nothing recorded in %s (minigame.txt takes a level, \"next\" or \"list\")",
+        tostring(what))
+end
+
+local function readTrigger()
+    local file = io.open(TRIGGER, "r")
+    if not file then return nil end
+    local line = file:read("l") or ""
+    file:close()
+    os.remove(TRIGGER)
+    line = line:gsub("^\239\187\191", ""):match("^%s*(%S*)")
+    return line ~= "" and line or nil
+end
+
+function minigame.update(pawn, pc, cmc, r, fpsCap)
+    local trigger = readTrigger()
+    if trigger then pending = trigger end
+    handle(pawn, pc, cmc)
+    if not state then return end
+    state.cap = fpsCap
+
+    if state.phase == "travel" then
+        if quicksave.travelling() then return end
+        startEntry(pawn, pc, cmc)
+        return
+    end
+
+    if state.phase == "settle" then
+        state.waited = state.waited + r.dt
+        input.hold(NO_AXES)
+        input.apply(pawn, pc)
+        if state.waited >= SETTLE then
+            state.phase, state.walked, state.stillFor = "walking", 0, 0
+        end
+        return
+    end
+
+    -- Walk into whoever starts it. If the controller changes hands, that was a character minigame and it
+    -- has begun. If it does not, this is one you board or trigger yourself, so hand over anyway: being
+    -- put on the right spot with the camera behind him is most of what the tool is for.
+    if state.phase == "walking" then
+        local who = subworld.character(pawn)
+        if who and state.character and who ~= state.character then
+            handOver(pawn, pc, "it started and handed over")
+            return
+        end
+        state.walked = state.walked + r.dt
+        if (r.speed or 0) < STILL_SPEED then
+            state.stillFor = state.stillFor + r.dt
+        else
+            state.stillFor = 0
+        end
+        if state.walked >= WALK_IN then
+            handOver(pawn, pc, "nothing took over, so board or trigger it yourself")
+            return
+        end
+        if state.stillFor >= ARRIVE_STILL then
+            handOver(pawn, pc, "up against it, so take it from here")
+            return
+        end
+        input.hold(FORWARD)
+        input.apply(pawn, pc)
+        return
+    end
+
+    if state.phase == "recording" then
+        state.recorded = state.recorded + r.dt
+        if state.recorded >= state.nextSample then
+            sample(r)
+            sampleAnim(pawn)
+            state.nextSample = state.nextSample + SAMPLE
+            if state.rows % 100 == 0 then flush() end
+        end
+        return
+    end
+end
+
+return minigame
