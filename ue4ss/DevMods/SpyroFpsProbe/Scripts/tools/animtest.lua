@@ -197,6 +197,11 @@ local function levelList(pawn, options)
     if options.here then return current and { current } or {} end
     if options.level then return { options.level } end
     local names = quicksave.levelNames() or {}
+    if #names == 0 then
+        -- The stream data table is only readable once a level is loaded; the fixed list is the same rows.
+        names = levels.fixedNames()
+        log("animtest: can't read the level table, using the fixed list")
+    end
     local ordered, start = {}, 0
     for index, name in ipairs(names) do
         if name == current then start = index - 1 end

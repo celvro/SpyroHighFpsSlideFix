@@ -9,7 +9,7 @@
 --   K                  cycle the flame muzzle experiment: normal / noHardMuzzle / velocity30
 --   V / B / L / N      quicksave: save this spot / go back to it / reload the level / dump the transporter
 --   G                  scripted glide from a standstill, 600 above the saved spot (tools/glidetest.lua)
---   T                  level tour: every level for 25 s uncapped, for the NPC stall tracker (tools/tour.lua)
+--   T                  level tour: every level (tour.txt to drive it from outside), scanning each one for tour stops (tools/tour.lua)
 --   Y                  travel test: each way to change level and game, in one run (tools/traveltest.lua)
 --   U                  spawn test: every chase/flee character type in front of Spyro, one at a time (tools/spawntest.lua)
 --   J                  slide pose for screenshots: start the steep-slope slide here, press again to end it (tools/slide.lua)

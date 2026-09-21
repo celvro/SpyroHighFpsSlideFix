@@ -96,4 +96,15 @@ function levels.dump(pawn)
     log("streaming levels: %d", count)
 end
 
+-- The stream data table's rows (101 levels), for when the table itself can't be read: it is only there
+-- once a level is loaded, so a tool that starts at the wrong moment gets nothing from it. The LS100/200/
+-- 300/338 plugins are shared content, not levels.
+function levels.fixedNames()
+    local names = {}
+    for _, range in ipairs({ { 101, 135 }, { 201, 229 }, { 301, 337 } }) do
+        for n = range[1], range[2] do names[#names + 1] = "LS" .. n end
+    end
+    return names
+end
+
 return levels
