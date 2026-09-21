@@ -120,6 +120,36 @@ For an enemy or an NPC that is enough. For Spyro the non-montage time is only de
 movement mode and position, so a difference in his walk or glide pose would not show up here; that side of
 him is measured by position instead, in `sliding-walking.md`, `jump-glide.md` and `charge-turn-camera.md`.
 
+## What had to be controlled in the scripted tour (2026-09-21)
+
+The montage sweep needed four things controlled before its numbers meant anything. Driving real gameplay
+needed three more, and all three were found by the run doing something wrong for a while first.
+
+- **A run must not cross from one game into another.** Travelling live from LS135 into LS201 sets the
+  game index and streams the level in, but Spyro starts at a checkpoint belonging to the game he was in,
+  so he is left falling in a black void at his old coordinates while the old level unloads. `levels.current`
+  then names whichever level is nearest, which is meaningless, and every stop after it fails. Each game is
+  its own segment now (`game=1|2|3`) with a restart between them, because a restart switches games
+  properly. A level that cannot be reached is also abandoned whole rather than one stop at a time: it was
+  paying the 90 s travel timeout per stop, and LS201 alone would have spent half an hour on it.
+- **A conversation that never closes takes input away, and nothing looked like it was wrong.** An NPC in
+  Skelos Badlands held Spyro in dialogue; every stop after that teleported him, held forward for the whole
+  four seconds, recorded speed 0 and no movement, and the log still said `played`. It was only caught by
+  watching the screen. A stop that is told to walk and does not move for 2 s now ends as `could not move`,
+  and a dialogue stop that does so loads the level again at once, which is the cheapest thing that clears
+  a conversation. Detecting the symptom rather than the conversation covers cutscenes too.
+  - The cost is real: of the first 209 stops of the Spyro 2 segment, 52 could not move (24 dialogue stops
+    and 28 walk and charge stops caught in the aftermath), and 68% played. Recovering at the dialogue stop
+    that caused it took that to 12% locked and 83% played.
+  - **A quarter of `enterPlay` stops still lock**, because the script taps flame and jump and neither
+    dismisses every Spyro 2 conversation. The recovery keeps the run healthy but the data for those stops
+    is lost. Raising dialogue coverage means finding the button that closes a conversation — and changing
+    the script invalidates any comparison against a pass that used the old one, so it is a separate run,
+    not an edit mid-flight.
+- **Stops that cannot move are not all locks.** The first one the check caught was a charge at a fish
+  across water, which reads speed 0 in every pass and always did. One stop that cannot move is usually
+  the spot; three in a row is the game having taken input away.
+
 ## Still to do
 
 - The whole-game montage sweep: `animtest.txt` with no `here`, which tours every level, measures each
