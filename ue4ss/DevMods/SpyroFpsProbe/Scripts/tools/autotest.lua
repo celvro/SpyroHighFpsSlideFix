@@ -1,4 +1,4 @@
--- Scripted tour (O, or create autotest.txt in this mod folder): drives the game itself through every
+﻿-- Scripted tour (O, or create autotest.txt in this mod folder): drives the game itself through every
 -- recorded stop (tools/routes.lua) and plays a preset input script there (tools/scripts.lua), so the
 -- same gameplay can be compared frame for frame between framerates.
 --
@@ -24,10 +24,10 @@
 --
 -- A stop that ends "could not move" is one where he was held forward and stayed put. One on its own is
 -- usually geometry: charging at something across water, or a spot facing a rock. Otherwise the game has
--- taken input away, almost always a conversation that never closed. That holds each of DISMISS_BUTTONS
--- in turn, then pushes forward for a moment to see whether it worked, and loads the level again if it
--- did not. Without any of it, every stop after the first records a Spyro who cannot move and the log
--- still calls them played.
+-- taken input away, almost always a conversation that never closed. The next stop then starts by pushing
+-- forward for a moment: if he moves, the conversation ended with the stop and nothing is lost; if he
+-- does not, the level is loaded again, which is the only thing that reliably clears one. Without any of
+-- it, every stop after the first records a Spyro who cannot move and the log still calls them played.
 --
 -- autotest.txt may hold options, one per line or space separated:
 --   restart          start from the beginning instead of resuming autotest_progress.txt
@@ -73,13 +73,10 @@ local DEATH_SETTLE = 1.0    -- seconds on his feet again after a death before th
 local ARRIVE = 100         -- distance to the stop target at which the walk stops (it has been reached).
                            -- 170 stopped him short of the range an NPC starts talking at, so the stops
                            -- meant to open a dialogue never opened one.
--- Dialogue is an in-game cinematic (Spyro_IGC_Base has SkipCheck and StartSkipTimer), and a skip is a
--- button HELD, not tapped: the script's taps could never close one, which is why a conversation stayed
--- open and took input away for every stop after it. Which button is not in the asset, so a stop that
--- could not move holds each of these in turn before the next teleport.
-local DISMISS_BUTTONS = { "flame", "jump", "charge", "shoulderR" }
-local DISMISS_HOLD = 1.5   -- seconds each is held (StartSkipTimer implies a hold, not a tap)
-local VERIFY_SECONDS = 0.6 -- pushing forward after the holds, to see whether they worked
+-- Dialogue is an in-game cinematic (Spyro_IGC_Base has SkipCheck and StartSkipTimer) and it takes input
+-- away until it closes. Holding each face button to skip one was tried and measured: 29 of 32 attempts
+-- failed, at six and a half seconds each, so the holds are gone. Loading the level again is what works.
+local VERIFY_SECONDS = 0.6 -- pushing forward at the next stop, to see whether he is still held
 -- Spyro's own abilities, run once each at the start of every level at every framerate, on the first
 -- stop's spot. Running them at every character instead measured the same thing fifty times a level and
 -- was most of what a tour spent its hours on.
@@ -88,7 +85,7 @@ local LOST_HEIGHT = 1000   -- drop from the stop that means he is out of the lev
 local LOST_DISTANCE = 5000 -- and the same sideways (a respawn puts him at the level entrance)
 local LOCKED_SPEED = 5     -- below this while being told to walk, he is not walking at all
 local LOCKED_SECONDS = 2.0 -- held forward for this long without moving: the game has taken input away
-local LOCKED_STOPS = 2     -- that many stops in a row: the dismiss holds did not work, so load the level
+local LOCKED_STOPS = 2     -- that many stops in a row, or a failed check, and the level is loaded again
 local TRIGGER = paths.modDir .. "\\autotest.txt"
 local STOP = paths.modDir .. "\\autotest.stop" -- an empty file that stops a run that is already going
 local PROGRESS = paths.modDir .. "\\autotest_progress.txt"
@@ -107,7 +104,7 @@ local run = nil      -- { caps, stops, plan, index, phase, ... }; plan is every 
 local csv, animCsv = nil, nil
 local nextPoll = 0
 local NO_AXES = {}   -- sticks centred, reused so driving a frame allocates nothing
-local FORWARD = { leftY = 1 } -- the same, for the check after a dismissal
+local FORWARD = { leftY = 1 } -- the same, for the check at the start of a stop after a locked one
 local PLAYER_ORIGIN = { x = 0, y = 0, z = 0 } -- where the played character stood when the script started
 
 local function openCsv()
@@ -269,12 +266,11 @@ local function stopFinished(pawn, pc, reason)
         reason, run.elapsed or 0, run.samples or 0)
     -- Try to close whatever has him before the next teleport, rather than teleporting a Spyro who is
     -- still in a conversation and recording another stop of him standing there too.
-    if locked then
-        log("autotest: holding %s in turn to close whatever has him", table.concat(DISMISS_BUTTONS, "/"))
-        run.phase, run.dismissIndex, run.dismissHeld = "dismiss", 1, 0
-    else
-        run.phase = "next"
-    end
+    -- Holding the skip buttons was tried and measured: 29 of 32 attempts did not close the conversation,
+    -- at six and a half seconds each. The check at the next stop costs six tenths of a second and the
+    -- level reload is what actually works, so the holds are gone.
+    run.checkNext = locked or nil
+    run.phase = "next"
     writeProgress()
 end
 
@@ -588,6 +584,14 @@ local function update(pawn, pc, cmc, r, setFpsCap)
             return
         end
         if run.settled >= SETTLE then
+            -- The last stop could not move, so before this one is played, find out whether he still
+            -- cannot. Here is the place to ask: the teleport has moved him away from whoever was
+            -- talking to him. Asking at the locked stop itself only ever said yes, because the NPC was
+            -- still standing there saying it.
+            if run.checkNext then
+                run.phase, run.verifyFor, run.verifyBest = "verify", 0, 0
+                return
+            end
             run.phase = "play"
             run.x0, run.y0, run.z0 = r.x, r.y, r.z
             run.elapsed, run.nextSample = 0, 0
@@ -674,39 +678,29 @@ local function update(pawn, pc, cmc, r, setFpsCap)
     end
     -- Holding each candidate skip button in turn, before the next stop is teleported to. If one of them
     -- closes the dialogue the stops after this are usable; if none do, the level reload still catches it.
-    if run.phase == "dismiss" then
-        local button = DISMISS_BUTTONS[run.dismissIndex]
-        if not button then
-            -- Push forward for a moment and see whether he goes anywhere. Without this the next stop
-            -- is spent finding out, and the one after that: of 89 stops that could not move, 62 were
-            -- walks and charges after a conversation opened at a dialogue stop, not stops with anything
-            -- wrong of their own.
-            input.hold(FORWARD)
-            for name in pairs(input.BUTTONS) do input.release(name) end
-            input.apply(pawn, pc)
-            run.verifyFor = (run.verifyFor or 0) + r.dt
-            run.verifyBest = math.max(run.verifyBest or 0, r.speed or 0)
-            if run.verifyFor < VERIFY_SECONDS then return end
-            input.clear(pawn, pc)
-            if run.verifyBest < LOCKED_SPEED then
-                log("autotest: still cannot move after the holds; the level has to be loaded again")
-                run.lockedStops = LOCKED_STOPS
-            else
-                run.lockedStops = 0
-            end
-            run.verifyFor, run.verifyBest = nil, nil
+    -- Pushing forward at the start of a stop that follows a locked one. If he moves, the conversation
+    -- ended with the stop and nothing is lost; if he does not, the level is loaded again, which is the
+    -- only thing that reliably clears one.
+    if run.phase == "verify" then
+        input.hold(FORWARD)
+        for name in pairs(input.BUTTONS) do input.release(name) end
+        input.apply(pawn, pc)
+        run.verifyFor = run.verifyFor + r.dt
+        run.verifyBest = math.max(run.verifyBest, r.speed or 0)
+        if run.verifyFor < VERIFY_SECONDS then return end
+        input.clear(pawn, pc)
+        run.checkNext, run.verifyFor, run.verifyBest = nil, nil, nil
+        if run.verifyBest < LOCKED_SPEED then
+            log("autotest: still cannot move at the next stop; loading %s again", entry.stop.level)
+            run.lockedStops = LOCKED_STOPS
             run.phase = "next"
         else
-            for name in pairs(input.BUTTONS) do
-                if name == button then input.press(name) else input.release(name) end
-            end
-            input.apply(pawn, pc)
-            run.dismissHeld = run.dismissHeld + r.dt
-            if run.dismissHeld >= DISMISS_HOLD then
-                run.dismissIndex, run.dismissHeld = run.dismissIndex + 1, 0
-            end
-            return
+            -- Back through the settle, which is what pins the target's mesh and records where it
+            -- started; going straight to "play" would skip all of it.
+            run.lockedStops = 0
+            run.phase, run.settled = "settle", SETTLE
         end
+        return
     end
     if run.phase == "next" then nextStop(pawn, pc, cmc, setFpsCap) end
 end
