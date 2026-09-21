@@ -282,7 +282,7 @@ local function stopFinished(pawn, pc, reason)
             run.igcReported = true
             igc.report()
         end
-        igc.close()
+        igc.close(pc)
     end
     run.checkNext = locked or nil
     run.phase = "next"

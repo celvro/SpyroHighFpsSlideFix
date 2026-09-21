@@ -1,4 +1,5 @@
--- Closing an in-game cinematic, which is what a conversation with an NPC is.
+-- Getting control back when an in-game cinematic has taken it, which is what a conversation with an NPC
+-- does.
 --
 -- Talking to an NPC plays a Spyro_IGC_Dialogue, and while it runs the game takes input away. A scripted
 -- tour that walks into an NPC therefore loses not just that stop but every stop after it, because nothing
@@ -52,16 +53,29 @@ local function instances()
     return found
 end
 
--- Tells every cinematic that is running to finish. Returns how many were told, so a caller can fall back
--- to reloading the level when the answer is none.
-function igc.close()
+-- Whatever is holding him, let go. Three things are tried, cheapest first, because which one applies is
+-- not knowable from outside: the cinematic is found by class name only if UE4SS matches the level's own
+-- subclass, and a conversation takes input away through the player controller whether it is found or not.
+-- Returns what was done, so a caller can fall back to reloading the level.
+function igc.close(pc)
+    local done = {}
+    -- The controller's own input gates. A cinematic raises these and lowers them when it ends; if it
+    -- never ends, lowering them by hand gives control back even though the cinematic is still there.
+    if pc and pc:IsValid() then
+        if pcall(function() pc:ResetIgnoreMoveInput() end) then done[#done + 1] = "move input" end
+        if pcall(function() pc:ResetIgnoreLookInput() end) then done[#done + 1] = "look input" end
+        -- SetCinematicMode(inCinematicMode, hidePlayer, affectsHUD, affectsMovement, affectsTurning)
+        if pcall(function() pc:SetCinematicMode(false, false, false, true, true) end) then
+            done[#done + 1] = "cinematic mode"
+        end
+    end
     local closed = 0
     for _, object in ipairs(instances()) do
-        local ok = pcall(function() object.SkipCheck = true end)
-        if ok then closed = closed + 1 end
+        if pcall(function() object.SkipCheck = true end) then closed = closed + 1 end
     end
-    if closed > 0 then log("igc: told %d cinematic(s) to finish", closed) end
-    return closed
+    if closed > 0 then done[#done + 1] = string.format("%d cinematic(s)", closed) end
+    if #done > 0 then log("igc: released %s", table.concat(done, ", ")) end
+    return #done
 end
 
 -- What is loaded right now, for working out whether the class names above are the right ones. Logged by
