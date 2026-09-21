@@ -28,12 +28,18 @@ local log = require("lib.log")
 
 local igc = {}
 
--- The sweep is a walk of every actor in the level (~1400 of them), so it is done once per level and the
--- objects kept: an IGC is a level actor, placed at load and gone when the level goes.
+-- The sweep is a walk of every actor in the level (~1400 of them), so the objects are kept rather than
+-- swept for every question. But not for the whole level: a minigame streams its own sublevel in while
+-- the level stays the same, and the cinematic that starts it is not in a list swept before it existed.
+-- So the list goes stale after CACHE_SECONDS and is swept again -- at most once a stop, which is about
+-- ten milliseconds of the eight seconds a stop takes.
+local CACHE_SECONDS = 5
 local found = nil
 local foundFor = nil
+local foundAt = 0
 local tries = {} -- address -> how many times close() has asked this one to finish
 local quiet = false -- whether "nothing is running" has already been said for this level
+local lastSummary = nil -- what the last sweep found, so an unchanged one is not logged again
 
 -- Whether a class is Spyro_IGC_Base_C or descends from it. Reading a property off an actor that does
 -- not have one does NOT come back nil in this UE4SS build (every actor in LS321 answered SkipCheck), so
@@ -71,7 +77,7 @@ end
 
 -- Every actor that is a Spyro_IGC_Base subclass, whatever its own class is called.
 local function instances(level)
-    if found and foundFor == level then return found end
+    if found and foundFor == level and os.clock() - foundAt < CACHE_SECONDS then return found end
     local list = {}
     local ok, actors = pcall(FindAllOf, "Actor")
     if ok and actors then
@@ -82,7 +88,8 @@ local function instances(level)
                 list[#list + 1] = actor
             end
         end
-        found, foundFor, quiet = list, level, false
+        if foundFor ~= level then quiet = false end
+        found, foundFor, foundAt = list, level, os.clock()
         local kinds, order = {}, {}
         for _, object in ipairs(list) do
             local name = "?"
@@ -92,8 +99,14 @@ local function instances(level)
         end
         local parts = {}
         for _, name in ipairs(order) do parts[#parts + 1] = string.format("%s x%d", name, kinds[name]) end
-        log("igc: %d cinematic(s) in %s out of %d actors: %s", #list, tostring(level), #actors,
-            #parts > 0 and table.concat(parts, ", ") or "none")
+        -- Swept again every few seconds, so only say so when what is there has changed: a minigame
+        -- streaming in is worth a line, the same three actors every stop is not.
+        local summary = string.format("%d cinematic(s) in %s out of %d actors: %s", #list,
+            tostring(level), #actors, #parts > 0 and table.concat(parts, ", ") or "none")
+        if summary ~= lastSummary then
+            lastSummary = summary
+            log("igc: %s", summary)
+        end
     end
     return list
 end
@@ -109,7 +122,7 @@ end
 
 -- The level has changed (or is about to), so the actors kept above are gone.
 function igc.forget()
-    found, foundFor, tries, quiet = nil, nil, {}, false
+    found, foundFor, foundAt, tries, quiet, lastSummary = nil, nil, 0, {}, false, nil
 end
 
 -- Whatever is holding him, let go. The controller gates are released first because they are cheap and

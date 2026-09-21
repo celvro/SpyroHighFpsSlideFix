@@ -91,6 +91,7 @@ local LOST_DISTANCE = 5000 -- and the same sideways (a respawn puts him at the l
 local LOCKED_SPEED = 5     -- below this while being told to walk, he is not walking at all
 local LOCKED_SECONDS = 2.0 -- held forward for this long without moving: the game has taken input away
 local LOCKED_STOPS = 2     -- that many stops in a row, or a failed check, and the level is loaded again
+local TALK_SECONDS = 25.0  -- longest a stop waits for a conversation it started to finish
 local CLEAR_SECONDS = 3.0  -- waiting for a conversation to finish before a teleport
 local CLEAR_RETRY = 0.5    -- seconds between asking it to finish
 local MAX_RELOADS = 2      -- but no more than this per level: past that the spots are the problem
@@ -181,6 +182,18 @@ end
 -- is a SaveFairy) and Moneybags, whose "pay?" box is the same kind of modal choice.
 local PROMPTS = { "Zoe", "SaveFairy", "Moneybags" }
 
+-- Sparx fodder: the critters the game files prefix CFS, and the goats and sheep. 158 of the route's
+-- stops stand in front of one, and what they do is a walk cycle and a death -- nothing a minigame or an
+-- NPC does not already cover, and none of them is a character whose animations this is about.
+local FODDER = { "CFS", "GoatSheep" }
+
+local function fodder(note)
+    for _, name in ipairs(FODDER) do
+        if tostring(note):find(name, 1, true) then return true end
+    end
+    return false
+end
+
 local function prompts(note)
     for _, name in ipairs(PROMPTS) do
         if tostring(note):find(name, 1, true) then return true end
@@ -189,7 +202,7 @@ local function prompts(note)
 end
 
 local function buildStops(options)
-    local all, picked, prompted = routes.all(), {}, 0
+    local all, picked, prompted, skipped = routes.all(), {}, 0, 0
     local only = wantedScripts(options.script)
     local game = tonumber(options.game)
     -- A walk stop in front of a character that also has an enterPlay stop does the same thing twice:
@@ -213,6 +226,9 @@ local function buildStops(options)
             and (not game or stop.level:match("^LS(%d)") == tostring(game))
             and (not only or only[stop.script])
             and not duplicateWalk
+        if wanted and fodder(stop.note) then
+            wanted, skipped = false, skipped + 1
+        end
         if wanted then
             if scripts.exists(script) then
                 if script ~= stop.script then
@@ -228,6 +244,7 @@ local function buildStops(options)
             end
         end
     end
+    if skipped > 0 then log("autotest: %d fodder stop(s) skipped", skipped) end
     if prompted > 0 then
         log("autotest: %d stop(s) stand and watch instead of walking in (their prompt pauses the game)",
             prompted)
@@ -437,7 +454,7 @@ local function startStop(pawn, pc, cmc)
         return
     end
     run.phase, run.settled, run.elapsed, run.samples, run.nextSample = "settle", 0, 0, 0, 0
-    run.arrived, run.everMoved = nil, nil
+    run.arrived, run.everMoved, run.talking = nil, nil, nil
     run.spot = spot
 end
 
@@ -784,9 +801,25 @@ local function update(pawn, pc, cmc, r, setFpsCap)
         end
         local phase, into = scripts.phaseAt(entry.stop.script, run.elapsed)
         if not phase then
+            -- The script has run out, but a conversation this stop started is still going. Ending the
+            -- stop here teleports him out of it mid-sentence, which is what walking into Bentley used
+            -- to look like. Wait for it instead, and keep sampling while it plays: the talking is a
+            -- character animating, which is the whole point of the stop.
+            if igc.active(entry.stop.level) then
+                run.talking = (run.talking or 0) + r.dt
+                if run.talking < TALK_SECONDS then
+                    if run.elapsed >= run.nextSample then
+                        sample(r, entry, run.nextSample)
+                        sampleAnims(pawn, entry, run.nextSample)
+                        run.nextSample = run.nextSample + SAMPLE
+                    end
+                    run.elapsed = run.elapsed + r.dt
+                    return
+                end
+            end
             sample(r, entry, run.nextSample)
             sampleAnims(pawn, entry, run.nextSample)
-            stopFinished(pawn, pc, "played")
+            stopFinished(pawn, pc, (run.talking or 0) > 0 and "played (waited out a conversation)" or "played")
         else
             if run.elapsed >= run.nextSample then
                 sample(r, entry, run.nextSample)
