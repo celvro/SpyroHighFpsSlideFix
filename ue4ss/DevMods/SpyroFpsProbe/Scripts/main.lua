@@ -125,11 +125,12 @@ local function sample()
 
     local frameTime = prev and r.time - prev.time or 0
     movement.update(r, util.isGrounded(r.mode))
-    -- The scripted tour teleports Spyro onto a thousand stops and walks him at a character: his jump
-    -- height, glide, charge and camera are measured by their own tools and mean nothing here, so they
-    -- are not run once per character for the hours a tour takes. Movement and the stall tracker stay.
+    -- The scripted tour teleports Spyro onto a thousand stops and walks him at a character. His jump
+    -- height, glide, charge and camera belong to the level, not the character, so they run on the first
+    -- stop of each level at each framerate instead of at every character for the hours a tour takes.
     local touring = autotest.running()
-    if not touring then
+    local measureLevel = (not touring) or autotest.firstOfLevel()
+    if measureLevel then
         glide.update(r, prev, util.isGrounded(r.mode))
         supercharge.update(r, prev)
         charge.update(r, prev)
@@ -147,7 +148,7 @@ local function sample()
         stalls.pawnChanged()
         flames.rescan()
     end
-    if not touring then
+    if measureLevel then
         thieves.update(r, prev)
         buzz.update(r, prev)
     end
@@ -167,7 +168,7 @@ local function sample()
         local okRecord, recordErr = pcall(routes.record, pawn, pc, r)
         if not okRecord then log("routes error: %s", tostring(recordErr)) end
     end
-    if not touring then
+    if measureLevel then
         walkin.update(pc, cmc, r, prev)
         flight.update(pawn, cmc, r, prev)
         hits.update(r, prev)

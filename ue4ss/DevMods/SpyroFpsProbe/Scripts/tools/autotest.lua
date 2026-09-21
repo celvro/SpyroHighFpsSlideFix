@@ -2,10 +2,12 @@
 -- recorded stop (tools/routes.lua) and plays a preset input script there (tools/scripts.lua), so the
 -- same gameplay can be compared frame for frame between framerates.
 --
--- Framerates are run one after the other, not at once: a run is the whole route at 30 FPS, then the
--- whole route at 60, 144 and 320. Each stop starts from the same teleport, facing the same way, at a
--- standstill, so the runs line up; tools/Compare-Autotest.ps1 joins them on (level, stop, script, t)
--- and reports where the high-framerate runs drift away from the 30 FPS one.
+-- A level is run at every framerate before the run moves on: all of LS301 at 30 FPS, the same stops and
+-- the same inputs at 320, then LS302. The two passes of a level are minutes apart in one session rather
+-- than hours apart either side of a restart, and stopping half way leaves whole levels measured at both
+-- framerates instead of a 30 FPS pass with nothing to compare against. Each stop starts from the same
+-- teleport, facing the same way, at a standstill, so the passes line up; tools/Compare-Autotest.ps1 and
+-- tools/Compare-Anims.ps1 join them on (level, stop, script, t).
 --
 -- Each stop is: travel to its level (unless already there), teleport onto it, wait SETTLE seconds for
 -- the camera and the ground check, then play the script while sampling every SAMPLE seconds.
@@ -29,7 +31,7 @@
 --   game=2           only stops in that game's levels (1 = LS1xx, 2 = LS2xx, 3 = LS3xx)
 --   script=jump      only stops with this script (a comma list is allowed: script=walk,enterPlay)
 --
--- A run must not cross from one game into another: travelling live from LS135 into LS201 sets the game
+-- Spyro 1 and 3 each keep their own segment too: a run must not cross from one game into another: travelling live from LS135 into LS201 sets the game
 -- index, streams the level in and then leaves Spyro falling in a black void, because the checkpoint it
 -- starts at belongs to the game he was in. Restarting switches games properly (lib/resume.lua notes the
 -- game index), so run each game as its own segment: game=1, restart, game=2, restart, game=3. Stop
@@ -91,7 +93,7 @@ local ANIM_HEADER = "cap,level,stop,script,note,t,who,class,montage,montagePos,s
     .. "state,stateTime,x,y,z,yaw,speed,mode\n"
 
 local requested = false
-local run = nil      -- { caps, capIndex, stops, index, phase, ... }
+local run = nil      -- { caps, stops, plan, index, phase, ... }; plan is every (stop, cap) in run order
 local csv, animCsv = nil, nil
 local nextPoll = 0
 local NO_AXES = {}   -- sticks centred, reused so driving a frame allocates nothing
@@ -122,7 +124,7 @@ end
 local function writeProgress()
     local file = io.open(PROGRESS, "w")
     if not file then return end
-    file:write(string.format("%d %d\n", run.capIndex, run.index))
+    file:write(string.format("%d %d\n", 1, run.index))
     file:close()
 end
 
@@ -182,6 +184,37 @@ local function buildStops(options)
     return picked
 end
 
+-- One level at a time, at every framerate, rather than the whole route at 30 and then the whole route
+-- again at 320. The two passes of a level are then minutes apart in the same session instead of hours
+-- apart either side of a restart, and a run that is stopped half way leaves whole levels measured at
+-- both framerates rather than a 30 FPS pass with nothing to compare it against.
+local function buildPlan(stops, caps)
+    local plan = {}
+    local index = 1
+    while index <= #stops do
+        local level = stops[index].stop.level
+        local last = index
+        while last < #stops and stops[last + 1].stop.level == level do last = last + 1 end
+        for _, cap in ipairs(caps) do
+            for i = index, last do
+                plan[#plan + 1] = { entry = stops[i], cap = cap, first = (i == index) }
+            end
+        end
+        index = last + 1
+    end
+    return plan
+end
+
+local function currentEntry()
+    local step = run.plan[run.index]
+    return step and step.entry
+end
+
+local function currentCap()
+    local step = run.plan[run.index]
+    return step and step.cap or 0
+end
+
 local function parseCaps(text)
     local caps = {}
     for value in tostring(text):gmatch("[^,]+") do
@@ -194,7 +227,7 @@ end
 local findTarget -- defined below, used by startStop
 
 local function stopFinished(pawn, pc, reason)
-    local entry = run.stops[run.index]
+    local entry = currentEntry()
     input.clear(pawn, pc)
     anim.release(run.targetHeld)
     run.targetHeld, run.targetOrigin = nil, nil
@@ -212,7 +245,7 @@ local function stopFinished(pawn, pc, reason)
     local locked = (run.lockedStops or 0) > 0
     run.lockedFor = 0
     log("autotest %d FPS %s stop %d (%s, %s): %s after %.1f s, %d samples",
-        run.caps[run.capIndex], entry.stop.level, entry.id, entry.stop.script, entry.stop.note,
+        currentCap(), entry.stop.level, entry.id, entry.stop.script, entry.stop.note,
         reason, run.elapsed or 0, run.samples or 0)
     -- Try to close whatever has him before the next teleport, rather than teleporting a Spyro who is
     -- still in a conversation and recording another stop of him standing there too.
@@ -251,7 +284,7 @@ local function yawTo(target, x, y)
 end
 
 local function startStop(pawn, pc, cmc)
-    local entry = run.stops[run.index]
+    local entry = currentEntry()
     if not entry then return end
     local stop = entry.stop
     if run.skipLevel == stop.level then
@@ -301,20 +334,21 @@ local function startStop(pawn, pc, cmc)
 end
 
 local function nextStop(pawn, pc, cmc, setFpsCap)
+    local was = run.plan[run.index]
     run.index = run.index + 1
-    if run.index > #run.stops then
-        run.capIndex, run.index = run.capIndex + 1, 1
-        if run.capIndex > #run.caps then
-            log("autotest: done, %d stops at %d framerates; %s", #run.stops, #run.caps, CSV)
-            input.clear(pawn, pc)
-            invuln.clear()
-            os.remove(PROGRESS)
-            run = nil
-            return
-        end
-        log("autotest: %d FPS pass (%d stops)", run.caps[run.capIndex], #run.stops)
+    if run.index > #run.plan then
+        log("autotest: done, %d stops at %d framerates; %s", #run.stops, #run.caps, CSV)
+        input.clear(pawn, pc)
+        invuln.clear()
+        os.remove(PROGRESS)
+        run = nil
+        return
     end
-    setFpsCap(run.caps[run.capIndex])
+    local now = run.plan[run.index]
+    if not was or was.cap ~= now.cap or was.entry.stop.level ~= now.entry.stop.level then
+        log("autotest: %s at %d FPS", now.entry.stop.level, now.cap)
+    end
+    setFpsCap(currentCap())
     writeProgress()
     startStop(pawn, pc, cmc)
 end
@@ -325,7 +359,7 @@ local function sample(r, entry, slot)
     local file = openCsv()
     if not file then return end
     file:write(string.format("%d,%s,%d,%s,%s,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%.3f,%.3f,%.1f,%.1f\n",
-        run.caps[run.capIndex], entry.stop.level, entry.id, entry.stop.script, entry.stop.note:gsub(",", " "),
+        currentCap(), entry.stop.level, entry.id, entry.stop.script, entry.stop.note:gsub(",", " "),
         slot, run.elapsed, r.x - run.x0, r.y - run.y0, r.z - run.z0, r.yaw, r.speed or 0, r.mode,
         r.camYaw, r.camPitch, r.camDist, r.camHeight))
     run.samples = run.samples + 1
@@ -348,7 +382,7 @@ local function sampleAnim(file, entry, slot, who, actor, origin)
         mode = cmc.MovementMode
     end)
     file:write(string.format("%d,%s,%d,%s,%s,%.3f,%s,%s,%s,%.4f,%s,%.3f,%s,%s,%.3f,%.2f,%.2f,%.2f,%.2f,%.2f,%d\n",
-        run.caps[run.capIndex], entry.stop.level, entry.id, entry.stop.script, entry.stop.note:gsub(",", " "),
+        currentCap(), entry.stop.level, entry.id, entry.stop.script, entry.stop.note:gsub(",", " "),
         slot, who, okClass and class or "?", s.montage, s.position, s.section, s.rate, tostring(s.rootMotion),
         s.enemyState, s.enemyStateTime, loc.X - origin.x, loc.Y - origin.y, loc.Z - origin.z,
         yaw, speed, mode))
@@ -413,7 +447,7 @@ local function drive(pawn, pc, phase, into, r)
         run.arrived = run.elapsed
         log("autotest: %s after %.1f s, no more walking for the rest of the stop",
             edge and "stopped at the edge of a drop" or
-            ("reached " .. run.stops[run.index].stop.note), run.elapsed)
+            ("reached " .. currentEntry().stop.note), run.elapsed)
     end
     -- Reaching the character (or a drop) lets go of the sticks, but the script's buttons carry on: a
     -- dialogue or minigame script has to keep tapping once it is standing in front of whoever starts it,
@@ -478,23 +512,26 @@ local function update(pawn, pc, cmc, r, setFpsCap)
             run = nil
             return
         end
-        local capIndex, index = 1, 1
+        local index = 1
         if not options.restart then
-            local savedCap, savedIndex = readProgress()
-            capIndex, index = savedCap, math.max(savedIndex, 1)
+            local _, savedIndex = readProgress()
+            index = math.max(savedIndex, 1)
         end
-        run = { caps = parseCaps(options.caps or ""), capIndex = capIndex, stops = stops, index = index,
+        local caps = parseCaps(options.caps or "")
+        local plan = buildPlan(stops, caps)
+        if index > #plan then index = 1 end
+        run = { caps = caps, stops = stops, plan = plan, index = index,
                 phase = "start", started = os.clock() }
-        if run.capIndex > #run.caps then run.capIndex = 1 end
-        log("autotest: %d stops, caps %s, starting at pass %d stop %d",
-            #stops, table.concat(run.caps, "/"), run.capIndex, run.index)
-        setFpsCap(run.caps[run.capIndex])
+        log("autotest: %d stops at %d framerates (%s), %d in all, starting at %d; each level is run at "
+            .. "every framerate before the next one",
+            #stops, #caps, table.concat(caps, "/"), #plan, run.index)
+        setFpsCap(currentCap())
         startStop(pawn, pc, cmc)
         return
     end
     if not run or not run.stops then return end
     invuln.update(pawn)
-    local entry = run.stops[run.index]
+    local entry = currentEntry()
 
     if run.phase == "travel" then
         if quicksave.travelling() then return end
@@ -564,11 +601,11 @@ local function update(pawn, pc, cmc, r, setFpsCap)
         if health and health <= 0 then
             local entryStop = entry.stop
             log("autotest: DIED at %s stop %d (%s, %s) %.1f s into the script, %d FPS pass",
-                entryStop.level, entry.id, entryStop.script, entryStop.note, run.elapsed, run.caps[run.capIndex])
+                entryStop.level, entry.id, entryStop.script, entryStop.note, run.elapsed, currentCap())
             local deaths = io.open(DEATHS, "a")
             if deaths then
                 deaths:write(string.format("%s %s stop %d %s %s at %.1f s, %d FPS\n", os.date("%Y-%m-%d %H:%M:%S"),
-                    entryStop.level, entry.id, entryStop.script, entryStop.note, run.elapsed, run.caps[run.capIndex]))
+                    entryStop.level, entry.id, entryStop.script, entryStop.note, run.elapsed, currentCap()))
                 deaths:close()
             end
             run.phase, run.deadFor = "dead", 0
@@ -653,6 +690,14 @@ end
 -- True while a run is going, so lib/resume.lua knows a restart should carry on with it.
 function autotest.running()
     return run ~= nil and run.stops ~= nil
+end
+
+-- The camera and jump trackers measure the level, not the character: one stop in a level says as much
+-- as fifty do, and running them at every character costs the whole length of a tour. True on the first
+-- stop of each level at each framerate, which is the one that is worth measuring.
+function autotest.firstOfLevel()
+    local step = run and run.plan and run.plan[run.index]
+    return step ~= nil and step.first == true
 end
 
 return autotest
