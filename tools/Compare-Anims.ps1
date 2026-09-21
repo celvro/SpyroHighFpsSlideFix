@@ -76,6 +76,17 @@ if ($dupes -gt 0) {
     Write-Warning ("{0} samples are measured more than once across these files: they are repeats of the same stops, not segments of one run. Pass one file per stop range." -f $dupes)
 }
 
+# A montage played through a slot rather than from an asset is a runtime object named AnimMontage_<n>,
+# where n is a counter that keeps climbing for as long as the game is running. The 30 FPS pass got
+# AnimMontage_0..9 and the 320 pass AnimMontage_33..41 for the same NPC dialogue, so comparing the names
+# marked every one of those samples as a different animation. The counter is not an identity: all of them
+# compare as one token, and how far into it they were still tells them apart.
+function Get-MontageKey($name) {
+    if ($name -match '^AnimMontage_\d+$') { return '(dynamic)' }
+    return $name
+}
+foreach ($r in $rows) { $r.montage = Get-MontageKey $r.montage }
+
 $base = @{}
 foreach ($r in $rows) {
     if ([int] $r.cap -ne $Baseline) { continue }
