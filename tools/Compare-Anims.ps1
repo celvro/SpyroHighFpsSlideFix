@@ -87,6 +87,37 @@ function Get-MontageKey($name) {
 }
 foreach ($r in $rows) { $r.montage = Get-MontageKey $r.montage }
 
+# A looping montage is at a different point in its loop in each pass, because the character started
+# looping at a different moment: 484 of 1398 montage runs in the Spyro 2 segment wrapped, and comparing
+# their positions said a box turtle idle was 10 seconds apart when nothing was wrong. What is worth
+# comparing for those is how fast the position advances, so each run keeps the median step it made
+# between samples, and runs that wrapped are timed by that instead of by where they happened to be.
+$runs = @{}
+foreach ($r in $rows) {
+    if ($r.montage -eq '' -or $r.montage -eq '(dynamic)') { continue }
+    $k = "$($r.cap)|$($r.stop)|$($r.who)|$($r.montage)"
+    if (-not $runs.ContainsKey($k)) { $runs[$k] = [pscustomobject]@{ Last = $null; Steps = [System.Collections.Generic.List[double]]::new(); Looped = $false } }
+    $run = $runs[$k]
+    $pos = [double] $r.montagePos
+    if ($null -ne $run.Last) {
+        $step = $pos - $run.Last
+        if ($step -lt -0.001) { $run.Looped = $true } elseif ($step -ge 0) { $run.Steps.Add($step) }
+    }
+    $run.Last = $pos
+}
+function Get-Advance($key) {
+    $run = $runs[$key]
+    if (-not $run -or $run.Steps.Count -lt 5) { return $null }
+    # The mean, not the median: at 30 FPS the montage moves in 33 ms chunks, so a single step between
+    # two samples is quantised and a median lands either side of the truth for no reason (a sheep walk
+    # read 0.09 against 0.1004 on that alone). Averaging the run cancels it, and a montage genuinely
+    # running at a different speed still shows.
+    $sum = 0.0
+    foreach ($s in $run.Steps) { $sum += $s }
+    return $sum / $run.Steps.Count
+}
+function Test-Looped($key) { $run = $runs[$key]; return ($null -ne $run -and $run.Looped) }
+
 $base = @{}
 foreach ($r in $rows) {
     if ([int] $r.cap -ne $Baseline) { continue }
@@ -97,7 +128,7 @@ $results = @()
 foreach ($group in $rows | Where-Object { [int] $_.cap -ne $Baseline } | Group-Object cap, stop, who) {
     $sorted = $group.Group | Sort-Object { [double] $_.t }
     $first = $sorted[0]
-    $matched = 0; $differ = 0; $shifted = 0; $stateDiffer = 0
+    $matched = 0; $differ = 0; $shifted = 0; $stateDiffer = 0; $looped = @{}
     $maxPos = 0.0; $maxMove = 0.0
     $firstDiffer = $null
     foreach ($r in $sorted) {
@@ -118,8 +149,16 @@ foreach ($group in $rows | Where-Object { [int] $_.cap -ne $Baseline } | Group-O
                 if ($null -eq $firstDiffer) { $firstDiffer = "$($t)s $($b.montage)->$($r.montage)" }
             }
         } else {
-            $dPos = [math]::Abs([double] $r.montagePos - [double] $b.montagePos)
-            if ($dPos -gt $maxPos) { $maxPos = $dPos }
+            # Only a montage that played straight through can be compared by where it had got to. One
+            # that wrapped is compared by how fast it advances instead, after the loop.
+            $rk = "$($r.cap)|$($r.stop)|$($r.who)|$($r.montage)"
+            $bk = "$($b.cap)|$($b.stop)|$($b.who)|$($b.montage)"
+            if ((Test-Looped $rk) -or (Test-Looped $bk)) {
+                $looped[$rk] = $bk
+            } else {
+                $dPos = [math]::Abs([double] $r.montagePos - [double] $b.montagePos)
+                if ($dPos -gt $maxPos) { $maxPos = $dPos }
+            }
         }
         if ($r.state -ne $b.state) { $stateDiffer++ }
         $d = [math]::Sqrt([math]::Pow([double] $r.x - [double] $b.x, 2) +
@@ -170,5 +209,43 @@ if ($firsts) {
     Write-Host "First animation that differs:"
     foreach ($r in $firsts) {
         Write-Host ("  {0} {1} {2} {3}: {4}" -f $r.Stop, $r.Script, $r.Who, $r.Class, $r.First)
+    }
+}
+
+# Looping montages, compared by how fast they advance rather than by where they were. A montage that
+# runs at a different speed at a high framerate is the thing this whole investigation is looking for,
+# and a loop is the one case where the position alone cannot show it.
+$rates = @()
+foreach ($k in $runs.Keys) {
+    $parts = $k -split '\|'
+    if ([int] $parts[0] -eq $Baseline) { continue }
+    $bk = "$Baseline|$($parts[1])|$($parts[2])|$($parts[3])"
+    if (-not $runs.ContainsKey($bk)) { continue }
+    $a = Get-Advance $k
+    $b = Get-Advance $bk
+    # Only montages that are actually running, and with enough samples to average: a Damage_Flatten that
+    # creeps along at 0.01 a sample is barely advancing at all, and the ratio of two numbers that small
+    # says nothing. Half real time is the bar, over at least ten steps.
+    if ($null -eq $a -or $null -eq $b -or $b -lt 0.05) { continue }
+    if ($runs[$k].Steps.Count -lt 10 -or $runs[$bk].Steps.Count -lt 10) { continue }
+    $rates += [pscustomobject] @{
+        Cap     = [int] $parts[0]
+        Stop    = $parts[1]
+        Who     = $parts[2]
+        Montage = $parts[3]
+        Base    = [math]::Round($b, 4)
+        This    = [math]::Round($a, 4)
+        Ratio   = [math]::Round($a / $b, 3)
+    }
+}
+if ($rates.Count -gt 0) {
+    $off = @($rates | Where-Object { $_.Ratio -lt 0.95 -or $_.Ratio -gt 1.05 })
+    Write-Host ""
+    Write-Host ("Montage advance per sample, {0} runs compared against {1} FPS: {2} differ by more than 5%." -f
+        $rates.Count, $Baseline, $off.Count)
+    if ($off.Count -gt 0) {
+        $off | Sort-Object { [math]::Abs($_.Ratio - 1) } -Descending |
+            Select-Object -First 15 Cap, Stop, Who, Montage, Base, This, Ratio |
+            Format-Table -AutoSize | Out-String -Width 200 | Write-Host
     }
 }
