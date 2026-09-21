@@ -23,10 +23,11 @@
 --   "autotest" lines      start/stop, each cap, each stop (or why it was skipped), and the run total
 --
 -- A stop that ends "could not move" is one where he was held forward and stayed put. One on its own is
--- usually geometry: charging at something across water, or a spot facing a rock. Three in a row is the
--- game having taken input away, almost always a conversation that never closed, and that loads the level
--- again to clear it. Without that, every stop after the first records a Spyro who cannot move and the
--- log still calls them played.
+-- usually geometry: charging at something across water, or a spot facing a rock. Otherwise the game has
+-- taken input away, almost always a conversation that never closed. That holds each of DISMISS_BUTTONS
+-- in turn, then pushes forward for a moment to see whether it worked, and loads the level again if it
+-- did not. Without any of it, every stop after the first records a Spyro who cannot move and the log
+-- still calls them played.
 --
 -- autotest.txt may hold options, one per line or space separated:
 --   restart          start from the beginning instead of resuming autotest_progress.txt
@@ -78,6 +79,7 @@ local ARRIVE = 100         -- distance to the stop target at which the walk stop
 -- could not move holds each of these in turn before the next teleport.
 local DISMISS_BUTTONS = { "flame", "jump", "charge", "shoulderR" }
 local DISMISS_HOLD = 1.5   -- seconds each is held (StartSkipTimer implies a hold, not a tap)
+local VERIFY_SECONDS = 0.6 -- pushing forward after the holds, to see whether they worked
 -- Spyro's own abilities, run once each at the start of every level at every framerate, on the first
 -- stop's spot. Running them at every character instead measured the same thing fifty times a level and
 -- was most of what a tour spent its hours on.
@@ -105,6 +107,7 @@ local run = nil      -- { caps, stops, plan, index, phase, ... }; plan is every 
 local csv, animCsv = nil, nil
 local nextPoll = 0
 local NO_AXES = {}   -- sticks centred, reused so driving a frame allocates nothing
+local FORWARD = { leftY = 1 } -- the same, for the check after a dismissal
 local PLAYER_ORIGIN = { x = 0, y = 0, z = 0 } -- where the played character stood when the script started
 
 local function openCsv()
@@ -674,7 +677,24 @@ local function update(pawn, pc, cmc, r, setFpsCap)
     if run.phase == "dismiss" then
         local button = DISMISS_BUTTONS[run.dismissIndex]
         if not button then
+            -- Push forward for a moment and see whether he goes anywhere. Without this the next stop
+            -- is spent finding out, and the one after that: of 89 stops that could not move, 62 were
+            -- walks and charges after a conversation opened at a dialogue stop, not stops with anything
+            -- wrong of their own.
+            input.hold(FORWARD)
+            for name in pairs(input.BUTTONS) do input.release(name) end
+            input.apply(pawn, pc)
+            run.verifyFor = (run.verifyFor or 0) + r.dt
+            run.verifyBest = math.max(run.verifyBest or 0, r.speed or 0)
+            if run.verifyFor < VERIFY_SECONDS then return end
             input.clear(pawn, pc)
+            if run.verifyBest < LOCKED_SPEED then
+                log("autotest: still cannot move after the holds; the level has to be loaded again")
+                run.lockedStops = LOCKED_STOPS
+            else
+                run.lockedStops = 0
+            end
+            run.verifyFor, run.verifyBest = nil, nil
             run.phase = "next"
         else
             for name in pairs(input.BUTTONS) do
