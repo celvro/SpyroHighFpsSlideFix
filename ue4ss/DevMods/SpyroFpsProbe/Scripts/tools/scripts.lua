@@ -74,6 +74,18 @@ scripts.list = {
     idle = { { dur = 8.0 } },
 }
 
+-- Whether a script ever pushes the left stick. A script that doesn't (a flame on the spot, a hop) can
+-- never show that the game has taken input away: Spyro stands still either way, so the stop is called
+-- played whether or not a conversation still has hold of him. Only a script that asks him to walk can
+-- tell, so only those are allowed to clear the locked count (tools/autotest.lua).
+function scripts.walks(name)
+    for _, phase in ipairs(scripts.list[name] or {}) do
+        local axes = phase.axes
+        if axes and ((axes.leftY or 0) ~= 0 or (axes.leftX or 0) ~= 0) then return true end
+    end
+    return false
+end
+
 -- Total seconds a script takes.
 function scripts.duration(name)
     local total = 0

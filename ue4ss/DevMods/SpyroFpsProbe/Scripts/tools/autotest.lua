@@ -256,9 +256,9 @@ local function stopFinished(pawn, pc, reason)
     -- to be loaded again to clear it.
     if run.lockedFor and run.lockedFor >= LOCKED_SECONDS then
         run.lockedStops = (run.lockedStops or 0) + 1
-    else
+    elseif scripts.walks(entry.stop.script) then
         run.lockedStops = 0
-    end
+    end -- a script that never pushes the stick proves nothing either way, so it leaves the count alone
     local locked = (run.lockedStops or 0) > 0
     run.lockedFor = 0
     log("autotest %d FPS %s stop %d (%s, %s): %s after %.1f s, %d samples",
