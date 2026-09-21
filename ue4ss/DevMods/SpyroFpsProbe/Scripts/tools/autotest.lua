@@ -673,8 +673,6 @@ local function update(pawn, pc, cmc, r, setFpsCap)
             run.elapsed = run.elapsed + r.dt
         end
     end
-    -- Holding each candidate skip button in turn, before the next stop is teleported to. If one of them
-    -- closes the dialogue the stops after this are usable; if none do, the level reload still catches it.
     -- Pushing forward at the start of a stop that follows a locked one. If he moves, the conversation
     -- ended with the stop and nothing is lost; if he does not, the level is loaded again, which is the
     -- only thing that reliably clears one.
@@ -686,18 +684,20 @@ local function update(pawn, pc, cmc, r, setFpsCap)
         run.verifyBest = math.max(run.verifyBest, r.speed or 0)
         if run.verifyFor < VERIFY_SECONDS then return end
         input.clear(pawn, pc)
+        local moved = run.verifyBest >= LOCKED_SPEED
         run.checkNext, run.verifyFor, run.verifyBest = nil, nil, nil
-        if run.verifyBest < LOCKED_SPEED then
-            log("autotest: still cannot move at the next stop; loading %s again", entry.stop.level)
-            run.lockedStops = LOCKED_STOPS
-            run.phase = "next"
-        else
+        if moved then
             -- Back through the settle, which is what pins the target's mesh and records where it
             -- started; going straight to "play" would skip all of it.
             run.lockedStops = 0
             run.phase, run.settled = "settle", SETTLE
+        else
+            log("autotest: still cannot move at the next stop; loading %s again", entry.stop.level)
+            run.lockedStops = LOCKED_STOPS
+            run.phase = "next"
         end
         return
+    end
     end
     if run.phase == "next" then nextStop(pawn, pc, cmc, setFpsCap) end
 end
