@@ -41,6 +41,10 @@ local function readNote()
     if not file then return nil end
     local line = file:read("l") or ""
     file:close()
+    -- A note written by hand rather than by writeNote can carry a UTF-8 BOM (PowerShell's -Encoding utf8
+    -- writes one), and "\239\187\191LS301" is not a level name: the resume then gets as far as starting
+    -- the game, fails the travel, and leaves the title screen sitting over the level it did load.
+    line = line:gsub("^\239\187\191", "")
     local level, game, slot = line:match("^(%S+)%s+(%-?%d+)%s+(%-?%d+)")
     if not level then return nil end
     return { level = level, game = tonumber(game), slot = tonumber(slot) }
@@ -126,8 +130,12 @@ function resume.update()
             log("resume: travelling from %s to %s", tostring(here), state.level)
             state.phase = "travel"
         else
-            log("resume: can't travel to %s from %s", state.level, tostring(here))
-            state = nil
+            -- Giving up on the level is no reason to leave the title screen drawn over the one that did
+            -- load: the game is then running underneath a menu that eats button presses.
+            log("resume: can't travel to %s from %s; staying in %s and closing the menu",
+                state.level, tostring(here), tostring(here))
+            state.level = here
+            state.phase, state.closeTries, state.nextClose = "closing", 0, 0
         end
         return
     end
