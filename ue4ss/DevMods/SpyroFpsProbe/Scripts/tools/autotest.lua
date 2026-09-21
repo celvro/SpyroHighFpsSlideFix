@@ -367,7 +367,7 @@ local function startStop(pawn, pc, cmc)
         return
     end
     run.phase, run.settled, run.elapsed, run.samples, run.nextSample = "settle", 0, 0, 0, 0
-    run.arrived = nil
+    run.arrived, run.everMoved = nil, nil
     run.spot = spot
 end
 
@@ -504,6 +504,7 @@ local function drive(pawn, pc, phase, into, r)
         run.lockedFor = (run.lockedFor or 0) + r.dt
     elseif walking then
         run.lockedFor = 0
+        run.everMoved = true
     end
     local wanted = {}
     for _, button in ipairs(phase.hold or {}) do wanted[button] = true end
@@ -681,11 +682,21 @@ local function update(pawn, pc, cmc, r, setFpsCap)
             stopFinished(pawn, pc, "left the area (fell or respawned)")
             return
         end
-        -- Held forward for this long without moving: he is not going to, and the stops after this one
-        -- would all record the same frozen Spyro. End the stop and let nextStop count it.
+        -- Held forward for this long without moving. If he walked earlier in this stop he has run into
+        -- something -- a wall, a pit edge, the character he was sent at -- so stop walking and let the
+        -- rest of the script play where he stands, which is what the stop is for. Only a Spyro who never
+        -- moved at all is one the game has taken input from, and that is the one worth ending early and
+        -- recovering from.
         if (run.lockedFor or 0) >= LOCKED_SECONDS then
-            stopFinished(pawn, pc, "could not move (blocked, or input taken away)")
-            return
+            if run.everMoved then
+                run.arrived = run.elapsed
+                run.lockedFor = 0
+                log("autotest: up against something after %.1f s, no more walking for the rest of the stop",
+                    run.elapsed)
+            else
+                stopFinished(pawn, pc, "could not move at all (input taken away)")
+                return
+            end
         end
         local phase, into = scripts.phaseAt(entry.stop.script, run.elapsed)
         if not phase then
