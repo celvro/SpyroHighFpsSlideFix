@@ -195,6 +195,9 @@ local function stopFinished(pawn, pc, reason)
     -- to be loaded again to clear it.
     if run.lockedFor and run.lockedFor >= LOCKED_SECONDS then
         run.lockedStops = (run.lockedStops or 0) + 1
+        -- A dialogue stop that cannot move is a conversation by construction: it walked into whoever
+        -- starts one and then could not walk away. No need to spend two more stops confirming it.
+        if entry.stop.script == "enterPlay" then run.lockedStops = LOCKED_STOPS end
     else
         run.lockedStops = 0
     end
