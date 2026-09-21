@@ -48,6 +48,7 @@
 -- Progress is written to autotest_progress.txt after every stop, so a crash or a restart
 -- (tools/Restart-Game.ps1 with lib/resume.lua) picks the run up where it stopped.
 local ground = require("lib.ground")
+local igc = require("lib.igc")
 local invuln = require("lib.invuln")
 local input = require("lib.input")
 local anim = require("lib.anim")
@@ -173,10 +174,20 @@ local function buildStops(options)
     local all, picked = routes.all(), {}
     local only = wantedScripts(options.script)
     local game = tonumber(options.game)
+    -- A walk stop in front of a character that also has an enterPlay stop does the same thing twice:
+    -- enterPlay opens by walking into that character for two and a half seconds. 332 of the route's 707
+    -- walks are those, and they are also the stops most likely to open a conversation and cost the run a
+    -- level reload. The enterPlay stop covers the walk-in, so the walk on its own is dropped.
+    local alsoTalks = {}
+    for _, stop in ipairs(all) do
+        if stop.script == "enterPlay" then alsoTalks[stop.level .. "|" .. stop.note] = true end
+    end
     for index, stop in ipairs(all) do
+        local duplicateWalk = stop.script == "walk" and alsoTalks[stop.level .. "|" .. stop.note]
         local wanted = (not options.level or stop.level == options.level)
             and (not game or stop.level:match("^LS(%d)") == tostring(game))
             and (not only or only[stop.script])
+            and not duplicateWalk
         if wanted then
             if scripts.exists(stop.script) then
                 picked[#picked + 1] = { stop = stop, id = index }
@@ -264,8 +275,15 @@ local function stopFinished(pawn, pc, reason)
     log("autotest %d FPS %s stop %d (%s, %s): %s after %.1f s, %d samples",
         currentCap(), entry.stop.level, entry.id, entry.stop.script, entry.stop.note,
         reason, run.elapsed or 0, run.samples or 0)
-    -- Ask again at the next stop, once the teleport has moved him away from whoever was talking to him.
-    -- Asking here only ever said he was still held, because the NPC was still standing there saying it.
+    -- Tell the conversation to finish (lib/igc.lua), then ask at the next stop whether it did. Asking
+    -- here only ever said he was still held, because the NPC was still standing there saying it.
+    if locked then
+        if not run.igcReported then
+            run.igcReported = true
+            igc.report()
+        end
+        igc.close()
+    end
     run.checkNext = locked or nil
     run.phase = "next"
     writeProgress()
