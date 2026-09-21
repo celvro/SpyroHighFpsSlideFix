@@ -60,6 +60,14 @@ scripts.list = {
     talk = { STILL, { dur = 12.0, tap = { button = "flame", period = 0.4, width = 0.1 } }, { dur = 3.0 }, STILL },
     -- Once a minigame is running: hold forward and keep jumping, which is "play" in most of them.
     play = { STILL, { dur = 8.0, axes = { leftY = 1 }, tap = { button = "jump", period = 1.0, width = 0.2 } }, STILL },
+    -- Both halves in one stop: walk into whoever starts it, tap through the dialogue, then play. The
+    -- tour can't record a stop inside a minigame (it isn't running when the level is scanned), so this
+    -- is the only way a minigame's own animations are reached, which is why tools/scan.lua gives it to
+    -- every NPC it finds.
+    enterPlay = { STILL, { dur = 2.5, axes = { leftY = 1 } },
+                  { dur = 12.0, tap = { button = "flame", period = 0.4, width = 0.1 } },
+                  { dur = 10.0, axes = { leftY = 1 }, tap = { button = "jump", period = 1.0, width = 0.2 } },
+                  { dur = 2.0 }, STILL },
 
     -- Nothing at all: stand and let the level's own characters move (what tools/tour.lua does).
     idle = { { dur = 8.0 } },

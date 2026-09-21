@@ -16,6 +16,7 @@
 --   M                  record where you stand as a scripted-tour stop (tools/routes.lua, routes.txt)
 --   H                  record a stop in front of every kind of character in this level (tools/scan.lua)
 --   O                  scripted tour: every recorded stop, playing its input script, at 30/60/144/320 FPS (tools/autotest.lua)
+--   I                  montage sweep: every animation of every kind of character here, at 30 and 320 FPS (tools/animtest.lua)
 --
 -- Sparx is kept full while the probe is loaded (KEEP_SPARX_FULL below, lib/invuln.lua), so a test is not
 -- cut short by a death and a level reload; Spyro still takes hits and knockback.
@@ -28,6 +29,7 @@
 --   hits_<stamp>.csv     one row per blocking hit during a ground charge (trackers/hits.lua)
 --   stalls_<stamp>.csv   one row per NPC/enemy movement stretch (trackers/stalls.lua)
 --   autotest_<stamp>.csv one row per scripted-tour sample, per framerate (tools/autotest.lua)
+--   animtest_<stamp>.csv one row per montage per framerate (tools/animtest.lua)
 --   camdump_*.txt        every reflected FollowCameraComponent property (trackers/camera.lua)
 --   log lines            "seg", "drift", "rise" (trackers/movement.lua); "charge", "turn" (trackers/charge.lua);
 --                        "camlock", "camstuck", "camtransition", "camdump diff" (trackers/camera.lua);
@@ -36,7 +38,7 @@
 --                        (trackers/walkin.lua); "glide", "hover", "glideair" (trackers/glide.lua);
 --                        "flight", "flightramp", "flightrun" (trackers/flight.lua);
 --                        "chargestall" (trackers/hits.lua); "buzzrun" (trackers/buzz.lua);
---                        "stall", "stallsummary" (trackers/stalls.lua); "tour" (tools/tour.lua); "autotest" (tools/autotest.lua); "routes" (tools/routes.lua); "resume" (lib/resume.lua); "traveltest" (tools/traveltest.lua); "spawntest" (tools/spawntest.lua); "slide" (tools/slide.lua);
+--                        "stall", "stallsummary" (trackers/stalls.lua); "tour" (tools/tour.lua); "autotest" (tools/autotest.lua); "animtest" (tools/animtest.lua); "routes" (tools/routes.lua); "resume" (lib/resume.lua); "traveltest" (tools/traveltest.lua); "spawntest" (tools/spawntest.lua); "slide" (tools/slide.lua);
 --                        quicksave, reload and travel lines (tools/quicksave.lua); "glidetest" (tools/glidetest.lua)
 --
 -- Scripts/
@@ -74,6 +76,7 @@ local traveltest = require("tools.traveltest")
 local spawntest = require("tools.spawntest")
 local slide = require("tools.slide")
 local autotest = require("tools.autotest")
+local animtest = require("tools.animtest")
 local routes = require("tools.routes")
 local scan = require("tools.scan")
 local dumpstate = require("tools.dumpstate")
@@ -149,6 +152,7 @@ local function sample()
     spawntest.update(pawn, pc, setFpsCap, frameTime)
     slide.update(pawn, r)
     autotest.update(pawn, pc, cmc, r, setFpsCap)
+    animtest.update(pawn, pc, r, setFpsCap)
     scan.update(pawn, pc)
     if requestRecord then
         requestRecord = false
@@ -195,8 +199,15 @@ RegisterKeyBind(Key.J, slide.request)
 RegisterKeyBind(Key.O, autotest.toggle)
 RegisterKeyBind(Key.M, function() requestRecord = true end)
 RegisterKeyBind(Key.H, scan.request)
+RegisterKeyBind(Key.I, animtest.toggle)
 
-NotifyOnNewObject("/Script/Engine.ParticleSystemComponent", flames.onNewComponent)
+-- Particle and audio components are watched by two things at once: the flame tracker wants the flame
+-- ones, and the montage sweep counts everything an animation notify spawns while it plays.
+NotifyOnNewObject("/Script/Engine.ParticleSystemComponent", function(object)
+    animtest.onNewFx(object)
+    flames.onNewComponent(object)
+end)
+NotifyOnNewObject("/Script/Engine.AudioComponent", animtest.onNewAudio)
 NotifyOnNewObject(stalls.CLASS, stalls.onNewObject)
 
 -- Level Blueprint classes load with their level; look for their instances for a while afterwards.

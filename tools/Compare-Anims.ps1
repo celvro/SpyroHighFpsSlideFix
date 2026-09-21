@@ -1,0 +1,127 @@
+<#
+.SYNOPSIS
+    Compares what the characters were animating in each framerate pass of a scripted tour
+    (the probe's autotest_anims_<stamp>.csv).
+
+.DESCRIPTION
+    Every pass plays the same input script from the same teleport, so at each sample time the played
+    character and the character the stop was recorded in front of should be in the same animation, the
+    same distance into it, and in the same enemy state as they were at 30 FPS. This joins the passes on
+    (stop, t, who) and reports, per stop and character, how often that is not the case.
+
+    Columns: Differ is the share of samples playing an animation the baseline was not playing at that
+    sample or either side of it; Shift is the share that played the baseline's animation one sample early
+    or late, which is a timing difference rather than a different animation; dPos is the largest
+    difference in how far into the montage they were while both played the same one; dMove is the largest
+    distance between where that character had moved to; State is the share of samples in a different
+    enemy state. Stops are listed worst first.
+
+    A live level is not a controlled test: enemies wander, Spyro is knocked about, and a target that
+    strolled off gives a large dMove with nothing wrong. Read this as a screen for stops worth looking at
+    (and re-running), not as a verdict; tools/Compare-Animtest.ps1 is the controlled measurement.
+
+.PARAMETER Path
+    The CSV. Without it, the newest autotest_anims_*.csv in the deployed probe folder.
+
+.EXAMPLE
+    .\tools\Compare-Anims.ps1 -Who target
+#>
+param(
+    [string] $Path,
+    [ValidateSet('both', 'player', 'target')]
+    [string] $Who = 'both',
+    [double] $PosTolerance = 0.05,
+    [double] $MoveTolerance = 10,
+    [int] $Baseline = 30,
+    [int] $Top = 40
+)
+
+$ErrorActionPreference = 'Stop'
+. "$PSScriptRoot\Config.ps1"
+
+if (-not $Path) {
+    $probeDir = Join-Path $GameDir 'Falcon\Binaries\Win64\ue4ss\Mods\SpyroFpsProbe'
+    $newest = Get-ChildItem (Join-Path $probeDir 'autotest_anims_*.csv') -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if (-not $newest) { throw "No autotest_anims_*.csv in $probeDir; pass -Path." }
+    $Path = $newest.FullName
+}
+Write-Host "Reading $Path"
+
+$rows = Import-Csv $Path
+if ($Who -ne 'both') { $rows = $rows | Where-Object { $_.who -eq $Who } }
+$caps = $rows | ForEach-Object { [int] $_.cap } | Sort-Object -Unique
+if ($caps -notcontains $Baseline) { throw "No $Baseline FPS pass in this run (caps: $($caps -join ', '))." }
+Write-Host "Caps: $($caps -join ', '); baseline $Baseline; characters: $Who"
+
+$base = @{}
+foreach ($r in $rows) {
+    if ([int] $r.cap -ne $Baseline) { continue }
+    $base["$($r.stop)|$($r.t)|$($r.who)"] = $r
+}
+
+$results = @()
+foreach ($group in $rows | Where-Object { [int] $_.cap -ne $Baseline } | Group-Object cap, stop, who) {
+    $sorted = $group.Group | Sort-Object { [double] $_.t }
+    $first = $sorted[0]
+    $matched = 0; $differ = 0; $shifted = 0; $stateDiffer = 0
+    $maxPos = 0.0; $maxMove = 0.0
+    $firstDiffer = $null
+    foreach ($r in $sorted) {
+        $b = $base["$($r.stop)|$($r.t)|$($r.who)"]
+        if (-not $b) { continue }
+        $matched++
+        if ($r.montage -ne $b.montage) {
+            # The baseline one sample earlier or later: the same animation, started at a slightly
+            # different moment, which is what a 0.1 s sample grid does to a montage that begins between
+            # two samples. Counted apart from playing something else entirely.
+            $t = [double] $r.t
+            $before = $base["$($r.stop)|$(('{0:0.000}' -f ($t - 0.1)))|$($r.who)"]
+            $after = $base["$($r.stop)|$(('{0:0.000}' -f ($t + 0.1)))|$($r.who)"]
+            if (($before -and $before.montage -eq $r.montage) -or ($after -and $after.montage -eq $r.montage)) {
+                $shifted++
+            } else {
+                $differ++
+                if ($null -eq $firstDiffer) { $firstDiffer = "$($t)s $($b.montage)->$($r.montage)" }
+            }
+        } else {
+            $dPos = [math]::Abs([double] $r.montagePos - [double] $b.montagePos)
+            if ($dPos -gt $maxPos) { $maxPos = $dPos }
+        }
+        if ($r.state -ne $b.state) { $stateDiffer++ }
+        $d = [math]::Sqrt([math]::Pow([double] $r.x - [double] $b.x, 2) +
+                          [math]::Pow([double] $r.y - [double] $b.y, 2) +
+                          [math]::Pow([double] $r.z - [double] $b.z, 2))
+        if ($d -gt $maxMove) { $maxMove = $d }
+    }
+    if ($matched -eq 0) { continue }
+    $results += [pscustomobject] @{
+        Cap     = [int] $first.cap
+        Level   = $first.level
+        Stop    = [int] $first.stop
+        Script  = $first.script
+        Who     = $first.who
+        Class   = $first.class
+        Samples = $matched
+        Differ  = [math]::Round(100 * $differ / $matched, 0)
+        Shift   = [math]::Round(100 * $shifted / $matched, 0)
+        dPos    = [math]::Round($maxPos, 3)
+        dMove   = [math]::Round($maxMove, 1)
+        State   = [math]::Round(100 * $stateDiffer / $matched, 0)
+        First   = $firstDiffer
+    }
+}
+
+$results |
+    Sort-Object Differ, dMove -Descending |
+    Select-Object -First $Top Cap, Level, Stop, Script, Who, Class, Samples, Differ, Shift, dPos, dMove, State, First |
+    Format-Table -AutoSize
+
+$bad = @($results | Where-Object { $_.Differ -gt 0 -or $_.dPos -gt $PosTolerance -or $_.dMove -gt $MoveTolerance })
+Write-Host ""
+Write-Host ("{0} of {1} stop/character/framerate groups animate differently from the {2} FPS pass." -f `
+    $bad.Count, $results.Count, $Baseline)
+foreach ($g in $bad | Group-Object Script | Sort-Object Count -Descending) {
+    Write-Host ("  {0}: {1} ({2})" -f $g.Name, $g.Count,
+        (($g.Group | ForEach-Object { "$($_.Class)@$($_.Cap)" } | Select-Object -Unique -First 6) -join ', '))
+}

@@ -2,13 +2,19 @@
 -- this mod folder), so the enemies do not have to be walked to one at a time.
 --
 -- It finds every PhasmidCharacter in the world (the class trackers/stalls.lua watches: enemies, NPCs and
--- the playable characters), skips the player and anything already covered, and writes one stop per class
--- per level: a few hundred units in front of the character, on ground the trace found, facing it, with the "walk"
--- script — so the run walks straight into it, which is what triggers a chase or a flee.
+-- the playable characters), skips the player and anything already covered, and writes a stop per class
+-- and script: a few hundred units in front of the character, on ground the trace found, facing it.
 --
--- One stop per class, not per character: twenty of the same rhynoc in a level behave the same, and the
--- run is already four passes long. Characters further than RANGE from the player are left out, because a
--- level streams its neighbours in too and their enemies are loaded with them.
+-- The scripts are what brings out the character's animations, and which ones it gets comes from its class
+-- name: CES and CBS are enemies and bosses, so the run walks into them (the chase or the attack), then
+-- flames and charges them (the hit and death ones); CNS and CFS are NPCs and fauna, so it walks in and
+-- then talks — and "enterPlay" carries on holding forward and jumping afterwards, which is how a
+-- minigame's own animations are reached, since a stop can't be recorded inside a minigame that isn't
+-- running when the level is scanned.
+--
+-- One stop per class, not per character: twenty of the same rhynoc in a level behave the same. Characters
+-- further than RANGE from the player are left out, because a level streams its neighbours in too and
+-- their enemies are loaded with them.
 --
 -- Stops go to routes.txt like the hand-recorded ones (tools/routes.lua), so they can be edited or
 -- deleted afterwards, and scanning the same level twice doesn't duplicate them.
@@ -34,7 +40,9 @@ local DOWN = 130       -- and ends this far below the character centre: deeper t
 local CLEARANCE = 5    -- above the floor, so the teleport is not inside it
 local MIN_GAP = 110    -- last resort: right next to the character, far enough that the capsules do not overlap
 local RANGE = 30000    -- ignore characters further than this from the player (other levels enemies)
-local SCRIPT = "walk"
+-- Scripts per kind of character, by the letter in its class name (BP_CES1015_Ram_C, BP_CNS3706_Hunter_C).
+local ENEMY_SCRIPTS = { "walk", "flame", "charge" }
+local NPC_SCRIPTS = { "walk", "enterPlay" }
 
 local requested = false
 local nextPoll = 0
@@ -44,13 +52,26 @@ local function className(actor)
     return ok and name or nil
 end
 
--- Which classes this level already has a stop for, so scanning twice doesn't duplicate anything.
+-- Which class and script pairs this level already has a stop for, so scanning twice doesn't duplicate
+-- anything and a second scan only adds the scripts that were missing.
 local function covered(level)
     local seen = {}
     for _, stop in ipairs(routes.all()) do
-        if stop.level == level then seen[stop.note:match("^([^%s]+)") or stop.note] = true end
+        if stop.level == level then
+            seen[stop.script .. " " .. (stop.note:match("^([^%s]+)") or stop.note)] = true
+        end
     end
     return seen
+end
+
+-- An NPC (CNS) or a piece of fauna (CFS) is talked to; an enemy or boss (CES, CBS) is walked into, flamed
+-- and charged. A class that doesn't follow the naming (SaveFairy_C, the playable characters,
+-- level-specific Blueprints) is told apart by whether it has a Falcon enemy state component.
+local function scriptsFor(actor, class)
+    if class:find("CNS") or class:find("CFS") then return NPC_SCRIPTS end
+    if class:find("CES") or class:find("CBS") then return ENEMY_SCRIPTS end
+    local isEnemy = pcall(function() return actor.FalconEnemy:BP_GetCurrentStateName():ToString() end)
+    return isEnemy and ENEMY_SCRIPTS or NPC_SCRIPTS
 end
 
 -- Ground under a spot (lib/ground.lua), or nil for thin air: the edge of the level, water, the far side
@@ -86,22 +107,33 @@ local function consider(actor, pawn, level, origin, here, seen, playerHalf)
     local class = className(actor)
     local loc = actor:K2_GetActorLocation()
     local dist = math.sqrt((loc.X - here.X) ^ 2 + (loc.Y - here.Y) ^ 2)
-    if not class or seen[class] or dist > RANGE then return "skipped" end
-    -- In front of it, facing it: the stop's own "walk" script then walks straight in.
+    if not class or dist > RANGE then return 0 end
+    local wanted = {}
+    for _, script in ipairs(scriptsFor(actor, class)) do
+        if not seen[script .. " " .. class] then wanted[#wanted + 1] = script end
+    end
+    if #wanted == 0 then return 0 end
+    -- In front of it, facing it: every script starts by walking straight in.
     local spot = groundedSpot(pawn, loc, actor:GetActorForwardVector(), playerHalf, halfHeightOf(actor))
-    seen[class] = true
     local rot = actor:K2_GetActorRotation()
-    local stop = {
-        level = level, x = spot.x, y = spot.y, z = spot.z,
-        yaw = rot.Yaw + 180, ctrlPitch = 0, ctrlYaw = rot.Yaw + 180,
-        originX = origin.X, originY = origin.Y,
-        script = SCRIPT, note = class,
-    }
-    if not routes.add(stop) then return "skipped" end
-    log("scan: %s stop %.0f units in front of it%s at (%.0f, %.0f, %.0f), %.0f units from the player",
-        class, spot.distance, spot.beside and " (no ground further out, so right next to it)" or "",
-        stop.x, stop.y, stop.z, dist)
-    return "written"
+    local written = 0
+    for _, script in ipairs(wanted) do
+        seen[script .. " " .. class] = true
+        local stop = {
+            level = level, x = spot.x, y = spot.y, z = spot.z,
+            yaw = rot.Yaw + 180, ctrlPitch = 0, ctrlYaw = rot.Yaw + 180,
+            originX = origin.X, originY = origin.Y,
+            script = script, note = class,
+        }
+        if routes.add(stop) then written = written + 1 end
+    end
+    if written > 0 then
+        log("scan: %s %d stops (%s) %.0f units in front of it%s at (%.0f, %.0f, %.0f), %.0f units from the player",
+            class, written, table.concat(wanted, ", "), spot.distance,
+            spot.beside and " (no ground further out, so right next to it)" or "",
+            spot.x, spot.y, spot.z, dist)
+    end
+    return written
 end
 
 local function record(pawn, pc)
@@ -122,10 +154,14 @@ local function record(pawn, pc)
         if ok and name and not name:match("^Default__") and actor:GetAddress() ~= playerAddress then
             found = found + 1
             local okConsider, result = pcall(consider, actor, pawn, level, origin, here, seen, playerHalf)
-            if okConsider and result == "written" then written = written + 1 else skipped = skipped + 1 end
+            if okConsider and (result or 0) > 0 then
+                written = written + result
+            else
+                skipped = skipped + 1
+            end
         end
     end
-    log("scan: %s: %d characters, %d new stops, %d skipped (already covered, out of range or no ground)",
+    log("scan: %s: %d characters, %d new stops, %d characters skipped (already covered, out of range or no ground)",
         level, found, written, skipped)
 end
 

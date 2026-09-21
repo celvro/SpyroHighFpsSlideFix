@@ -11,6 +11,9 @@
 -- the camera and the ground check, then play the script while sampling every SAMPLE seconds.
 --
 --   autotest_<stamp>.csv  one row per sample: cap, level, stop, script, t, position and camera
+--   autotest_anims_<stamp>.csv  two rows per sample: what the played character and the character the stop
+--                         was recorded in front of are animating (montage, how far into it, section,
+--                         enemy state, where they have moved to). Compared with tools/Compare-Anims.ps1.
 --   "autotest" lines      start/stop, each cap, each stop (or why it was skipped), and the run total
 --
 -- autotest.txt may hold options, one per line or space separated:
@@ -24,6 +27,7 @@
 local ground = require("lib.ground")
 local invuln = require("lib.invuln")
 local input = require("lib.input")
+local anim = require("lib.anim")
 local levels = require("lib.levels")
 local log = require("lib.log")
 local paths = require("lib.paths")
@@ -51,11 +55,19 @@ local PROGRESS = paths.modDir .. "\\autotest_progress.txt"
 local DEATHS = paths.modDir .. "\\autotest_deaths.txt" -- one line per death: the stop and the character
 local CSV = string.format("%s\\autotest_%s.csv", paths.modDir, paths.stamp)
 local HEADER = "cap,level,stop,script,note,t,tActual,x,y,z,yaw,speed,mode,camYaw,camPitch,camDist,camHeight\n"
+-- What the two characters that matter are animating at each sample: the one being played and the one the
+-- stop was recorded in front of. The scripted walk into an enemy is what starts its chase or attack, so
+-- this is where the animations the player actually sees are compared between framerates.
+local ANIM_CSV = string.format("%s\\autotest_anims_%s.csv", paths.modDir, paths.stamp)
+local ANIM_HEADER = "cap,level,stop,script,note,t,who,class,montage,montagePos,section,rate,rootMotion,"
+    .. "state,stateTime,x,y,z,yaw,speed,mode\n"
 
 local requested = false
 local run = nil      -- { caps, capIndex, stops, index, phase, ... }
-local csv = nil
+local csv, animCsv = nil, nil
 local nextPoll = 0
+local NO_AXES = {}   -- sticks centred, reused so driving a frame allocates nothing
+local PLAYER_ORIGIN = { x = 0, y = 0, z = 0 } -- where the played character stood when the script started
 
 local function openCsv()
     if csv then return csv end
@@ -66,6 +78,17 @@ local function openCsv()
     end
     if csv:seek("end") == 0 then csv:write(HEADER) end
     return csv
+end
+
+local function openAnimCsv()
+    if animCsv then return animCsv end
+    animCsv = io.open(ANIM_CSV, "a")
+    if not animCsv then
+        log("autotest: could not write %s", ANIM_CSV)
+        return nil
+    end
+    if animCsv:seek("end") == 0 then animCsv:write(ANIM_HEADER) end
+    return animCsv
 end
 
 local function writeProgress()
@@ -133,6 +156,8 @@ local findTarget -- defined below, used by startStop
 local function stopFinished(pawn, pc, reason)
     local entry = run.stops[run.index]
     input.clear(pawn, pc)
+    anim.release(run.targetHeld)
+    run.targetHeld, run.targetOrigin = nil, nil
     log("autotest %d FPS %s stop %d (%s, %s): %s after %.1f s, %d samples",
         run.caps[run.capIndex], entry.stop.level, entry.id, entry.stop.script, entry.stop.note,
         reason, run.elapsed or 0, run.samples or 0)
@@ -224,6 +249,40 @@ local function sample(r, entry, slot)
     run.samples = run.samples + 1
 end
 
+-- One animation row for a character: what it is playing, which state it is in and where it has moved to
+-- since the script started. Positions are relative to where that character was then, so the two
+-- framerates line up whatever offset the level streamed in at.
+local function sampleAnim(file, entry, slot, who, actor, origin)
+    if not (actor and pcall(function() return actor:IsValid() end) and actor:IsValid()) then return end
+    local s = anim.state(actor)
+    local okClass, class = pcall(function() return actor:GetClass():GetFName():ToString() end)
+    local loc = actor:K2_GetActorLocation()
+    local yaw, speed, mode = 0, 0, 0
+    pcall(function() yaw = actor:K2_GetActorRotation().Yaw end)
+    pcall(function()
+        local cmc = actor.CharacterMovement
+        local v = cmc.Velocity
+        speed = math.sqrt(v.X * v.X + v.Y * v.Y)
+        mode = cmc.MovementMode
+    end)
+    file:write(string.format("%d,%s,%d,%s,%s,%.3f,%s,%s,%s,%.4f,%s,%.3f,%s,%s,%.3f,%.2f,%.2f,%.2f,%.2f,%.2f,%d\n",
+        run.caps[run.capIndex], entry.stop.level, entry.id, entry.stop.script, entry.stop.note:gsub(",", " "),
+        slot, who, okClass and class or "?", s.montage, s.position, s.section, s.rate, tostring(s.rootMotion),
+        s.enemyState, s.enemyStateTime, loc.X - origin.x, loc.Y - origin.y, loc.Z - origin.z,
+        yaw, speed, mode))
+end
+
+-- The player and the character the stop was recorded in front of, every sample.
+local function sampleAnims(pawn, entry, slot)
+    local file = openAnimCsv()
+    if not file then return end
+    PLAYER_ORIGIN.x, PLAYER_ORIGIN.y, PLAYER_ORIGIN.z = run.x0, run.y0, run.z0
+    sampleAnim(file, entry, slot, "player", pawn, PLAYER_ORIGIN)
+    if run.target and run.targetOrigin then
+        sampleAnim(file, entry, slot, "target", run.target, run.targetOrigin)
+    end
+end
+
 -- The character this stop was recorded in front of (tools/scan.lua notes its class), so the walk can stop
 -- when it gets there. The nearest one of that class to the stop, since a level has several of most kinds.
 function findTarget(pawn, stop, x, y)
@@ -267,19 +326,17 @@ end
 local function drive(pawn, pc, phase, into, r)
     local distance = targetDistance(r)
     local edge = not run.arrived and atEdge(pawn, r)
-    if run.arrived or edge or (distance and distance <= ARRIVE) then
-        if not run.arrived then
-            run.arrived = run.elapsed
-            log("autotest: %s after %.1f s, standing still for the rest of the stop",
-                edge and "stopped at the edge of a drop" or
-                ("reached " .. run.stops[run.index].stop.note), run.elapsed)
-        end
-        input.hold({})
-        for button in pairs(input.BUTTONS) do input.release(button) end
-        input.apply(pawn, pc)
-        return
+    local arrived = run.arrived or edge or (distance and distance <= ARRIVE)
+    if arrived and not run.arrived then
+        run.arrived = run.elapsed
+        log("autotest: %s after %.1f s, no more walking for the rest of the stop",
+            edge and "stopped at the edge of a drop" or
+            ("reached " .. run.stops[run.index].stop.note), run.elapsed)
     end
-    input.hold(phase.axes)
+    -- Reaching the character (or a drop) lets go of the sticks, but the script's buttons carry on: a
+    -- dialogue or minigame script has to keep tapping once it is standing in front of whoever starts it,
+    -- and a flame or a jump is meant to happen where he ends up.
+    input.hold(arrived and NO_AXES or phase.axes)
     local wanted = {}
     for _, button in ipairs(phase.hold or {}) do wanted[button] = true end
     local tap = phase.tap
@@ -307,6 +364,7 @@ local function update(pawn, pc, cmc, r, setFpsCap)
         if run and run.stops then
             log("autotest: stopped")
             input.clear(pawn, pc)
+            anim.release(run.targetHeld)
             invuln.clear()
             run = nil
             return
@@ -369,6 +427,15 @@ local function update(pawn, pc, cmc, r, setFpsCap)
             run.phase = "play"
             run.x0, run.y0, run.z0 = r.x, r.y, r.z
             run.elapsed, run.nextSample = 0, 0
+            -- Where the target stands now, so its own movement during the script is what is compared,
+            -- and its mesh is pinned to ticking every frame (a character the camera isn't looking at
+            -- otherwise ticks its animation at a reduced rate, which is not the framerate difference
+            -- this is after). lib/anim.lua puts both back when the stop ends.
+            if run.target and pcall(function() return run.target:IsValid() end) and run.target:IsValid() then
+                local loc = run.target:K2_GetActorLocation()
+                run.targetOrigin = { x = loc.X, y = loc.Y, z = loc.Z }
+                run.targetHeld = anim.hold(run.target)
+            end
         end
         return
     end
@@ -423,10 +490,12 @@ local function update(pawn, pc, cmc, r, setFpsCap)
         local phase, into = scripts.phaseAt(entry.stop.script, run.elapsed)
         if not phase then
             sample(r, entry, run.nextSample)
+            sampleAnims(pawn, entry, run.nextSample)
             stopFinished(pawn, pc, "played")
         else
             if run.elapsed >= run.nextSample then
                 sample(r, entry, run.nextSample)
+                sampleAnims(pawn, entry, run.nextSample)
                 run.nextSample = run.nextSample + SAMPLE
             end
             drive(pawn, pc, phase, into, r)
@@ -441,6 +510,7 @@ function autotest.update(pawn, pc, cmc, r, setFpsCap)
     if not ok then
         log("autotest error: %s", tostring(err))
         input.clear(pawn, pc)
+        if run then anim.release(run.targetHeld) end
         run = nil
     end
 end
