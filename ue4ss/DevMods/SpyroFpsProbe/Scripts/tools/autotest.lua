@@ -698,7 +698,6 @@ local function update(pawn, pc, cmc, r, setFpsCap)
         end
         return
     end
-    end
     if run.phase == "next" then nextStop(pawn, pc, cmc, setFpsCap) end
 end
 
