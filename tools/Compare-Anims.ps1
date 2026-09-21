@@ -11,14 +11,14 @@
 
     Columns: Differ is the share of samples playing an animation the baseline was not playing at that
     sample or either side of it; Shift is the share that played the baseline's animation one sample early
-    or late, which is a timing difference rather than a different animation; dPos is the largest
-    difference in how far into the montage they were while both played the same one; dMove is the largest
-    distance between where that character had moved to; State is the share of samples in a different
-    enemy state. Stops are listed worst first.
+    or late, which is a timing difference rather than a different animation; State is the share of samples
+    in a different enemy state; Drift is the largest difference in how far into the montage they were
+    while both played the same one, over the largest distance between where that character had moved to.
+    Stop is the level and the route stop number, and stops are listed worst first.
 
     A live level is not a controlled test: enemies wander, Spyro is knocked about, and a target that
-    strolled off gives a large dMove with nothing wrong. Read this as a screen for stops worth looking at
-    (and re-running), not as a verdict; tools/Compare-Animtest.ps1 is the controlled measurement.
+    strolled off gives a large move distance with nothing wrong. Read this as a screen for stops worth
+    looking at (and re-running), not as a verdict; tools/Compare-Animtest.ps1 is the controlled measurement.
 
 .PARAMETER Path
     The CSV. Without it, the newest autotest_anims_*.csv in the deployed probe folder.
@@ -98,7 +98,8 @@ foreach ($group in $rows | Where-Object { [int] $_.cap -ne $Baseline } | Group-O
     $results += [pscustomobject] @{
         Cap     = [int] $first.cap
         Level   = $first.level
-        Stop    = [int] $first.stop
+        Stop    = "$($first.level)#$($first.stop)"
+        Number  = [int] $first.stop
         Script  = $first.script
         Who     = $first.who
         Class   = $first.class
@@ -108,20 +109,33 @@ foreach ($group in $rows | Where-Object { [int] $_.cap -ne $Baseline } | Group-O
         dPos    = [math]::Round($maxPos, 3)
         dMove   = [math]::Round($maxMove, 1)
         State   = [math]::Round(100 * $stateDiffer / $matched, 0)
+        Drift   = "{0:0.00}/{1:0.0}" -f $maxPos, $maxMove
         First   = $firstDiffer
     }
 }
 
-$results |
-    Sort-Object Differ, dMove -Descending |
-    Select-Object -First $Top Cap, Level, Stop, Script, Who, Class, Samples, Differ, Shift, dPos, dMove, State, First |
-    Format-Table -AutoSize
+$shown = $results | Sort-Object Differ, dMove -Descending | Select-Object -First $Top
+$shown |
+    Select-Object Cap, Stop, Script, Who, Class, Samples, Differ, Shift, State, Drift |
+    Format-Table -AutoSize | Out-String -Width 200 | Write-Host
 
 $bad = @($results | Where-Object { $_.Differ -gt 0 -or $_.dPos -gt $PosTolerance -or $_.dMove -gt $MoveTolerance })
 Write-Host ""
-Write-Host ("{0} of {1} stop/character/framerate groups animate differently from the {2} FPS pass." -f `
+Write-Host ("{0} of {1} stop/character/framerate groups differ from the {2} FPS pass (a different
+animation, a different distance into it, or somewhere else by the end)." -f `
     $bad.Count, $results.Count, $Baseline)
 foreach ($g in $bad | Group-Object Script | Sort-Object Count -Descending) {
     Write-Host ("  {0}: {1} ({2})" -f $g.Name, $g.Count,
         (($g.Group | ForEach-Object { "$($_.Class)@$($_.Cap)" } | Select-Object -Unique -First 6) -join ', '))
+}
+
+# Where each flagged group first played something the baseline was not playing: the sample time and the
+# swap, which is the one line worth reading before deciding whether a stop is worth re-running.
+$firsts = @($shown | Where-Object { $_.First })
+if ($firsts) {
+    Write-Host ""
+    Write-Host "First animation that differs:"
+    foreach ($r in $firsts) {
+        Write-Host ("  {0} {1} {2} {3}: {4}" -f $r.Stop, $r.Script, $r.Who, $r.Class, $r.First)
+    }
 }
