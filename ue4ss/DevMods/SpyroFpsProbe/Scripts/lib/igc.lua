@@ -136,6 +136,15 @@ function igc.close(pc, pawn, level)
         pcall(function() pc:ResetIgnoreLookInput() end)
         -- SetCinematicMode(inCinematicMode, hidePlayer, affectsHUD, affectsMovement, affectsTurning)
         pcall(function() pc:SetCinematicMode(false, false, false, true, true) end)
+        -- And put input back on the game. A text box that took focus for itself leaves the controller
+        -- in UI-only mode, where the pad goes to a widget that is no longer on the screen and the game
+        -- gets nothing -- which looks exactly like input being dead, without IsMoveInputIgnored or any
+        -- cinematic saying anything is wrong.
+        pcall(function()
+            local umg = StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")
+            if umg and umg:IsValid() then umg:SetInputMode_GameOnly(pc) end
+        end)
+        pcall(function() pc.bShowMouseCursor = false end)
     end
     local asked = 0
     for _, object in ipairs(instances(level)) do

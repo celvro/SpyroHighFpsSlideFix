@@ -25,6 +25,7 @@
 --
 --   "minigame" lines  which one, who is holding the controller, and every mark
 local anim = require("lib.anim")
+local igc = require("lib.igc")
 local input = require("lib.input")
 local levels = require("lib.levels")
 local log = require("lib.log")
@@ -48,6 +49,8 @@ local SETTLE = 1.0       -- standing still after the teleport before walking in
 local WALK_IN = 6.0      -- seconds walking into whoever starts it before giving up and handing over
 local ARRIVE_STILL = 1.5 -- stopped moving this long while walking in means he is there
 local STILL_SPEED = 5
+local START_WAIT = 10.0   -- longest to wait for the minigame's intro to give the controls back
+local RELEASE_EVERY = 0.5 -- how often to ask it to, while waiting
 
 -- The characters whose conversation hands the controller over, and the things you board. Everything on
 -- this list gets an entry; whether it takes over by itself is worked out at the time.
@@ -194,8 +197,11 @@ local function handOver(pawn, pc, why)
     input.clear(pawn, pc)
     state.phase = "ready"
     local level, note = label()
-    log("minigame: %s, %s -- %s. You have the controller as %s.", level, note, why,
-        subworld.character(pawn) or "?")
+    local ignored
+    pcall(function() ignored = pawn:IsMoveInputIgnored() end)
+    log("minigame: %s, %s -- %s. You have the controller as %s%s.", level, note, why,
+        subworld.character(pawn) or "?",
+        ignored == true and " -- but the game still says input is ignored, so press F3" or "")
     log("minigame: M records a take, F1 marks a glitch, F2 retries this one, C moves on.")
 end
 
@@ -350,7 +356,12 @@ function minigame.update(pawn, pc, cmc, r, fpsCap)
     if state.phase == "walking" then
         local who = subworld.character(pawn)
         if who and state.character and who ~= state.character then
-            handOver(pawn, pc, "it started and handed over")
+            -- It has started, but the intro cinematic still holds the camera and the controls, and
+            -- handing over into that is handing over nothing: the pad does not answer. Wait for it, and
+            -- keep asking it to finish (lib/igc.lua) rather than hoping.
+            state.phase, state.starting, state.nextRelease, state.released = "starting", 0, 0, nil
+            input.clear(pawn, pc)
+            log("minigame: %s took over -- waiting for its intro to give the controls back", who)
             return
         end
         state.walked = state.walked + r.dt
@@ -369,6 +380,30 @@ function minigame.update(pawn, pc, cmc, r, fpsCap)
         end
         input.hold(FORWARD)
         input.apply(pawn, pc)
+        return
+    end
+
+    -- Waiting out the intro. Nothing is driven here: the only input sent is the release.
+    if state.phase == "starting" then
+        state.starting = state.starting + r.dt
+        -- Release first, ask afterwards. IsMoveInputIgnored is only one of the ways control is taken
+        -- away -- SetCinematicMode is another, and it does not show up there -- so a gate that already
+        -- reads open is no reason to hand over without having lowered the others at least once.
+        if state.starting >= state.nextRelease then
+            state.nextRelease = state.starting + RELEASE_EVERY
+            igc.forget()
+            igc.close(pc, pawn, levels.current(pawn))
+            state.released = true
+        end
+        local ignored
+        pcall(function() ignored = pawn:IsMoveInputIgnored() end)
+        if ignored == false and state.released then
+            handOver(pawn, pc, "its intro is done")
+            return
+        end
+        if state.starting >= START_WAIT then
+            handOver(pawn, pc, "its intro would not finish in time")
+        end
         return
     end
 
