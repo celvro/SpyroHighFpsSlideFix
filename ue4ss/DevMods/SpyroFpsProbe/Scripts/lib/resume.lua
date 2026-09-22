@@ -6,8 +6,8 @@
 -- resume.txt in this mod folder, rewritten every WRITE_INTERVAL seconds with the level, the game index
 -- and the save slot the player is in.
 --
--- If resume.go exists at startup, the probe drives the title screen itself: it waits for the menu, calls
--- the game state's "start game"(game index, save slot) (the same call the menu makes, see
+-- If resume.go exists at startup, the probe drives the title screen itself: it waits for the menu, picks
+-- Continue and then the game (lib/frontend.lua; "start game" directly only if the menu never gets there,
 -- tools/traveltest.lua step F), waits for a pawn, then travels to the noted level. resume.go is deleted
 -- as soon as the resume starts, so a crash in the middle doesn't loop.
 --
@@ -24,7 +24,8 @@ local resume = {}
 local NOTE = paths.modDir .. "\\resume.txt"
 local FLAG = paths.modDir .. "\\resume.go"
 local WRITE_INTERVAL = 5 -- seconds between notes
-local MENU_WAIT = 8      -- seconds at the title screen before "start game" is called
+local MENU_WAIT = 8      -- seconds at the title screen before Continue is pressed
+local MENU_PICK_TIMEOUT = 20 -- seconds of menu before falling back to calling "start game" directly
 local TIMEOUT = 300      -- seconds before the whole resume gives up
 local CLOSE_TRIES = 20   -- tries at closing the title screen over the loaded level, 0.5 s apart
 
@@ -101,8 +102,23 @@ function resume.update()
         return
     end
     if state.phase == "menu" then
-        -- The title screen takes a while to be ready for a "start game" call; the world has no pawn yet.
+        -- Through the menu the way a player goes: Continue on the title, then the game on the game
+        -- select screen (lib/frontend.lua). Calling "start game" on its own also loads the game but skips
+        -- what the menu does around it, and closing what it left behind is how the HUD got torn down.
+        -- The title takes a while to be ready; the world has no pawn yet.
         if os.clock() - state.started < MENU_WAIT or not pc:IsValid() then return end
+        state.menuStarted = state.menuStarted or os.clock()
+        if frontend.title() and not state.continued then
+            state.continued = frontend.continue(pc)
+            return
+        end
+        if frontend.pickGame(state.game) then
+            log("resume: picked game %d from the menu", state.game)
+            state.phase, state.startedLoad = "loading", os.clock()
+            return
+        end
+        if os.clock() - state.menuStarted < MENU_PICK_TIMEOUT then return end
+        -- The menu never got to the game select: call what it would have called.
         local ok, err = pcall(function()
             local gs = UEHelpers.GetGameplayStatics():GetGameState(pc)
             gs["start game"](gs, state.game, state.slot)
@@ -112,7 +128,7 @@ function resume.update()
             state = nil
             return
         end
-        log("resume: start game(%d, %d) called", state.game, state.slot)
+        log("resume: the menu never offered the game select; start game(%d, %d) called", state.game, state.slot)
         state.phase, state.startedLoad = "loading", os.clock()
         return
     end
@@ -147,8 +163,8 @@ function resume.update()
         state.phase, state.closeTries, state.nextClose = "closing", 0, 0
         return
     end
-    -- "Start Game" loads the level but leaves the title screen drawn over it, so close the front end
-    -- (lib/frontend.lua). It can take a moment to appear, so this keeps trying for CLOSE_TRIES.
+    -- Whatever of the front end is still drawn over the level comes off, and the HUD goes back if it is
+    -- missing (lib/frontend.lua). Something can take a moment to appear, so this tries CLOSE_TRIES times.
     if state.phase == "closing" then
         if os.clock() < state.nextClose then return end
         state.nextClose = os.clock() + 0.5

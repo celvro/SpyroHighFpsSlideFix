@@ -30,6 +30,7 @@
 --   "minigame" lines  which one, who is holding the controller, and every mark
 local UEHelpers = require("UEHelpers")
 local anim = require("lib.anim")
+local frontend = require("lib.frontend")
 local igc = require("lib.igc")
 local input = require("lib.input")
 local levels = require("lib.levels")
@@ -211,7 +212,9 @@ local function handOver(pawn, pc, why)
     giveGems(pc)
     -- Give the controls back for real. A teleport out of wherever he was can leave a gate raised or the
     -- controller pointed at a widget, and a dead pad on arrival is the one failure that wastes the whole
-    -- drop-in. This restores game-and-UI input rather than game-only, so a text box can still open.
+    -- drop-in. Game-only input, and the HUD container back in the viewport if it was taken out: without
+    -- it an NPC's text box is created but never drawn, and a minigame that starts with one never starts.
+    frontend.repairHud(pc)
     igc.forget()
     igc.close(pc, pawn, levels.current(pawn), true)
     state.phase = "ready"
@@ -307,6 +310,7 @@ local function doMark(pawn)
         state.take, subworld.character(pawn) or "?",
         s.montage ~= "" and s.montage or "no montage", s.position)
     pcall(uiReport, UEHelpers.GetPlayerController())
+    pcall(frontend.repairHud, UEHelpers.GetPlayerController())
 end
 
 local function handle(pawn, pc, cmc)
@@ -352,6 +356,7 @@ local function handle(pawn, pc, cmc)
         else
             log("minigame: MARK (no take running) -- what the UI is doing:")
             pcall(uiReport, pc)
+            pcall(frontend.repairHud, pc)
         end
         return
     end
