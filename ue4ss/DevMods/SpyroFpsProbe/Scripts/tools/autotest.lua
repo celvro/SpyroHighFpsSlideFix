@@ -34,18 +34,25 @@
 --   level=LS102      only stops in this level
 --   game=2           only stops in that game's levels (1 = LS1xx, 2 = LS2xx, 3 = LS3xx)
 --   script=jump      only stops with this script (a comma list is allowed: script=walk,enterPlay)
+--   review           a pass for somebody watching: F3 says a stop looks fine, F4 says it is wrong (and
+--                    holds the tour on it until F3, so it can be described), each written to
+--                    review_<stamp>.txt. One stop per spot (the walk-in: enterPlay if the character has
+--                    one, else walk), since the verdict is about the spot; at 30 FPS unless caps= is given
+--   all              with review: every script at every spot, not just the walk-in
+-- review.txt starts a review the same way, "review restart" implied, other options as above.
 --
--- A run must not cross from one game into another: travelling live from LS135 into LS201 sets the game
--- index, streams the level in and then leaves Spyro falling in a black void, because the checkpoint it
--- starts at belongs to the game he was in. Restarting switches games properly (lib/resume.lua notes the
--- game index), so run each game as its own segment: game=1, restart, game=2, restart, game=3. Stop
--- numbers are the route's own, so segments still line up with each other in the CSVs.
+-- Travelling live from LS135 into LS201 sets the game index, streams the level in and then leaves Spyro
+-- falling in a black void, because the checkpoint it starts at belongs to the game he was in. So a run
+-- that reaches another game's stops goes through the game state's "start game" first, as picking the game
+-- on the menu does (switchGame), and travels on from wherever that lands him. game=N still runs one
+-- game only. Stop numbers are the route's own, so segments line up with each other in the CSVs.
 --
 -- An empty autotest.stop file stops a run that is already going (the trigger file is only read between
 -- runs, so dropping autotest.txt again would start a second one).
 --
 -- Progress is written to autotest_progress.txt after every stop, so a crash or a restart
 -- (tools/Restart-Game.ps1 with lib/resume.lua) picks the run up where it stopped.
+local UEHelpers = require("UEHelpers")
 local ground = require("lib.ground")
 local igc = require("lib.igc")
 local subworld = require("lib.subworld")
@@ -74,6 +81,11 @@ local DEATH_SETTLE = 1.0    -- seconds on his feet again after a death before th
 local ARRIVE = 100         -- distance to the stop target at which the walk stops (it has been reached).
                            -- 170 stopped him short of the range an NPC starts talking at, so the stops
                            -- meant to open a dialogue never opened one.
+local TALK_ARRIVE = 40     -- the same for a stop that is meant to open a conversation: 100 was still
+                           -- short of some NPCs (2026-09-22), so it walks on until it touches them
+                           -- (BLOCKED_BY_TARGET) or the conversation opens, and this is only a floor.
+local STEER_FROM = 60      -- steer at the character while further than this, so a target that stands
+                           -- off the recorded line (or wanders) is still walked into, not past
 local BLOCKED_BY_TARGET = 300 -- but a character has collision, and he stops against it further out than
                            -- ARRIVE. Standing still this close to the one he was sent at is arriving,
                            -- not being stuck: without this he pushes into it for the whole stop and the
@@ -94,14 +106,17 @@ local LOCKED_SECONDS = 2.0 -- held forward for this long without moving: the gam
 local LOCKED_STOPS = 2     -- that many stops in a row, or a failed check, and the level is loaded again
 local TALK_SECONDS = 25.0  -- longest a stop waits for a conversation it started to finish
 local SUBWORLD_SECONDS = 12.0 -- how long to play as whoever a subworld handed the controller to
-local LEAVE_SECONDS = 20.0    -- how long to wait for the subworld to hand control back afterwards
 local CLEAR_SECONDS = 30.0 -- waiting for a conversation to be pressed through before a teleport
 local CLEAR_RETRY = 0.1    -- seconds between checks (lib/dialogue.lua spaces the presses itself)
 local MAX_RELOADS = 2      -- but no more than this per level: past that the spots are the problem
+local SWITCH_TIMEOUT = 180  -- seconds for "start game" to land him in the next game before its stops are skipped
 local TRIGGER = paths.modDir .. "\\autotest.txt"
 local STOP = paths.modDir .. "\\autotest.stop" -- an empty file that stops a run that is already going
+local REVIEW_TRIGGER = paths.modDir .. "\\review.txt" -- a review run (options as in autotest.txt)
 local PROGRESS = paths.modDir .. "\\autotest_progress.txt"
 local DEATHS = paths.modDir .. "\\autotest_deaths.txt" -- one line per death: the stop and the character
+-- review mode: one line per F3 (looks fine) or F4 (wrong), numbered so a wrong one can be talked about
+local REVIEW = string.format("%s\\review_%s.txt", paths.modDir, paths.stamp)
 local CSV = string.format("%s\\autotest_%s.csv", paths.modDir, paths.stamp)
 local HEADER = "cap,level,stop,script,note,t,tActual,x,y,z,yaw,speed,mode,camYaw,camPitch,camDist,camHeight\n"
 -- What the two characters that matter are animating at each sample: the one being played and the one the
@@ -113,9 +128,11 @@ local ANIM_HEADER = "cap,level,stop,script,note,t,who,class,montage,montagePos,s
 
 local requested = false
 local run = nil      -- { caps, stops, plan, index, phase, ... }; plan is every (stop, cap) in run order
+local pendingRating = nil -- "fine" or "wrong", from F3/F4 in review mode, handled on the next update
 local csv, animCsv = nil, nil
 local nextPoll = 0
 local NO_AXES = {}   -- sticks centred, reused so driving a frame allocates nothing
+local STEER = { leftX = 0, leftY = 0 } -- the stick pointed at the target, reused the same way
 local FORWARD = { leftY = 1 } -- the same, for the check at the start of a stop after a locked one
 local PLAYER_ORIGIN = { x = 0, y = 0, z = 0 } -- where the played character stood when the script started
 
@@ -158,11 +175,17 @@ local function readProgress()
 end
 
 local function readOptions()
+    -- review.txt is autotest.txt with "review restart" already in it (the review mode below).
+    local path, text = TRIGGER, nil
     local file = io.open(TRIGGER, "r")
-    if not file then return nil end
-    local text = file:read("a") or ""
+    if not file then
+        path, file = REVIEW_TRIGGER, io.open(REVIEW_TRIGGER, "r")
+        if not file then return nil end
+    end
+    text = file:read("a") or ""
     file:close()
-    os.remove(TRIGGER)
+    os.remove(path)
+    if path == REVIEW_TRIGGER then text = text .. " review restart" end
     local options = {}
     for word in text:gmatch("%S+") do
         local key, value = word:match("^(%w+)=(.*)$")
@@ -179,11 +202,6 @@ local function wantedScripts(text)
     for name in tostring(text):gmatch("[^,]+") do set[(name:gsub("%s", ""))] = true end
     return set
 end
-
--- The stops this run covers, in level order so each level is travelled to once.
--- Characters whose prompt pauses the world: the save fairies (Zoe is one, and a level's own save point
--- is a SaveFairy) and Moneybags, whose "pay?" box is the same kind of modal choice.
-local PROMPTS = { "Zoe", "SaveFairy", "Moneybags" }
 
 -- Sparx fodder: the critters the game files prefix CFS, and the goats and sheep. 158 of the route's
 -- stops stand in front of one, and what they do is a walk cycle and a death -- nothing a minigame or an
@@ -210,15 +228,9 @@ local function subworldEntry(note)
     return false
 end
 
-local function prompts(note)
-    for _, name in ipairs(PROMPTS) do
-        if tostring(note):find(name, 1, true) then return true end
-    end
-    return false
-end
-
+-- The stops this run covers, in level order so each level is travelled to once.
 local function buildStops(options)
-    local all, picked, prompted, skipped = routes.all(), {}, 0, 0
+    local all, picked, promoted, skipped = routes.all(), {}, 0, 0
     local only = wantedScripts(options.script)
     local game = tonumber(options.game)
     -- A walk stop in front of a character that also has an enterPlay stop does the same thing twice:
@@ -232,13 +244,11 @@ local function buildStops(options)
     for index, stop in ipairs(all) do
         local duplicateWalk = stop.script == "walk" and alsoTalks[stop.level .. "|" .. stop.note]
             and not subworldEntry(stop.note)
-        -- Walking into a save fairy or into Moneybags opens a prompt that pauses the world, and a
-        -- paused world does not tick this mod: the tour's own clock stops, the stop never ends, and the
-        -- run sits in a text box until somebody presses a button. Nothing in Lua can close it, because
-        -- nothing in Lua runs. So these are never walked into; they keep a stop, standing in front of
-        -- them, so their own animations are still sampled.
+        -- Zoe, the save fairies and Moneybags used to be watched from where they stood rather than
+        -- walked into: their prompt pauses the world, and a paused world stopped this mod before it
+        -- could press anything. main.lua now presses Continue while paused (lib/dialogue.lua), so they
+        -- are walked into and talked to like everybody else.
         local script = stop.script
-        if prompts(stop.note) and script ~= "idle" then script = "idle" end
         if script == "walk" and subworldEntry(stop.note) then script = "enterPlay" end
         local wanted = (not options.level or stop.level == options.level)
             and (not game or stop.level:match("^LS(%d)") == tostring(game))
@@ -254,7 +264,7 @@ local function buildStops(options)
                     for key, value in pairs(stop) do copy[key] = value end
                     copy.script = script
                     stop = copy
-                    prompted = prompted + 1
+                    promoted = promoted + 1
                 end
                 picked[#picked + 1] = { stop = stop, id = index }
             else
@@ -263,9 +273,28 @@ local function buildStops(options)
         end
     end
     if skipped > 0 then log("autotest: %d fodder stop(s) skipped", skipped) end
-    if prompted > 0 then
-        log("autotest: %d stop(s) stand and watch instead of walking in (their prompt pauses the game)",
-            prompted)
+    if promoted > 0 then log("autotest: %d walk stop(s) in front of a minigame character played as enterPlay", promoted) end
+    -- A review judges the spot -- how close he gets, which way he faces, whether the conversation
+    -- opens -- and a spot's flame and charge stops stand on exactly the same one. So a review keeps one
+    -- stop per spot, the one that walks in: enterPlay where the character has one, walk otherwise.
+    if options.review and not options.all then
+        local rank = { enterPlay = 1, walk = 2, flame = 3, charge = 4 }
+        local best, order = {}, {}
+        for _, entry in ipairs(picked) do
+            local s = entry.stop
+            local key = string.format("%s|%.0f|%.0f|%s", s.level, s.x or 0, s.y or 0, tostring(s.note))
+            local have = best[key]
+            if not have then
+                best[key] = entry
+                order[#order + 1] = key
+            elseif (rank[s.script] or 9) < (rank[have.stop.script] or 9) then
+                best[key] = entry
+            end
+        end
+        local before = #picked
+        picked = {}
+        for _, key in ipairs(order) do picked[#picked + 1] = best[key] end
+        log("autotest: review keeps one stop per spot, %d of %d", #picked, before)
     end
     table.sort(picked, function(a, b)
         if a.stop.level ~= b.stop.level then return a.stop.level < b.stop.level end
@@ -278,7 +307,7 @@ end
 -- again at 320. The two passes of a level are then minutes apart in the same session instead of hours
 -- apart either side of a restart, and a run that is stopped half way leaves whole levels measured at
 -- both framerates rather than a 30 FPS pass with nothing to compare it against.
-local function buildPlan(stops, caps)
+local function buildPlan(stops, caps, noLead)
     local plan = {}
     local index = 1
     while index <= #stops do
@@ -291,7 +320,8 @@ local function buildPlan(stops, caps)
             -- for, and they belong to the level rather than to whichever character is standing there,
             -- so they are run once instead of at every stop. They come first, before any stop can walk
             -- into an NPC and start a conversation that would eat the inputs.
-            for _, script in ipairs(LEAD_SCRIPTS) do
+            -- A review is about the characters' spots, so it leaves these out (noLead).
+            for _, script in ipairs(noLead and {} or LEAD_SCRIPTS) do
                 local stop = {}
                 for key, value in pairs(stops[index].stop) do stop[key] = value end
                 stop.script = script
@@ -359,6 +389,10 @@ local function stopFinished(pawn, pc, reason)
     igc.close(pc, pawn, entry.stop.level)
     run.checkNext = locked or nil
     run.phase = "next"
+    if run.hold then
+        run.hold, run.phase = nil, "held"
+        log("review: held at %s stop %d; F3 carries on", entry.stop.level, entry.id)
+    end
     writeProgress()
 end
 
@@ -388,6 +422,22 @@ local function yawTo(target, x, y)
     return math.deg(math.atan(dy, dx))
 end
 
+-- Into another game (Spyro 1, 2 or 3) the way the menu does it: the game state's "start game"(game
+-- index, save slot), which is what picking a game on the game select screen calls (lib/frontend.lua).
+-- Travelling straight into another game's level sets the index but starts him at a checkpoint of the
+-- game he was in, falling through a black void; "start game" loads the new game's own level first, and
+-- the normal travel goes on from there.
+local function switchGame(pawn, game)
+    local ok, err = pcall(function()
+        local statics = StaticFindObject("/Script/Falcon.Default__FalconGameplayStatics")
+        local slot = statics:GetActiveSaveSlotIndex(pawn)
+        local gs = UEHelpers.GetGameplayStatics():GetGameState(pawn)
+        gs["start game"](gs, game - 1, slot)
+    end)
+    log("autotest: switching to Spyro %d with start game (%s)", game, ok and "ok" or tostring(err))
+    return ok
+end
+
 local function startStop(pawn, pc, cmc)
     local entry = currentEntry()
     if not entry then return end
@@ -397,6 +447,20 @@ local function startStop(pawn, pc, cmc)
         return
     end
     run.skipLevel = nil
+    -- Out of a subworld: the level is loaded again, which always hands the controller back to Spyro.
+    -- (A next stop in another level gets that from the travel below anyway.)
+    if run.forceReload then
+        run.forceReload = nil
+        if levels.current(pawn) == stop.level then
+            anim.release(run.targetHeld)
+            run.targetHeld, run.targetOrigin, run.target = nil, nil, nil
+            igc.forget()
+            if quicksave.travel(pawn, stop.level) then
+                run.phase = "travel"
+                return
+            end
+        end
+    end
     -- Several stops in a row that could not move: load the level again, which closes whatever had hold
     -- of him. Travelling to the level he is already in is the cheapest reset available.
     -- but only so many times in one level. A stop teleported hard against a wall never moves from its
@@ -426,6 +490,24 @@ local function startStop(pawn, pc, cmc)
             run.phase = "travel"
             return
         end
+    end
+    -- Another game: through "start game" first (switchGame), then the travel below from its level.
+    local want = tonumber(stop.level:match("^LS(%d)"))
+    local have = tonumber(tostring(levels.current(pawn)):match("^LS(%d)"))
+    if want and have and want ~= have then
+        if run.skipGame == want then
+            run.phase = "next"
+            return
+        end
+        anim.release(run.targetHeld)
+        run.targetHeld, run.targetOrigin, run.target = nil, nil, nil
+        igc.forget()
+        if switchGame(pawn, want) then
+            run.phase, run.switchTo, run.switchStarted = "switch", want, os.clock()
+        else
+            run.skipGame, run.phase = want, "next"
+        end
+        return
     end
     if levels.current(pawn) ~= stop.level then
         anim.release(run.targetHeld) -- the level it lives in is about to go away
@@ -473,7 +555,7 @@ local function startStop(pawn, pc, cmc)
     end
     run.phase, run.settled, run.elapsed, run.samples, run.nextSample = "settle", 0, 0, 0, 0
     run.arrived, run.everMoved, run.talking = nil, nil, nil
-    run.character, run.inSubworld, run.leaving = subworld.character(pawn), nil, nil
+    run.character, run.inSubworld = subworld.character(pawn), nil
     run.spot = spot
 end
 
@@ -482,6 +564,10 @@ local function nextStop(pawn, pc, cmc, setFpsCap)
     run.index = run.index + 1
     if run.index > #run.plan then
         log("autotest: done, %d stops at %d framerates; %s", #run.stops, #run.caps, CSV)
+        if run.review then
+            log("review: %d rated, %d fine, %d wrong; %s", run.review.count, run.review.fine or 0,
+                run.review.wrong or 0, REVIEW)
+        end
         input.clear(pawn, pc)
         -- Never leave the game in a text box because the route happened to end at an NPC.
         igc.close(pc, pawn, levels.current(pawn))
@@ -586,6 +672,22 @@ end
 -- Sends the phase's input for this frame (held sticks and buttons, and the taps of a dialogue phase).
 -- Walking stops once the target is reached (the point is to meet the character) and at the edge of a
 -- drop, and from then on he stands still for the rest of the stop.
+-- The stick pointed at the stop target, from where the camera faces: what a player does to walk up to
+-- somebody. Only for a phase that walks straight ahead, and only while the target is further than
+-- STEER_FROM; returns nil otherwise and the phase's own stick is used.
+local function steerAt(pc, phase, r, distance)
+    local axes = phase.axes
+    if not (axes and (axes.leftY or 0) > 0 and (axes.leftX or 0) == 0) then return nil end
+    if not (distance and distance > STEER_FROM) then return nil end
+    local ok, loc = pcall(function() return run.target:K2_GetActorLocation() end)
+    if not ok then return nil end
+    local okYaw, yaw = pcall(function() return pc:GetControlRotation().Yaw end)
+    if not okYaw then return nil end
+    local d = math.rad(math.deg(math.atan(loc.Y - r.y, loc.X - r.x)) - yaw)
+    STEER.leftY, STEER.leftX = math.cos(d) * axes.leftY, math.sin(d) * axes.leftY
+    return STEER
+end
+
 local function drive(pawn, pc, phase, into, r)
     local distance = targetDistance(r)
     local edge = not run.arrived and atEdge(pawn, r)
@@ -594,17 +696,23 @@ local function drive(pawn, pc, phase, into, r)
     -- stop and read as "cannot move". Standing still this close to what he was sent at IS arriving.
     local blocked = not run.arrived and distance and distance <= BLOCKED_BY_TARGET
         and (r.speed or 0) < LOCKED_SPEED and run.elapsed > BLOCKED_AFTER
-    local arrived = run.arrived or edge or blocked or (distance and distance <= ARRIVE)
+    -- A conversation stop walks until it touches the character or the conversation opens: stopping
+    -- at ARRIVE left some NPCs just out of talking range.
+    local talks = currentEntry().stop.script == "enterPlay"
+    local reached = distance and distance <= (talks and TALK_ARRIVE or ARRIVE)
+    local talking = talks and igc.active(currentEntry().stop.level)
+    local arrived = run.arrived or edge or blocked or reached or talking
     if arrived and not run.arrived then
         run.arrived = run.elapsed
         log("autotest: %s after %.1f s, no more walking for the rest of the stop",
             edge and "stopped at the edge of a drop" or
+            talking and not (blocked or reached) and ("in conversation with " .. currentEntry().stop.note) or
             ((blocked and "up against " or "reached ") .. currentEntry().stop.note), run.elapsed)
     end
     -- Reaching the character (or a drop) lets go of the sticks, but the script's buttons carry on: a
     -- dialogue or minigame script has to keep tapping once it is standing in front of whoever starts it,
     -- and a flame or a jump is meant to happen where he ends up.
-    input.hold(arrived and NO_AXES or phase.axes)
+    input.hold(arrived and NO_AXES or steerAt(pc, phase, r, distance) or phase.axes)
     -- Being told to walk and not walking means the game has taken input away: a conversation that never
     -- closed is the usual one (a Spyro 2 NPC holds him until the dialogue is dismissed, and every stop
     -- after that records a Spyro who cannot move). Count the time it has been asked and refused.
@@ -625,6 +733,43 @@ local function drive(pawn, pc, phase, into, r)
         if wanted[button] then input.press(button) else input.release(button) end
     end
     input.apply(pawn, pc)
+end
+
+-- Review mode: F3 (fine) or F4 (wrong) on the stop being played. Written to REVIEW with what can be
+-- measured about it -- how far the target is and how far off his facing it stands, whether a
+-- conversation is open -- so "wrong" can be matched with the description of why. F4 also holds the
+-- tour on this stop once its script is done (stopFinished), and F3 carries on from there.
+local function rate(r, verdict)
+    local entry = currentEntry()
+    if not (entry and run.review) then return end
+    if run.phase == "held" then
+        if verdict == "fine" then
+            log("review: carrying on")
+            run.phase = "next"
+        end
+        return
+    end
+    run.review.count = run.review.count + 1
+    run.review[verdict] = (run.review[verdict] or 0) + 1
+    local stop = entry.stop
+    local distance = targetDistance(r)
+    local off = "?"
+    local ok, loc = pcall(function() return run.target:K2_GetActorLocation() end)
+    if ok and loc then
+        local bearing = math.deg(math.atan(loc.Y - r.y, loc.X - r.x))
+        off = string.format("%.0f", (bearing - r.yaw + 540) % 360 - 180)
+    end
+    local line = string.format("#%d %s | %s | %s stop %d | %s | %s | %.1f s in (%s) | target %s away, %s deg off his facing%s",
+        run.review.count, verdict:upper(), os.date("%H:%M:%S"), stop.level, entry.id, stop.script, stop.note,
+        run.elapsed or 0, run.phase, distance and string.format("%.0f", distance) or "?", off,
+        igc.active(stop.level) and " | in a conversation" or "")
+    local file = io.open(REVIEW, "a")
+    if file then file:write(line, "\n"); file:close() end
+    log("review: %s", line)
+    if verdict == "wrong" then
+        run.hold = true
+        log("review: #%d -- the tour holds here once this stop's script is done; F3 carries on", run.review.count)
+    end
 end
 
 local function update(pawn, pc, cmc, r, setFpsCap)
@@ -670,11 +815,11 @@ local function update(pawn, pc, cmc, r, setFpsCap)
             local _, savedIndex = readProgress()
             index = math.max(savedIndex, 1)
         end
-        local caps = parseCaps(options.caps or "")
-        local plan = buildPlan(stops, caps)
+        local caps = parseCaps(options.caps or (options.review and "30" or ""))
+        local plan = buildPlan(stops, caps, options.review)
         if index > #plan then index = 1 end
         run = { caps = caps, stops = stops, plan = plan, index = index,
-                phase = "start", started = os.clock() }
+                phase = "start", started = os.clock(), review = options.review and { count = 0 } or nil }
         log("autotest: %d stops at %d framerates (%s), %d in all, starting at %d; each level is run at "
             .. "every framerate before the next one",
             #stops, #caps, table.concat(caps, "/"), #plan, run.index)
@@ -683,6 +828,12 @@ local function update(pawn, pc, cmc, r, setFpsCap)
         return
     end
     if not run or not run.stops then return end
+    if pendingRating then
+        local verdict = pendingRating
+        pendingRating = nil
+        rate(r, verdict)
+    end
+    if run.phase == "held" then return end
     invuln.update(pawn)
     local entry = currentEntry()
 
@@ -698,6 +849,17 @@ local function update(pawn, pc, cmc, r, setFpsCap)
         else
             run.phase, run.grace = "grace", TRAVEL_GRACE
         end
+    end
+    if run.phase == "switch" then
+        local here = tostring(levels.current(pawn))
+        if here:match("^LS" .. run.switchTo) then
+            log("autotest: in Spyro %d (%s) after %.0f s", run.switchTo, here, os.clock() - run.switchStarted)
+            run.phase, run.grace = "grace", TRAVEL_GRACE
+        elseif os.clock() - run.switchStarted > SWITCH_TIMEOUT then
+            log("autotest: never got into Spyro %d (still in %s); skipping its stops", run.switchTo, here)
+            run.skipGame, run.phase = run.switchTo, "next"
+        end
+        return
     end
     if run.phase == "grace" then
         run.grace = run.grace - r.dt
@@ -767,44 +929,14 @@ local function update(pawn, pc, cmc, r, setFpsCap)
         -- Bentley or Agent 9 and their minigame is running in a sublevel of this same level. Play it
         -- for a while, sampling as usual -- these animations are reachable no other way, because the
         -- tour cannot record a stop inside a minigame that is not running when the level is scanned --
-        -- and then leave through the pause menu (lib/subworld.lua).
+        -- and then leave by loading the level again, the game's own load. Leaving through the pause
+        -- menu never worked, and the tour does not touch the HUD.
         local now = subworld.character(pawn)
         if now and run.character and now ~= run.character and not run.inSubworld then
             run.inSubworld, run.subworldFor = now, 0
             log("autotest: %s took over at stop %d; playing its minigame", now, entry.id)
         end
         if run.inSubworld then
-            -- Back to whoever the stop started with: the exit worked, whatever the call said. Asking
-            -- the game who is holding the controller is the only honest check -- the menu call itself
-            -- reports nothing about whether the subworld actually let go.
-            if run.leaving then
-                if now == run.character then
-                    log("autotest: out of the %s subworld after %.1f s", run.inSubworld, run.leaving)
-                    run.inSubworld, run.leaving = nil, nil
-                    stopFinished(pawn, pc, "played a subworld")
-                    return
-                end
-                run.leaving = run.leaving + r.dt
-                if run.leaving >= LEAVE_SECONDS then
-                    -- The menu would not let go. Teleporting the next stop while somebody else is
-                    -- holding the controller would measure that character in Spyro's spots and call it
-                    -- Spyro, so load the level again instead: that always gives him back.
-                    log("autotest: still %s after asking to leave for %.0f s; loading %s again",
-                        tostring(now), LEAVE_SECONDS, entry.stop.level)
-                    run.inSubworld, run.leaving = nil, nil
-                    stopFinished(pawn, pc, "a subworld would not let go (loading the level again)")
-                    run.lockedStops = LOCKED_STOPS -- startStop reloads on this
-                end
-                return
-            end
-            if subworld.exiting() then
-                local done = subworld.updateExit(pc)
-                if done then
-                    log("autotest: asked the %s subworld to exit: %s", run.inSubworld, done)
-                    run.leaving = 0
-                end
-                return
-            end
             if run.elapsed >= run.nextSample then
                 sample(r, entry, run.nextSample)
                 sampleAnims(pawn, entry, run.nextSample)
@@ -813,8 +945,11 @@ local function update(pawn, pc, cmc, r, setFpsCap)
             run.subworldFor = run.subworldFor + r.dt
             run.elapsed = run.elapsed + r.dt
             if run.subworldFor >= SUBWORLD_SECONDS then
-                input.clear(pawn, pc)
-                subworld.beginExit(pc)
+                log("autotest: played %s for %.0f s; loading %s again to leave", run.inSubworld,
+                    run.subworldFor, entry.stop.level)
+                run.inSubworld = nil
+                stopFinished(pawn, pc, "played a subworld")
+                run.forceReload = true -- startStop loads the level again, whatever the reload count
                 return
             end
             -- Whatever the character is, forward and jumping is playing it.
@@ -949,6 +1084,15 @@ end
 
 function autotest.toggle()
     requested = true
+end
+
+-- Review mode keys (main.lua): F3 = this stop looks fine (or carry on after F4), F4 = it is wrong.
+function autotest.reviewing()
+    return run ~= nil and run.stops ~= nil and run.review ~= nil
+end
+
+function autotest.rate(verdict)
+    pendingRating = verdict
 end
 
 -- True while a run is going, so lib/resume.lua knows a restart should carry on with it.

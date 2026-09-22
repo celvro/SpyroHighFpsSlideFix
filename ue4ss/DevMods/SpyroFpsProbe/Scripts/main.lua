@@ -4,7 +4,8 @@
 --
 -- Keys (game window focused; not F11, which toggles fullscreen, nor anything DefaultInput.ini binds):
 --   F1 / F2 / C        minigame recording: mark a glitch / retry this one / drop into the next one
---   F3                 press Continue on the text box that is up (lib/dialogue.lua)
+--   F3                 press Continue on the text box that is up (lib/dialogue.lua); in a review tour: looks fine
+--   F4                 in a review tour (autotest.txt "review"): wrong, and hold on this stop until F3
 --   F5 / F6 / F7 / F8  set t.MaxFPS to 30 / 60 / 120 / 0 (uncapped); F4 sets 320
 --   F9                 dump Spyro's FollowCameraComponent properties to camdump_*_manual.txt
 --   F10                rescan for flame particle components (if a flame isn't picked up automatically)
@@ -52,6 +53,7 @@ local UEHelpers = require("UEHelpers")
 local log = require("lib.log")
 local levels = require("lib.levels")
 local igc = require("lib.igc")
+local dialogue = require("lib.dialogue")
 local invuln = require("lib.invuln")
 local mouse = require("lib.mouse")
 local paths = require("lib.paths")
@@ -112,7 +114,13 @@ local function sample()
 
     local statics = UEHelpers.GetGameplayStatics()
     local time = statics:GetTimeSeconds(pawn)
-    if state.lastTime == time then return end -- paused or same frame
+    if state.lastTime == time then
+        -- Paused. A save fairy's or Moneybags' prompt pauses the world, and returning here is
+        -- what used to leave the scripted tour sitting in one: nothing ran to answer it. The
+        -- tour answers it the way a player does, with Continue (lib/dialogue.lua).
+        if autotest.running() then dialogue.advance() end
+        return
+    end
     state.lastTime = time
 
     local prev = state.prevRow
@@ -209,7 +217,11 @@ setFpsCap = function(cap)
     end)
 end
 
-RegisterKeyBind(Key.F4, function() setFpsCap(320) end)
+-- F3 and F4 are the review verdicts while a review tour runs (tools/autotest.lua: F3 fine or carry on,
+-- F4 wrong and hold); otherwise F3 presses Continue and F4 sets 320 FPS.
+RegisterKeyBind(Key.F4, function()
+    if autotest.reviewing() then autotest.rate("wrong") else setFpsCap(320) end
+end)
 RegisterKeyBind(Key.F5, function() setFpsCap(30) end)
 RegisterKeyBind(Key.F6, function() setFpsCap(60) end)
 RegisterKeyBind(Key.F7, function() setFpsCap(120) end)
@@ -228,7 +240,9 @@ RegisterKeyBind(Key.U, spawntest.toggle)
 RegisterKeyBind(Key.J, slide.request)
 RegisterKeyBind(Key.O, autotest.toggle)
 RegisterKeyBind(Key.M, function() requestRecord = true end)
-RegisterKeyBind(Key.F3, function() requestClose = true end)
+RegisterKeyBind(Key.F3, function()
+    if autotest.reviewing() then autotest.rate("fine") else requestClose = true end
+end)
 RegisterKeyBind(Key.F1, minigame.mark)
 RegisterKeyBind(Key.F2, minigame.retry)
 RegisterKeyBind(Key.C, function() minigame.request("next") end)
