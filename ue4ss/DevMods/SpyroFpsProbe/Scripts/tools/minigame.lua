@@ -16,6 +16,10 @@
 --   F2  retry -- put me back at the start of this minigame
 --   C   drop into the next minigame on the list
 --
+-- Every drop-in and every retry tops the purse up, so Moneybags is never the reason a take cannot be
+-- repeated, and nothing walks Spyro anywhere: he is put on the spot facing the right way and the rest
+-- is yours.
+--
 -- minigame.txt in this mod folder does the same from outside: a level name (LS305), "next", or "list".
 --
 -- Takes are numbered within a run and every row carries the framerate cap, so playing one minigame at 30
@@ -24,6 +28,7 @@
 -- which is enough to say afterwards which moment a glitch was.
 --
 --   "minigame" lines  which one, who is holding the controller, and every mark
+local UEHelpers = require("UEHelpers")
 local anim = require("lib.anim")
 local igc = require("lib.igc")
 local input = require("lib.input")
@@ -45,12 +50,8 @@ local ANIM_HEADER = "cap,level,stop,script,note,t,who,class,montage,montagePos,s
     .. "state,stateTime,x,y,z,yaw,speed,mode\n"
 
 local SAMPLE = 0.1       -- seconds of game time between rows, as the tour uses
-local SETTLE = 1.0       -- standing still after the teleport before walking in
-local WALK_IN = 6.0      -- seconds walking into whoever starts it before giving up and handing over
-local ARRIVE_STILL = 1.5 -- stopped moving this long while walking in means he is there
-local STILL_SPEED = 5
-local START_WAIT = 10.0   -- longest to wait for the minigame's intro to give the controls back
-local RELEASE_EVERY = 0.5 -- how often to ask it to, while waiting
+local SETTLE = 1.0   -- standing still after the teleport before you get the controller
+local GEMS = 30000   -- topped up on every drop-in, so Moneybags is never what stops a take
 
 -- The characters whose conversation hands the controller over, and the things you board. Everything on
 -- this list gets an entry; whether it takes over by itself is worked out at the time.
@@ -61,7 +62,6 @@ local csv, animCsv = nil, nil
 local pending = nil -- a request from a key or the trigger file, handled in the game thread
 local ORIGIN = { x = 0, y = 0, z = 0 }
 local NO_AXES = {}            -- sticks centred, reused so a driven frame allocates nothing
-local FORWARD = { leftY = 1 }
 
 local function isEntry(note)
     for _, name in ipairs(ENTRIES) do
@@ -189,12 +189,26 @@ local function startEntry(pawn, pc, cmc)
     end
     state.phase, state.waited, state.walked, state.stillFor = "settle", 0, 0, 0
     state.character = subworld.character(pawn)
-    log("minigame: %s, %s -- walking in", stop.level, stop.note)
+    log("minigame: %s, %s -- putting you on the spot", stop.level, stop.note)
 end
 
 -- Hand the controller back and say what to do with it.
+-- Moneybags gates half the minigames and the most expensive thing he sells is 1000-odd gems, so top
+-- up to well past that on every drop-in and every retry -- paying him should never be the reason a take
+-- cannot be repeated. FalconGameState has the developers own switch for it: "debug - add treasure"
+-- (count, clear count first); the false keeps what is already in the purse rather than resetting it.
+local function giveGems(pc)
+    local ok = pcall(function()
+        local gs = UEHelpers.GetGameplayStatics():GetGameState(pc)
+        gs["debug - add treasure"](gs, GEMS, false)
+    end)
+    log("minigame: %s", ok and ("added " .. GEMS .. " gems for Moneybags")
+        or "could not add gems (debug - add treasure refused)")
+end
+
 local function handOver(pawn, pc, why)
     input.clear(pawn, pc)
+    giveGems(pc)
     state.phase = "ready"
     local level, note = label()
     local ignored
@@ -345,67 +359,14 @@ function minigame.update(pawn, pc, cmc, r, fpsCap)
         input.hold(NO_AXES)
         input.apply(pawn, pc)
         if state.waited >= SETTLE then
-            state.phase, state.walked, state.stillFor = "walking", 0, 0
+            -- No walking in. Being put on the spot, facing the right way, with the gems to pay for it is
+            -- the whole job; walking him forward from there only ever guessed at what starts a minigame,
+            -- and guessed wrong for every one you board.
+            handOver(pawn, pc, "on the spot")
         end
         return
     end
 
-    -- Walk into whoever starts it. If the controller changes hands, that was a character minigame and it
-    -- has begun. If it does not, this is one you board or trigger yourself, so hand over anyway: being
-    -- put on the right spot with the camera behind him is most of what the tool is for.
-    if state.phase == "walking" then
-        local who = subworld.character(pawn)
-        if who and state.character and who ~= state.character then
-            -- It has started, but the intro cinematic still holds the camera and the controls, and
-            -- handing over into that is handing over nothing: the pad does not answer. Wait for it, and
-            -- keep asking it to finish (lib/igc.lua) rather than hoping.
-            state.phase, state.starting, state.nextRelease, state.released = "starting", 0, 0, nil
-            input.clear(pawn, pc)
-            log("minigame: %s took over -- waiting for its intro to give the controls back", who)
-            return
-        end
-        state.walked = state.walked + r.dt
-        if (r.speed or 0) < STILL_SPEED then
-            state.stillFor = state.stillFor + r.dt
-        else
-            state.stillFor = 0
-        end
-        if state.walked >= WALK_IN then
-            handOver(pawn, pc, "nothing took over, so board or trigger it yourself")
-            return
-        end
-        if state.stillFor >= ARRIVE_STILL then
-            handOver(pawn, pc, "up against it, so take it from here")
-            return
-        end
-        input.hold(FORWARD)
-        input.apply(pawn, pc)
-        return
-    end
-
-    -- Waiting out the intro. Nothing is driven here: the only input sent is the release.
-    if state.phase == "starting" then
-        state.starting = state.starting + r.dt
-        -- Release first, ask afterwards. IsMoveInputIgnored is only one of the ways control is taken
-        -- away -- SetCinematicMode is another, and it does not show up there -- so a gate that already
-        -- reads open is no reason to hand over without having lowered the others at least once.
-        if state.starting >= state.nextRelease then
-            state.nextRelease = state.starting + RELEASE_EVERY
-            igc.forget()
-            igc.close(pc, pawn, levels.current(pawn))
-            state.released = true
-        end
-        local ignored
-        pcall(function() ignored = pawn:IsMoveInputIgnored() end)
-        if ignored == false and state.released then
-            handOver(pawn, pc, "its intro is done")
-            return
-        end
-        if state.starting >= START_WAIT then
-            handOver(pawn, pc, "its intro would not finish in time")
-        end
-        return
-    end
 
     if state.phase == "recording" then
         state.recorded = state.recorded + r.dt
