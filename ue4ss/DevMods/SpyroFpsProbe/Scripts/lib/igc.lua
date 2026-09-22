@@ -58,6 +58,7 @@ local function derivesFromBase(object)
         local name
         if not pcall(function() name = at:GetFName():ToString() end) then break end
         if name == "Collectable_Dragon_C" then answer = "dragon"; break end
+        if name == "SP3_CinematicsActor" or name == "BP_SP3_CinematicActor_C" then answer = "movie"; break end
         if name == "Spyro_IGC_Base_C" then answer = "igc"; break end
         -- Belt and braces while the chain walk is new: a class whose own name says IGC counts too, so a
         -- build where GetSuperStruct is unavailable still finds the level subclasses.
@@ -75,6 +76,7 @@ local function isActive(object)
     local kind = derivesFromBase(object)
     local ok, value = pcall(function()
         if kind == "dragon" then return object.CutsceneActive end
+        if kind == "movie" then return object.Started == true and object.Finished ~= true end
         return object.CurrentlyActiveIGC
     end)
     return ok and value == true
@@ -141,6 +143,9 @@ end
 --   Collectable_Dragon (Spyro 1's dragons): checks CutsceneActive, "Bypass Available" and DontSkipIGC
 --                      itself, then stops its level sequence. Bypass only becomes available a moment in,
 --                      so it is pressed again every SKIP_AGAIN seconds while it plays.
+--   BP_SP3_CinematicActor (Spyro 3's movie cutscenes, native SP3_CinematicsActor): skips when Started
+--                      and not Special; it is only pressed between Started and Finished, because the skip
+--                      also ends its mission and must not run again after the movie is over.
 --
 -- The event is InpActEvt_SkipCutscene_K2Node_InputActionEvent_<n>, n differing per class, so the name
 -- that works is found once per class. The transporters bind it too, to end a travel "mission"; the tour
