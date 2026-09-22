@@ -1,29 +1,20 @@
--- Getting control back when an in-game cinematic has taken it, which is what a conversation with an NPC
--- does, and what a save fairy does.
+-- Knowing when an in-game cinematic is running, which is what a conversation with an NPC is, and what a
+-- save fairy is, and moving a conversation along the way a player does.
 --
--- Talking to an NPC plays an in-game cinematic, and while it runs the game takes input away. A scripted
--- tour that walks into an NPC therefore loses not just that stop but every stop after it, because nothing
--- in the tour's own inputs closes one: the skip is a button HELD (Spyro_IGC_Base has SkipCheck and
--- StartSkipTimer), and holding each face button for a second and a half failed 29 times in 32. Worse, a
--- tour that ENDS in one leaves the game sitting in a text box for as long as nobody is watching.
+-- Talking to an NPC plays an in-game cinematic, and while it runs the game has the camera and the input.
+-- A scripted tour must not teleport out of one (it keeps hold of him wherever he lands, so the next stop
+-- is lost too) and must not end on one (the game sits in a text box for as long as nobody is watching).
+-- So the tour waits for it, pressing Continue on its text box (lib/dialogue.lua) until it closes by
+-- itself. Nothing here ends a cinematic, skips one, or touches input or the HUD: see igc.close.
 --
--- Loading the level again does clear it, at about twelve seconds a time. This is the cheaper way. From
--- the disassembly of Spyro_IGC_Base's ubergraph:
+-- Finding the running one: FindAllOf matches a class name exactly, and no instance is ever a plain
+-- Spyro_IGC_Base_C: every one is of the level's own subclass (LS321 has BP_LS321_IGCBoxing_C), and a
+-- save fairy is a Spyro_IGC_SavePoint0_C. Listing the names would only ever cover the levels already
+-- looked at, so each actor's class chain is walked for Spyro_IGC_Base_C instead. CurrentlyActiveIGC
+-- says whether it is running.
 --
---     956: this.SkipCheck = true
---     968: if not (this.SkipCheck) goto 997
---     982: Dialogue Complete()
---
--- so setting SkipCheck makes it finish itself on its next 0.05 s tick, which is what the skip button
--- would have done, and "Dialogue Complete" is the same step called outright.
---
--- Finding the running one is the part that took two tries. FindAllOf matches a class name exactly, and
--- no instance is ever a plain Spyro_IGC_Base_C: every one is of the level's own subclass (LS321 has
--- BP_LS321_IGCBoxing_C), and a save fairy is a Spyro_IGC_SavePoint0_C. Listing the names that exist and
--- adding them here would only ever cover the levels already looked at, so instead every actor is asked
--- whether it HAS SkipCheck. Only a Spyro_IGC_Base subclass does, whatever it calls itself.
---
---   "igc" lines  what was found, what was set, and what was still active afterwards
+--   "igc" lines  what cinematics a level has, and a cutscene being waited out
+local dialogue = require("lib.dialogue")
 local log = require("lib.log")
 
 local igc = {}
@@ -37,8 +28,8 @@ local CACHE_SECONDS = 5
 local found = nil
 local foundFor = nil
 local foundAt = 0
-local tries = {} -- address -> how many times close() has asked this one to finish
-local quiet = false -- whether "nothing is running" has already been said for this level
+
+local quiet = false -- whether "a cutscene is running" has already been said for this level
 local lastSummary = nil -- what the last sweep found, so an unchanged one is not logged again
 
 -- Whether a class is Spyro_IGC_Base_C or descends from it. Reading a property off an actor that does
@@ -122,67 +113,25 @@ end
 
 -- The level has changed (or is about to), so the actors kept above are gone.
 function igc.forget()
-    found, foundFor, foundAt, tries, quiet, lastSummary = nil, nil, 0, {}, false, nil
+    found, foundFor, foundAt, quiet, lastSummary = nil, nil, 0, false, nil
 end
 
--- Whatever is holding him, let go. The controller gates are released first because they are cheap and
--- cost nothing when they were never raised; then each cinematic that says it is running is told to
--- finish. A second attempt on the same one escalates from the skip to EndIGC, which is what the
--- cinematic calls on itself when it is done.
--- Returns how many cinematics were asked to finish.
--- `takeInput` forces the controller back to game-only input. That is a blunt thing to do: it clears
--- whatever widget had focus, and a text box that has not opened yet may be expecting to take it. So it
--- is NOT done on the automatic paths -- only F3, where somebody has looked at a dead pad and asked.
-function igc.close(pc, pawn, level, takeInput)
-    if pc and pc:IsValid() then
-        pcall(function() pc:ResetIgnoreMoveInput() end)
-        pcall(function() pc:ResetIgnoreLookInput() end)
-        -- SetCinematicMode(inCinematicMode, hidePlayer, affectsHUD, affectsMovement, affectsTurning)
-        pcall(function() pc:SetCinematicMode(false, false, false, true, true) end)
-        -- A text box that took focus for itself leaves the controller in UI-only mode, where the pad
-        -- goes to a widget that is no longer on the screen and the game gets nothing -- which looks
-        -- exactly like input being dead while IsMoveInputIgnored says false and no cinematic reports
-        -- itself running. Taking input back fixes that, and costs any widget that WANTED focus its
-        -- focus, so it is only done when asked for.
-        if takeInput then
-            -- Game only, which is what gameplay wants: it captures the mouse. GameAndUI was tried in
-            -- its place to be gentler on widgets and is wrong here -- without capture, mouse look only
-            -- works while a button is held down, which is exactly what it looked like.
-            local restored = pcall(function()
-                local umg = StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")
-                umg:SetInputMode_GameOnly(pc)
-            end)
-            log("igc: input mode set back to game only (%s)", restored and "ok" or "failed")
-            pcall(function() pc.bShowMouseCursor = false end)
-        end
-    end
-    local asked = 0
-    for _, object in ipairs(instances(level)) do
-        if isActive(object) then
-            local address = object:GetAddress()
-            tries[address] = (tries[address] or 0) + 1
-            local name = "?"
-            pcall(function() name = object:GetFullName() end)
-            pcall(function() object.SkipCheck = true end)
-            if tries[address] == 1 then
-                pcall(function() object["Dialogue Complete"](object) end)
-                log("igc: %s is running; skipped it", name)
-            else
-                pcall(function() object["EndIGC"](object, object) end)
-                log("igc: %s is still running after %d tries; ended it", name, tries[address])
-            end
-            asked = asked + 1
-        end
-    end
-    if asked == 0 and not quiet and pawn and pawn:IsValid() then
-        -- Nothing said it was running, so if he still cannot move it is not a conversation. Said once
-        -- per level: close() is called at the end of every stop, and a line each would drown the log.
+-- Moves a running conversation along the way a player would: Continue on its text box (lib/dialogue.lua).
+-- Called as often as convenient; the presses are spaced out there.
+--
+-- This used to end conversations from outside: SkipCheck, "Dialogue Complete", then EndIGC, followed by
+-- resetting the controller's ignore flags and cinematic mode, and forcing game-only input. That is how
+-- input went missing after a drop-in, and ending a conversation from outside skips what it was going to
+-- start -- which, next to an NPC who runs a minigame, is the minigame. So it only presses the button now.
+-- Returns 1 while a text box is up, 0 when there is none.
+function igc.close(pc, pawn, level)
+    if dialogue.advance() then return 1 end
+    if not quiet and pawn and pawn:IsValid() and igc.active(level) then
+        -- A cinematic with no text box is a cutscene: it ends on its own, so say so once and wait.
         quiet = true
-        local ignored
-        pcall(function() ignored = pawn:IsMoveInputIgnored() end)
-        log("igc: nothing is running (pawn IsMoveInputIgnored = %s)", tostring(ignored))
+        log("igc: a cinematic is running with no text box; waiting for it to end by itself")
     end
-    return asked
+    return 0
 end
 
 return igc

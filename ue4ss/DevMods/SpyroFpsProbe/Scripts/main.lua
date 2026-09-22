@@ -4,7 +4,7 @@
 --
 -- Keys (game window focused; not F11, which toggles fullscreen, nor anything DefaultInput.ini binds):
 --   F1 / F2 / C        minigame recording: mark a glitch / retry this one / drop into the next one
---   F3                 close whatever conversation has hold of Spyro (lib/igc.lua)
+--   F3                 press Continue on the text box that is up (lib/dialogue.lua)
 --   F5 / F6 / F7 / F8  set t.MaxFPS to 30 / 60 / 120 / 0 (uncapped); F4 sets 320
 --   F9                 dump Spyro's FollowCameraComponent properties to camdump_*_manual.txt
 --   F10                rescan for flame particle components (if a flame isn't picked up automatically)
@@ -93,7 +93,7 @@ local DEFAULT_SIM_STEP = 0.05 -- engine default MaxSimulationTimeStep; the game 
 local RECENT_FRAMES = 10
 local setFpsCap -- defined with the key binds below; the tour sets uncapped
 local requestRecord = false -- P: record this spot as a tour stop (tools/routes.lua)
-local requestClose = false -- F3: close whatever conversation has hold of Spyro (lib/igc.lua)
+local requestClose = false -- F3: press Continue on the text box that is up (lib/dialogue.lua)
 
 local function sample()
     mouse.register()
@@ -173,7 +173,7 @@ local function sample()
     if requestClose then
         requestClose = false
         igc.forget() -- asked for by hand, so never trust a list from an earlier level
-        igc.close(pc, pawn, levels.current(pawn), true) -- asked for by hand, so take input back too
+        igc.close(pc, pawn, levels.current(pawn)) -- presses Continue on a text box, if one is up
     end
     if requestRecord then
         requestRecord = false

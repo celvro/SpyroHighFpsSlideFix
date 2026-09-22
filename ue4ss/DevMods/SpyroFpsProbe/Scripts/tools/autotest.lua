@@ -95,8 +95,8 @@ local LOCKED_STOPS = 2     -- that many stops in a row, or a failed check, and t
 local TALK_SECONDS = 25.0  -- longest a stop waits for a conversation it started to finish
 local SUBWORLD_SECONDS = 12.0 -- how long to play as whoever a subworld handed the controller to
 local LEAVE_SECONDS = 20.0    -- how long to wait for the subworld to hand control back afterwards
-local CLEAR_SECONDS = 3.0  -- waiting for a conversation to finish before a teleport
-local CLEAR_RETRY = 0.5    -- seconds between asking it to finish
+local CLEAR_SECONDS = 30.0 -- waiting for a conversation to be pressed through before a teleport
+local CLEAR_RETRY = 0.1    -- seconds between checks (lib/dialogue.lua spaces the presses itself)
 local MAX_RELOADS = 2      -- but no more than this per level: past that the spots are the problem
 local TRIGGER = paths.modDir .. "\\autotest.txt"
 local STOP = paths.modDir .. "\\autotest.stop" -- an empty file that stops a run that is already going
@@ -353,9 +353,9 @@ local function stopFinished(pawn, pc, reason)
     log("autotest %d FPS %s stop %d (%s, %s): %s after %.1f s, %d samples",
         currentCap(), entry.stop.level, entry.id, entry.stop.script, entry.stop.note,
         reason, run.elapsed or 0, run.samples or 0)
-    -- Close whatever conversation this stop opened, whether or not it went wrong: a stop that ends in a
-    -- text box takes the next one with it, and the last one leaves the game sitting in it. After the
-    -- first sweep of a level this costs a bool read per cinematic (lib/igc.lua).
+    -- Move along whatever conversation this stop opened, whether or not it went wrong: a stop that ends in a
+    -- text box takes the next one with it, and the last one leaves the game sitting in it. This presses
+    -- Continue once; the clearing phase before the next teleport keeps pressing until it closes.
     igc.close(pc, pawn, entry.stop.level)
     run.checkNext = locked or nil
     run.phase = "next"
@@ -449,8 +449,8 @@ local function startStop(pawn, pc, cmc)
             run.clearing, run.nextClear = now + CLEAR_SECONDS, 0
             log("autotest: a conversation is still running; finishing it before the teleport")
         end
-        -- Asked again every so often rather than every frame: the cinematic reads SkipCheck on its own
-        -- 0.05 s tick, and close() escalates to EndIGC once asking politely has not worked.
+        -- Continue is pressed on its text box until it closes by itself (lib/dialogue.lua spaces the
+        -- presses out); a cutscene with no text box is left to end on its own.
         if now >= run.nextClear then
             run.nextClear = now + CLEAR_RETRY
             igc.close(pc, pawn, stop.level)
@@ -884,6 +884,7 @@ local function update(pawn, pc, cmc, r, setFpsCap)
             -- to look like. Wait for it instead, and keep sampling while it plays: the talking is a
             -- character animating, which is the whole point of the stop.
             if igc.active(entry.stop.level) then
+                igc.close(pc, pawn, entry.stop.level) -- Continue, as a player would, until it ends
                 run.talking = (run.talking or 0) + r.dt
                 if run.talking < TALK_SECONDS then
                     if run.elapsed >= run.nextSample then

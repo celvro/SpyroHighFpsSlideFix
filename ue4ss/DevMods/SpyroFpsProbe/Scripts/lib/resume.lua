@@ -27,7 +27,7 @@ local WRITE_INTERVAL = 5 -- seconds between notes
 local MENU_WAIT = 8      -- seconds at the title screen before Continue is pressed
 local MENU_PICK_TIMEOUT = 20 -- seconds of menu before falling back to calling "start game" directly
 local TIMEOUT = 300      -- seconds before the whole resume gives up
-local CLOSE_TRIES = 20   -- tries at closing the title screen over the loaded level, 0.5 s apart
+local CLOSE_TRIES = 20   -- checks that the menu has gone from over the loaded level, 0.5 s apart
 
 local nextWrite = 0
 local state = nil -- { level, game, slot, phase, started } while resuming
@@ -104,12 +104,12 @@ function resume.update()
     if state.phase == "menu" then
         -- Through the menu the way a player goes: Continue on the title, then the game on the game
         -- select screen (lib/frontend.lua). Calling "start game" on its own also loads the game but skips
-        -- what the menu does around it, and closing what it left behind is how the HUD got torn down.
+        -- what the menu does around it, and closing what it left behind by hand took the HUD down with it.
         -- The title takes a while to be ready; the world has no pawn yet.
         if os.clock() - state.started < MENU_WAIT or not pc:IsValid() then return end
         state.menuStarted = state.menuStarted or os.clock()
         if frontend.title() and not state.continued then
-            state.continued = frontend.continue(pc)
+            state.continued = frontend.continue()
             return
         end
         if frontend.pickGame(state.game) then
@@ -146,9 +146,7 @@ function resume.update()
             log("resume: travelling from %s to %s", tostring(here), state.level)
             state.phase = "travel"
         else
-            -- Giving up on the level is no reason to leave the title screen drawn over the one that did
-            -- load: the game is then running underneath a menu that eats button presses.
-            log("resume: can't travel to %s from %s; staying in %s and closing the menu",
+            log("resume: can't travel to %s from %s; staying in %s",
                 state.level, tostring(here), tostring(here))
             state.level = here
             state.phase, state.closeTries, state.nextClose = "closing", 0, 0
@@ -163,17 +161,17 @@ function resume.update()
         state.phase, state.closeTries, state.nextClose = "closing", 0, 0
         return
     end
-    -- Whatever of the front end is still drawn over the level comes off, and the HUD goes back if it is
-    -- missing (lib/frontend.lua). Something can take a moment to appear, so this tries CLOSE_TRIES times.
+    -- The menu goes away by itself once the level is in. Nothing is removed by hand (lib/frontend.lua):
+    -- this only waits, and says so if it is still up.
     if state.phase == "closing" then
         if os.clock() < state.nextClose then return end
         state.nextClose = os.clock() + 0.5
         state.closeTries = state.closeTries + 1
-        if frontend.close(hasPawn and pawn or pc) then
-            log("resume: the menu is closed; %s is playable after %.0f s", state.level, os.clock() - state.started)
+        if not frontend.open() then
+            log("resume: the menu is gone; %s is playable after %.0f s", state.level, os.clock() - state.started)
             state = nil
         elseif state.closeTries >= CLOSE_TRIES then
-            log("resume: the menu is still up after %d tries; close it by hand", state.closeTries)
+            log("resume: the menu is still up after %d checks; press through it by hand", state.closeTries)
             state = nil
         end
     end

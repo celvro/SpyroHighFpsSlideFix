@@ -30,7 +30,6 @@
 --   "minigame" lines  which one, who is holding the controller, and every mark
 local UEHelpers = require("UEHelpers")
 local anim = require("lib.anim")
-local frontend = require("lib.frontend")
 local igc = require("lib.igc")
 local input = require("lib.input")
 local levels = require("lib.levels")
@@ -210,20 +209,16 @@ end
 local function handOver(pawn, pc, why)
     input.clear(pawn, pc)
     giveGems(pc)
-    -- Give the controls back for real. A teleport out of wherever he was can leave a gate raised or the
-    -- controller pointed at a widget, and a dead pad on arrival is the one failure that wastes the whole
-    -- drop-in. Game-only input, and the HUD container back in the viewport if it was taken out: without
-    -- it an NPC's text box is created but never drawn, and a minigame that starts with one never starts.
-    frontend.repairHud(pc)
+    -- Nothing else: the level came in through the game's own load, so the controls, the HUD and any
+    -- conversation are the game's. Reaching into them from here is what lost input and hid text boxes.
     igc.forget()
-    igc.close(pc, pawn, levels.current(pawn), true)
     state.phase = "ready"
     local level, note = label()
     local ignored
     pcall(function() ignored = pawn:IsMoveInputIgnored() end)
     log("minigame: %s, %s -- %s. You have the controller as %s%s.", level, note, why,
         subworld.character(pawn) or "?",
-        ignored == true and " -- but the game still says input is ignored, so press F3" or "")
+        ignored == true and " -- but the game says input is ignored (a cinematic?)" or "")
     log("minigame: M records a take, F1 marks a glitch, F2 retries this one, C moves on.")
 end
 
@@ -310,7 +305,6 @@ local function doMark(pawn)
         state.take, subworld.character(pawn) or "?",
         s.montage ~= "" and s.montage or "no montage", s.position)
     pcall(uiReport, UEHelpers.GetPlayerController())
-    pcall(frontend.repairHud, UEHelpers.GetPlayerController())
 end
 
 local function handle(pawn, pc, cmc)
@@ -356,7 +350,6 @@ local function handle(pawn, pc, cmc)
         else
             log("minigame: MARK (no take running) -- what the UI is doing:")
             pcall(uiReport, pc)
-            pcall(frontend.repairHud, pc)
         end
         return
     end
