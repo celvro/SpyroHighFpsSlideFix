@@ -46,12 +46,9 @@ scripts.list = {
     chargeJump = { STILL, { dur = 1.5, axes = { leftY = 1 }, hold = { "charge" } },
                    { dur = 0.6, axes = { leftY = 1 }, hold = { "charge", "jump" } },
                    { dur = 1.5, axes = { leftY = 1 }, hold = { "charge" } }, STILL },
-    -- Flame walks first, because the flame button is FaceTop and DefaultInput.ini also binds FreeLook
-    -- to FaceTop. Pressed from a standstill it puts the camera in first person instead of breathing
-    -- fire, so the press has to land while he is already moving.
-    flame = { STILL, { dur = 0.8, axes = { leftY = 1 } },
-              { dur = 0.2, axes = { leftY = 1 }, hold = { "flame" } },
-              { dur = 2.0, axes = { leftY = 1 } }, STILL },
+    -- Flame from a standstill. (It used to walk first: the probe had flame on FaceTop, which is
+    -- FreeLook, so a standing press went into first person. Flame is FaceRight, lib/input.lua.)
+    flame = { STILL, { dur = 0.2, hold = { "flame" } }, { dur = 2.0 }, STILL },
 
     -- Camera: the right stick spin, and what the camera does while Spyro turns under it.
     camSpin = { STILL, { dur = 2.0, axes = { rightX = 1 } }, { dur = 2.0, axes = { rightX = -1 } }, STILL },
@@ -60,11 +57,10 @@ scripts.list = {
     -- Minigames and anything that starts with dialogue.
     --
     -- These used to spend six seconds tapping FaceTop in the middle, meant to skip the NPC's dialogue.
-    -- It never did: the skip is a button HELD, and holding one failed 29 times in 32. What it did do is
-    -- put the camera in first person fifteen times a stop, because DefaultInput.ini binds FreeLook to
-    -- FaceTop as well as flame -- during the very stops whose point is to record what that NPC animates
-    -- like, four thousand times a pass, six seconds a stop. So the tapping is gone, and enterTalk and
-    -- talk with it: without it they were a walk and a wait, which walk and idle already are.
+    -- It never did: the probe's presses go to the character, not to the text box, and FaceTop is
+    -- FreeLook, so what it did was put the camera in first person fifteen times a stop. Text boxes and
+    -- cutscenes are now pressed through by lib/igc.lua instead, and enterTalk and talk are gone: without
+    -- the tapping they were a walk and a wait, which walk and idle already are.
     --
     -- Once a minigame is running: hold forward and keep jumping, which is "play" in most of them. Three
     -- jumps is enough to see what a jump animates like; ten was most of the time each stop took.

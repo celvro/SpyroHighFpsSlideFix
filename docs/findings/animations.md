@@ -156,3 +156,11 @@ needed three more, and all three were found by the run doing something wrong for
   montage once per cap and skips the shared ones it already has (`animtest_done.txt`). Reached LS106 with
   216 montage-cap measurements banked; the dedupe works (LS106 needed only 24 of its 92 montages).
 - The scripted tour over the full 1789-stop route at 30 and 320: started 2026-09-20 21:49.
+
+**Button mapping error, found 2026-09-22.** `lib/input.lua` had charge on `InputAction_FaceRight` and
+flame on `InputAction_FaceTop`. DefaultInput.ini binds ChargeAttack to FaceButton_Left (square),
+FireAttack to FaceButton_Right (circle) and FreeLook to FaceButton_Top (triangle). So every scripted
+`charge` stop before then breathed fire, and every `flame` stop pressed the camera button, which is the
+"first person over and over" seen in the tour. Charge and flame rows in autotest CSVs from before that
+date measure the wrong ability and should be re-run. Now charge is FaceLeft (native
+`FalconCharacterInputComponent` event, which Spyro's Blueprint does not override) and flame is FaceRight.

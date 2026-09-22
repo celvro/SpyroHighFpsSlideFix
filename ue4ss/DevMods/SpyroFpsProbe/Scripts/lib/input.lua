@@ -14,14 +14,19 @@ local log = require("lib.log")
 local input = {}
 
 -- Event name per axis/button. Names are the DualShock/Xbox face-button positions the game uses:
--- FaceBottom = A/cross (jump), FaceRight = B/circle (charge), FaceTop = Y/triangle (flame).
+-- As DefaultInput.ini binds them: FaceBottom = A/cross (Jump), FaceLeft = X/square (ChargeAttack),
+-- FaceRight = B/circle (FireAttack), FaceTop = Y/triangle (FreeLook, and SkipCutscene). FaceTop is left
+-- out: nothing here wants the camera, and a release sent for it would still reach FreeLook. Spyro's Blueprint
+-- implements FaceBottom, FaceRight and FaceTop; FaceLeft is the native FalconCharacterInputComponent's.
+-- (This had charge on FaceRight and flame on FaceTop until 2026-09-22, so every scripted "charge" before
+-- then breathed fire and every "flame" went into first person.)
 input.AXES = {
     leftX = "InputAxis_LeftStick_X", leftY = "InputAxis_LeftStick_Y",
     rightX = "InputAxis_RightStick_X", rightY = "InputAxis_RightStick_Y",
     triggerL = "InputAxis_TriggerLeft", triggerR = "InputAxis_TriggerRight",
 }
 input.BUTTONS = {
-    jump = "InputAction_FaceBottom", charge = "InputAction_FaceRight", flame = "InputAction_FaceTop",
+    jump = "InputAction_FaceBottom", charge = "InputAction_FaceLeft", flame = "InputAction_FaceRight",
     shoulderL = "InputAction_ShoulderLeft", shoulderR = "InputAction_ShoulderRight",
     triggerL = "InputAction_TriggerLeft", triggerR = "InputAction_TriggerRight",
     stickL = "InputAction_LeftThumbstickButton", stickR = "InputAction_RightThumbstickButton",
