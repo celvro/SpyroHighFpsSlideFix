@@ -39,7 +39,8 @@
 --                    review_<stamp>.txt. One stop per spot (the walk-in: enterPlay if the character has
 --                    one, else walk), since the verdict is about the spot; at 30 FPS unless caps= is given
 --   all              with review: every script at every spot, not just the walk-in
--- review.txt starts a review the same way, "review restart" implied, other options as above.
+-- review.txt starts a review the same way, "review restart" implied (put "resume" in it to carry on from
+-- autotest_progress.txt instead), other options as above.
 --
 -- Travelling live from LS135 into LS201 sets the game index, streams the level in and then leaves Spyro
 -- falling in a black void, because the checkpoint it starts at belongs to the game he was in. So a run
@@ -91,9 +92,10 @@ local BLOCKED_BY_TARGET = 300 -- but a character has collision, and he stops aga
                            -- not being stuck: without this he pushes into it for the whole stop and the
                            -- stop is thrown away as one where the game took input off him.
 local BLOCKED_AFTER = 1.0  -- seconds of walking before that counts, so a standing start is not "blocked"
--- Dialogue is an in-game cinematic (Spyro_IGC_Base has SkipCheck and StartSkipTimer) and it takes input
--- away until it closes. Holding each face button to skip one was tried and measured: 29 of 32 attempts
--- failed, at six and a half seconds each, so the holds are gone. Loading the level again is what works.
+-- Dialogue is an in-game cinematic and it takes input away until it closes. Holding the probe's own face
+-- buttons never skipped one (29 of 32 failed): they go to the character, not to the cinematic. So text
+-- boxes get Continue and cutscenes the skip button, each sent to the widget or actor that reads it
+-- (lib/igc.lua), and a stop that still cannot move gets the level loaded again.
 local VERIFY_SECONDS = 0.6 -- pushing forward at the next stop, to see whether he is still held
 -- Spyro's own abilities, run once each at the start of every level at every framerate, on the first
 -- stop's spot. Running them at every character instead measured the same thing fifty times a level and
@@ -185,7 +187,8 @@ local function readOptions()
     text = file:read("a") or ""
     file:close()
     os.remove(path)
-    if path == REVIEW_TRIGGER then text = text .. " review restart" end
+    -- "resume" in it carries on from autotest_progress.txt instead of starting again.
+    if path == REVIEW_TRIGGER then text = text .. (text:find("resume") and " review" or " review restart") end
     local options = {}
     for word in text:gmatch("%S+") do
         local key, value = word:match("^(%w+)=(.*)$")
@@ -1012,6 +1015,9 @@ local function update(pawn, pc, cmc, r, setFpsCap)
                 return
             end
         end
+        -- A cutscene or a text box that opened during the script: skip or Continue it as it comes, the
+        -- way a player would, rather than only once the script is over.
+        if igc.active(entry.stop.level) then igc.close(pc, pawn, entry.stop.level) end
         local phase, into = scripts.phaseAt(entry.stop.script, run.elapsed)
         if not phase then
             -- The script has run out, but a conversation this stop started is still going. Ending the
