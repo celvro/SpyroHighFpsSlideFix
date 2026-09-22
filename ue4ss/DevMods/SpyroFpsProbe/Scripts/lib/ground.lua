@@ -1,6 +1,6 @@
 -- Is there ground at a spot? A downward line trace, shared by tools/scan.lua (placing a tour stop where
--- the character won't be dropped into the void) and tools/autotest.lua (stopping a scripted walk before
--- it goes over an edge into the water).
+-- the character won't be dropped into the void) and the world tour (tools/worldtour/drive.lua,
+-- stopping a walk before it goes over an edge into the water).
 local UEHelpers = require("UEHelpers")
 local log = require("lib.log")
 

@@ -1,6 +1,7 @@
 -- Reading and driving a character's animation: the montage it is playing, how far into it, and which
 -- montages its skeleton can play. Used by tools/animtest.lua (which plays every montage at two
--- framerates) and by tools/autotest.lua (which samples what the characters around a stop are playing).
+-- framerates) and by the world tour (tools/worldtour/samples.lua, which samples what the characters
+-- around a stop are playing).
 --
 -- Montages are matched to a character by SKELETON, not by name: every montage asset loaded in the level
 -- whose `Skeleton` is the one the character's mesh uses can be played on it. Path matching is kept as a

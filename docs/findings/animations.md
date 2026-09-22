@@ -12,7 +12,7 @@ Two tools, because gameplay and the animation assets reach different things:
    character's whole repertoire in seconds instead of provoking one attack at a time, and it measures the
    things a framerate can change: how long one pass takes, how far root motion moves the character, and how
    many particle and audio components the notifies make.
-2. **The scripted tour** (`tools/autotest.lua`, **O**) now samples the animation of the played character and
+2. **The scripted tour** (`tools/worldtour/`, **O**) now samples the animation of the played character and
    of the character each stop was recorded in front of, so the animations that only gameplay starts —
    state-machine locomotion, chases, dialogue, minigames — are compared too. `tools/scan.lua` records a stop
    per class and script (`walk`/`flame`/`charge` for enemies, `walk`/`enterPlay` for NPCs), and `enterPlay`
@@ -90,7 +90,7 @@ turns up more like it.
 
 ## The route the scripted tour runs (2026-09-20)
 
-One level tour (**T**, `tour.txt` with `dwell=3`) travelled all 101 levels in 22 minutes and scanned each
+One level tour (**T**, `tour.txt` with `dwell=3`; `tools/tour.lua`, removed 2026-09-22) travelled all 101 levels in 22 minutes and scanned each
 one into `routes.txt`: **1789 stops over 84 levels and 577 distinct kinds of character** — 707 `walk`,
 375 `flame`, 375 `charge`, 332 `enterPlay`. What is not in it:
 

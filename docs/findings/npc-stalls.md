@@ -40,7 +40,7 @@ Every asset that references a `CharacterMovementComponent` was dumped with Asset
   - `BP_207Seahorse_C` has 0.
 - Unknown from assets: how the native Falcon state modes move a character. Sheila's SeekPlayer requests a velocity through `RequestedVelocity`, accelerating at MaxAcceleration, so it's affected. TraverseWaypoints (Phasmid spline movement, `DefaultSplineTraversalMode`), Wander, Flee and ReturnToOrigin haven't been observed at high FPS. The thief was measured at 144 FPS only, where 2048 is safe.
 
-## Runtime check (probe `trackers/stalls.lua`, `tools/tour.lua`)
+## Runtime check (probe `trackers/stalls.lua`, `tools/tour.lua`, removed 2026-09-22)
 
 - The tracker watches every `PhasmidCharacter` except the player's pawn. A stretch runs while it wants to move, meaning nonzero input acceleration or a nonzero `RequestedVelocity` that changed since the last frame, in Walking/NavWalking/Swimming/Flying/Custom. For each stretch it writes framerate, first move, t50 against the mode's max speed, still frames and MaxAcceleration to `stalls_<stamp>.csv`. It logs `stall` lines for stretches that didn't move for 0.05 s (and 5 frames), or that reached 50% of max speed later than 2× what their acceleration allows plus 0.1 s. It logs `stallsummary` per class on each level change.
 - **T** tours every level (LS101…LS337) uncapped, 25 s each, starting at the current one. It skips the flight levels and speedways (105, 111, 117, 123, 129, 209, 220, 221, 228, 307, 316, 325, 334): Spyro never walks there, and a crash stops on a Retry/Quit screen. Spyro stands at the level start, so this catches patrols and wanderers. Seek/Flee characters need normal play near them, uncapped, with the same tracker running.

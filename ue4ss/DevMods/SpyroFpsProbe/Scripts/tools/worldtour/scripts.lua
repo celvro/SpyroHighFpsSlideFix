@@ -1,5 +1,5 @@
--- The preset input scripts tools/autotest.lua plays at each stop. One script is a list of phases, each
--- held for `dur` seconds:
+-- The preset input scripts the world tour plays at each stop (play.lua). One script is a list of
+-- phases, each held for `dur` seconds:
 --
 --   axes  = { leftY = 1, leftX = -1, ... }  sticks held for the phase (anything left out is centred)
 --   hold  = { "jump", "charge" }            buttons held down for the whole phase
@@ -72,14 +72,14 @@ scripts.list = {
                   { dur = 3.0, axes = { leftY = 1 }, tap = { button = "jump", period = 1.0, width = 0.2 } },
                   { dur = 2.0 }, STILL },
 
-    -- Nothing at all: stand and let the level's own characters move (what tools/tour.lua does).
+    -- Nothing at all: stand and let the level's own characters move.
     idle = { { dur = 8.0 } },
 }
 
 -- Whether a script ever pushes the left stick. A script that doesn't (a flame on the spot, a hop) can
 -- never show that the game has taken input away: Spyro stands still either way, so the stop is called
 -- played whether or not a conversation still has hold of him. Only a script that asks him to walk can
--- tell, so only those are allowed to clear the locked count (tools/autotest.lua).
+-- tell, so only those are allowed to clear the locked count (play.lua).
 function scripts.walks(name)
     for _, phase in ipairs(scripts.list[name] or {}) do
         local axes = phase.axes

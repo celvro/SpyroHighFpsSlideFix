@@ -10,7 +10,7 @@
     "start game"(game index, save slot), then travel to the noted level (ue4ss/DevMods/SpyroFpsProbe/
     Scripts/lib/resume.lua).
 
-    A test run in progress (tools/autotest.lua, tools/spawntest.lua) picks itself up from its own
+    A test run in progress (the world tour in tools/worldtour/, tools/spawntest.lua) picks itself up from its own
     progress file once the level is back, so restarting is all that is needed to carry on.
 
     Needs the probe deployed: tools\Install-UE4SS.ps1 -Probe.

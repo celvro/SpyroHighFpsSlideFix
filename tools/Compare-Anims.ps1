@@ -43,8 +43,8 @@ param(
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\Config.ps1"
 
-# A run is split across files: each game is its own segment (a restart is the only way to cross from one
-# game into another, see tools/autotest.lua) and each restart stamps a new CSV. Stop numbers are the
+# A run is split across files: each restart stamps a new CSV (and runs before 2026-09-22 split at each game,
+# when a restart was the only way from one game into the next; tools/worldtour/). Stop numbers are the
 # route's own in every segment, so several files join into one comparison.
 if (-not $Path) {
     $probeDir = Join-Path $GameDir 'Falcon\Binaries\Win64\ue4ss\Mods\SpyroFpsProbe'

@@ -262,13 +262,14 @@ local function findStreamData()
     return nil
 end
 
--- Travelling to another level (tested 2026-09-19 with tools/traveltest.lua): set the game index for the
--- target level's game (FalconGameplayStatics SetActiveGameIndex + SetGameIndex), then call the game
--- state's own portal load, BP_LoadIntoLevel(row, portal, screenType). It looks the row up in its
--- SpyroStreamData table and calls GlobalTransporter.StartAtLevelCheckpoint, then does what the
--- transporter call alone doesn't: that alone streams the level in but leaves Spyro falling in a black
--- void. This worked within a game and from Spyro 1 into Spyro 2 (the level's intro cutscene plays on a
--- first visit). Spyro1_StreamData is an older LevelStreamingData table the transporter silently rejects.
+-- Travelling to another level (tested 2026-09-19 with a travel test, results in docs/probe.md): set the
+-- game index for the target level's game (FalconGameplayStatics SetActiveGameIndex + SetGameIndex),
+-- then call the game state's own portal load, BP_LoadIntoLevel(row, portal, screenType). It looks the
+-- row up in its SpyroStreamData table and calls GlobalTransporter.StartAtLevelCheckpoint, then does
+-- what the transporter call alone doesn't: that alone streams the level in but leaves Spyro falling in
+-- a black void. This worked within a game and from Spyro 1 into Spyro 2 (the level's intro cutscene
+-- plays on a first visit). Spyro1_StreamData is an older LevelStreamingData table the transporter
+-- silently rejects.
 local function travelToLevel(pawn, level, teleport)
     local game = tonumber(level:match("^LS(%d)"))
     if not game then
@@ -343,7 +344,7 @@ function quicksave.update(pawn, pc, cmc, r)
     end
 end
 
--- For tools/tour.lua (call from the game thread): travel without teleporting on arrival.
+-- For the world tour (call from the game thread): travel without teleporting on arrival.
 function quicksave.travel(pawn, level)
     return travelToLevel(pawn, level, false)
 end
@@ -357,7 +358,7 @@ function quicksave.levelNames()
     return tryCall("DataTableFunctionLibrary:GetDataTableRowNames", function()
         local streamData = findStreamData()
         if not streamData then
-            log("tour: %s not loaded", STREAM_DATA_TABLE)
+            log("travel: %s not loaded", STREAM_DATA_TABLE)
             return nil
         end
         local lib = StaticFindObject("/Script/Engine.Default__DataTableFunctionLibrary")

@@ -67,7 +67,7 @@ local function refill(pawn)
     log("invulnerable: Sparx topped up %.0f -> %.0f (now %.0f)", current, max, attribute(set.HealthCurrent))
 end
 
--- Sparx's health now and at full, for the death check in tools/autotest.lua.
+-- Sparx's health now and at full, for the death check in the world tour (tools/worldtour/play.lua).
 function invuln.health(pawn)
     local ok, current, max = pcall(function()
         local set = healthSet(pawn)

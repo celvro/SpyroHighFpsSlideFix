@@ -7,9 +7,9 @@
 -- and the save slot the player is in.
 --
 -- If resume.go exists at startup, the probe drives the title screen itself: it waits for the menu, picks
--- Continue and then the game (lib/frontend.lua; "start game" directly only if the menu never gets there,
--- tools/traveltest.lua step F), waits for a pawn, then travels to the noted level. resume.go is deleted
--- as soon as the resume starts, so a crash in the middle doesn't loop.
+-- Continue and then the game (lib/frontend.lua; "start game" directly only if the menu never gets
+-- there), waits for a pawn, then travels to the noted level. resume.go is deleted as soon as the resume
+-- starts, so a crash in the middle doesn't loop.
 --
 --   "resume" lines  what was noted, and each step of getting back in (or why it gave up)
 local UEHelpers = require("UEHelpers")

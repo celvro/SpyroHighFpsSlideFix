@@ -64,7 +64,7 @@ local UNKNOWN_TIMEOUT = 10 -- seconds for a montage whose SequenceLength couldn'
 local CUT_SHORT = 0.1      -- ending this far before the montage's length means something interrupted it
 local RANGE = 30000       -- characters further than this are in a neighbouring level (as tools/scan.lua)
 local MAX_PER_CLASS = 200 -- a sanity limit, so one shared skeleton cannot swallow a whole run
--- Flight levels and speedways, as tools/tour.lua: Spyro never walks there and a crash ends on a screen
+-- Flight levels and speedways: Spyro never walks there and a crash ends on a screen
 -- that stops the run.
 local SKIP_LEVELS = { LS105 = true, LS111 = true, LS117 = true, LS123 = true, LS129 = true,
                       LS209 = true, LS220 = true, LS221 = true, LS228 = true,
@@ -191,7 +191,7 @@ local function parseCaps(text)
     return #caps > 0 and caps or CAPS
 end
 
--- The levels to visit, in the stream table's order, starting at the one Spyro is in (as tools/tour.lua).
+-- The levels to visit, in the stream table's order, starting at the one Spyro is in.
 local function levelList(pawn, options)
     local current = levels.current(pawn)
     if options.here then return current and { current } or {} end

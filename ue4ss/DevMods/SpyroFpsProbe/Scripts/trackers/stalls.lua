@@ -266,9 +266,4 @@ function stalls.ignore(actor)
     entries[address] = nil
 end
 
-function stalls.summary(why)
-    summaryDirty = true
-    logSummary(why)
-end
-
 return stalls

@@ -1,6 +1,6 @@
 -- One-shot diagnostic (an empty dumpstate.txt in this mod folder): what is on screen and what could close
 -- it. Written for the title screen that stays drawn over a level loaded with FalconGameState "start game"
--- (lib/resume.lua, and tools/traveltest.lua step F saw the same thing).
+-- (lib/resume.lua, and the travel test in docs/probe.md saw the same thing).
 --
 -- It logs every UserWidget that is in the viewport (class, name, visibility), the game state's current
 -- state value, and the function names of the game state, the player controller and those widgets that look
