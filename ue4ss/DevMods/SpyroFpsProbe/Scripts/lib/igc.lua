@@ -145,12 +145,15 @@ function igc.close(pc, pawn, level, takeInput)
         -- itself running. Taking input back fixes that, and costs any widget that WANTED focus its
         -- focus, so it is only done when asked for.
         if takeInput then
-            pcall(function()
+            -- Game only, which is what gameplay wants: it captures the mouse. GameAndUI was tried in
+            -- its place to be gentler on widgets and is wrong here -- without capture, mouse look only
+            -- works while a button is held down, which is exactly what it looked like.
+            local restored = pcall(function()
                 local umg = StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")
-                if umg and umg:IsValid() then umg:SetInputMode_GameOnly(pc) end
+                umg:SetInputMode_GameOnly(pc)
             end)
+            log("igc: input mode set back to game only (%s)", restored and "ok" or "failed")
             pcall(function() pc.bShowMouseCursor = false end)
-            log("igc: input taken back for the game")
         end
     end
     local asked = 0

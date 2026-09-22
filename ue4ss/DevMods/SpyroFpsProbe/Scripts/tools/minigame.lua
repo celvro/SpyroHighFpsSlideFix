@@ -209,6 +209,11 @@ end
 local function handOver(pawn, pc, why)
     input.clear(pawn, pc)
     giveGems(pc)
+    -- Give the controls back for real. A teleport out of wherever he was can leave a gate raised or the
+    -- controller pointed at a widget, and a dead pad on arrival is the one failure that wastes the whole
+    -- drop-in. This restores game-and-UI input rather than game-only, so a text box can still open.
+    igc.forget()
+    igc.close(pc, pawn, levels.current(pawn), true)
     state.phase = "ready"
     local level, note = label()
     local ignored
@@ -227,6 +232,66 @@ function minigame.retry() pending = "retry" end
 function minigame.running() return state ~= nil end
 function minigame.recording() return state ~= nil and state.recording == true end
 
+-- What the UI is doing right now. A text box that never appears is either not being created at all (the
+-- trigger did not fire) or created and not drawn (its parent is hidden), and those want opposite fixes,
+-- so the mark says which. UI_DialogueFrame_C is the text box; UI_Main_C is the HUD it hangs off, and a
+-- hidden parent takes every child with it -- which is a real possibility in a subworld, because the
+-- minigame's own HUD is exactly what takes UI_Main out of its normal visibility.
+-- Rather than guess class names (UI_Main_C and UI_DialogueFrame_C are created by GameHud but neither
+-- exists by those names at runtime), walk every UserWidget there is. FindAllOf on the native base
+-- returns the Blueprint subclasses too, so this is the whole UI as the game actually built it.
+local function uiReport(pc)
+    -- Tallied per class, not listed per instance: the UI keeps over a thousand widgets alive and most
+    -- are pooled spares that have never been shown. What matters is which classes have an instance that
+    -- is actually drawn, and -- for a text box that is missing -- whether a dialogue class exists at all
+    -- while none of its instances is visible.
+    local widgets = FindAllOf("UserWidget") or {}
+    local kinds, order = {}, {}
+    for _, widget in ipairs(widgets) do
+        local ok = pcall(function() return widget:IsValid() end)
+        if ok and widget:IsValid() then
+            local class = "?"
+            pcall(function() class = widget:GetClass():GetFName():ToString() end)
+            if not class:match("^Default__") then
+                local k = kinds[class]
+                if not k then
+                    k = { total = 0, visible = 0, viewport = 0 }
+                    kinds[class], order[#order + 1] = k, class
+                end
+                k.total = k.total + 1
+                local visible, inViewport
+                pcall(function() visible = widget:IsVisible() end)
+                pcall(function() inViewport = widget:IsInViewport() end)
+                if visible == true then k.visible = k.visible + 1 end
+                if inViewport == true then k.viewport = k.viewport + 1 end
+            end
+        end
+    end
+    table.sort(order)
+    local drawn, hidden = 0, {}
+    for _, class in ipairs(order) do
+        local k = kinds[class]
+        local talks = class:lower():find("dialog") or class:lower():find("subtitle")
+        if k.visible > 0 or k.viewport > 0 then
+            drawn = drawn + 1
+            log("minigame:   DRAWN %s x%d (visible %d, in viewport %d)", class, k.total, k.visible, k.viewport)
+        elseif talks then
+            hidden[#hidden + 1] = string.format("%s x%d", class, k.total)
+        end
+    end
+    if #hidden > 0 then
+        log("minigame:   dialogue classes present but nothing drawn: %s", table.concat(hidden, ", "))
+    end
+    log("minigame:   %d class(es) drawn out of %d, %d widgets in all", drawn, #order, #widgets)
+    local hud
+    pcall(function() hud = pc:GetHUD() end)
+    if hud and hud:IsValid() then
+        local hudName = "?"
+        pcall(function() hudName = hud:GetClass():GetFName():ToString() end)
+        log("minigame:   HUD %s", hudName)
+    end
+end
+
 local function doMark(pawn)
     local level, note = label()
     local s = anim.state(pawn)
@@ -241,6 +306,7 @@ local function doMark(pawn)
     log("minigame: MARK %d at t=%.2f of take %d (%s, %s at %.3f)", state.marks, state.recorded or 0,
         state.take, subworld.character(pawn) or "?",
         s.montage ~= "" and s.montage or "no montage", s.position)
+    pcall(uiReport, UEHelpers.GetPlayerController())
 end
 
 local function handle(pawn, pc, cmc)
@@ -279,11 +345,14 @@ local function handle(pawn, pc, cmc)
     end
 
     if what == "mark" then
-        if not minigame.recording() then
-            log("minigame: not recording, so there is nothing to mark")
-            return
+        -- Worth pressing whether or not a take is running: outside one there is no time to write down,
+        -- but the picture of what the UI was doing is the half that matters when a text box is missing.
+        if minigame.recording() then
+            doMark(pawn)
+        else
+            log("minigame: MARK (no take running) -- what the UI is doing:")
+            pcall(uiReport, pc)
         end
-        doMark(pawn)
         return
     end
 
