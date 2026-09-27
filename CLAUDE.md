@@ -103,4 +103,5 @@ Examples: `fixes/balloon.lua` and `fixes/dragon.lua` (level Blueprints), `fixes/
 ## Tooling
 
 - Scripts are PowerShell. Python is not installed (the `python` on PATH is the Store stub).
+- Lua 5.4 interpreter (matches UE4SS): `winget install --id DEVCOM.Lua --exact`, installed to `%LOCALAPPDATA%\Programs\Lua\bin` (`lua`, `luac`, `luarocks`). `tools/Check-Lua.ps1 [-Path ...]` byte-compiles every `.lua` in both mods with `luac -p` and reports each parse error — run it after editing Lua, before reinstalling, to catch typos and 5.3-isms without a game restart. It cannot run the scripts: they need UE4SS globals.
 - No pak build pipeline (restore `tools/Build-Mod.ps1` + repak from commit 50c1467 if an asset or config pak is ever needed). Edit `.uasset`/`.uexp` with UAssetGUI or FModel set to UE4.19; ship the matching `.uexp`/`.ubulk`.
