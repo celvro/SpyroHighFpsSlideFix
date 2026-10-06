@@ -28,7 +28,7 @@ Investigation logs live in `docs/`; each fix module in `ue4ss/Mods/HighFpsSlidin
 | `docs/findings/sheila-buzz-walk.md` | Sheila stalls and crawls around Buzz's arena (requested moves from rest round to zero) | fixed, verified |
 | `docs/findings/skelos-badlands.md` | Skelos Badlands orb mission: lava lizard stuck at two steps (blocked sweeps in Phasmid custom mode), steam vent gust | fixed, verified; vent matches 30 FPS |
 | `docs/findings/npc-stalls.md` | Every NPC/enemy checked for the same stall from rest (static survey, probe stall tracker and level tour) | stalls confirmed (low-acceleration walkers), not fixed |
-| `docs/findings/gem-thief-anim.md` | Artisans gem thief runs in his idle pose (NaN `Velocity` when a flee starts from rest latches the anim Blueprint `Speed`) | cause measured, heal verified at 30 and 320 FPS, not shipped |
+| `docs/findings/gem-thief-anim.md` | Artisans gem thief runs in his idle pose (NaN `Velocity` when a flee starts from rest latches the anim Blueprint `Speed`) | fixed, verified (the real poisoning only reproduced by hand) |
 | `docs/findings/animations.md` | Every character's animations at 30 vs 320 FPS: the montage sweep (duration, root motion, notify effects) and the scripted tour's animation sampling, including minigames | tooling built, first level measured |
 | `docs/ue4ss.md` | UE4SS install details, profiling history, Lua GC experiments | reference |
 | `docs/tools.md` | Full packaging/Vortex/tool notes | reference |
