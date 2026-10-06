@@ -162,3 +162,24 @@ own Lerp's input and converges from any finite number. Open choice: heal only th
 cheap, cannot affect gameplay) or also clear a non-finite `Velocity` at the source (fixes whatever else
 reads that velocity, but touches enemy movement). Candidate budget: a round robin over the level's
 `PhasmidCharacter`s, a few property reads a frame, as `trackers/nanspeed.lua` does.
+
+## Shipped as `fixes/animspeed.lua` (2026-10-06, `FIX_NAN_ANIM_SPEED`)
+
+Writes the character's own horizontal speed over a non-finite anim Blueprint `Speed`, and nothing else:
+
+- Characters come from a `NotifyOnNewObject` on `/Script/Phasmid.PhasmidCharacter` (every NPC and enemy
+  derives from it), never from polling.
+- Round robin, `CHECKS_PER_FRAME = 2` characters a frame, each re-read every `CHECK_INTERVAL = 0.25 s`,
+  with the anim instance cached per character and `GRACE = 1 s` before a newly constructed one is touched.
+  A Blueprint with no `Speed` at all (a state machine instead of a blendspace, which is most of them) is
+  marked `skip` on the first read and never read again, so the steady-state cost is a couple of property
+  reads a frame.
+- It writes only when `Speed` is non-finite **and** the velocity is finite — on the frame the NaN lands
+  the velocity is NaN too, and writing a NaN over a NaN achieves nothing, so it waits for the next check.
+- A character whose `Speed` is a number is not touched at all.
+- It heals at every framerate rather than only above 30 (the usual rule): a NaN pose is not what 30 FPS
+  does either, and the state cannot arise there, so there is no reference behaviour to preserve.
+- Heals are logged at most `MAX_LOGS = 3` times per session, in case a write ever fails to stick.
+
+Still to do: confirm in game that the module heals the thief (the probe's T test proves the mechanism, not
+this module's plumbing), profile it with `PROFILE = true`, and add the `README.txt` line once that is done.

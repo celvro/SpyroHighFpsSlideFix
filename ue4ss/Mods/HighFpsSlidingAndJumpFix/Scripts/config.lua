@@ -18,6 +18,7 @@ return {
     FIX_BALLOON_CAMERA_SPIN = true,       -- false: the camera whirling around the balloonist's balloon
     FIX_BUZZ_CHARGE_RUN = true,           -- false: Buzz running in place, and sliding after his rolls
     FIX_SHEILA_BUZZ_WALK = true,          -- false: Sheila stalling and crawling around Buzz's arena
+    FIX_NAN_ANIM_SPEED = true,            -- false: a character whose anim Blueprint Speed goes NaN keeps its idle pose
 
     PROFILE = false,                     -- log the fixes' per-frame cost to UE4SS.log
     PROFILE_INTERVAL = 10,                -- seconds between profile log lines

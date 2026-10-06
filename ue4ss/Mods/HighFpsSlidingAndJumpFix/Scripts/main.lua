@@ -33,6 +33,7 @@ local levelFixes = {
     require("fixes.balloon"),
     require("fixes.buzz"),
     require("fixes.sheila"),
+    require("fixes.animspeed"),
 }
 -- Fixes that act on Spyro, in the order the tick runs them.
 local pawnFixes = {
