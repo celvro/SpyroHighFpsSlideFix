@@ -66,6 +66,11 @@ Fixes (numbers were recorded in game at 30 FPS and at 144 FPS, before and after 
   still be on the far side of the arena when Buzz catches fire and needs longer to reach him for the stomp.
     Time to reach full walking speed:  30 FPS 0.20 s  |  400-530 FPS before 0.4-1.1 s or never  |  after 0.17-0.18 s
 
+- Idle animation while running (Artisans gem thief, and any other NPC or enemy): at high FPS a character
+  can start running away in its idle animation and keep it for the rest of the level, because the speed
+  its animation reads stops being a number. The fix puts the character's real speed back, which the game
+  then carries on from; a character whose animation is fine is not touched.
+
 Requirements
 - UE4SS experimental build (https://github.com/UE4SS-RE/RE-UE4SS/releases/tag/experimental-latest).
   Tested with v3.0.1-1133-gb4cefa18. The stable v3.0.1 release is too old and will not run this mod.

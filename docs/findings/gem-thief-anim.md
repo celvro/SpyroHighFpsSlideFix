@@ -183,3 +183,31 @@ Writes the character's own horizontal speed over a non-finite anim Blueprint `Sp
 
 Still to do: confirm in game that the module heals the thief (the probe's T test proves the mechanism, not
 this module's plumbing), profile it with `PROFILE = true`, and add the `README.txt` line once that is done.
+
+## Verified in game, with the probe's healer off (2026-10-06 07:00, LS101, ~310 FPS)
+
+`HEAL = false` in both probe trackers, so `fixes/animspeed.lua` was the only thing that could repair
+anything. Four T tests, each writing NaN into the anim Blueprint's `Speed`:
+
+| test | recoveredAfter | NaN frames | verdict |
+|---|---|---|---|
+| 1 | 0.044 s | 13 | HELD |
+| 2 | 0.150 s | 41 | HELD |
+| 3 | 0.117 s | 33 | HELD |
+| 4 | 0.151 s | 81 | HELD (thief 2, the one running that time) |
+
+All within `CHECK_INTERVAL` (0.25 s), with `[HighFpsSlidingAndJumpFix] NaN animation speed fix: healed
+BP_CES1012_GemThief_C` in the log and `maxBlendX` ≈ 301 against `maxVel` ≈ 306 afterwards. No Lua errors.
+On screen the break is a flicker rather than a stuck pose. Only three mod heal lines appear for eight
+heals because of `MAX_LOGS`.
+
+`idleWhileMoving` stays non-zero in the HELD windows (42–69 frames) and that is correct: it counts the NaN
+frames before the repair plus the ~0.2 s of stale pose under the Alert montage's slot, which is the
+framerate-independent behaviour measured above.
+
+**Profile with every fix on** (`PROFILE = true`, nine 10 s windows, avg frame 3.15–3.40 ms, i.e. ~300 FPS):
+fixes avg **0.112–0.179 ms/frame (3.3–5.3% of a frame)**, max 3.0–11.9 ms per window, clock overhead
+0.007 ms. In family with the baselines in `docs/ue4ss.md`. The new module's own share was not separated —
+the profiler times the whole tick, not each fix — so measuring it needs an A/B with
+`FIX_NAN_ANIM_SPEED = false` in the same spot. Its steady-state work is two property reads a frame
+(cached anim instance, `Speed`), since every Blueprint without a `Speed` is skipped after one read.

@@ -26,7 +26,9 @@
 --                      lasted, how many of those frames had a montage playing, the X it was frozen at and
 --                      the Speed the Blueprint had reached meanwhile. This is the per-chase bug (B), not
 --                      the permanent NaN one (A).
---   "gemthief verdict" VERDICT_WINDOW seconds after a heal: HELD (he ran, nothing went non-finite and the
+--   "gemthief verdict" VERDICT_WINDOW seconds after a poison test or a heal: HELD (he ran and ended up
+--                      animating), BROKE, or INCONCLUSIVE, with recoveredAfter saying how long whatever
+--                      healed it took — with HEAL off that is fixes/animspeed.lua in the shipped mod. (the
 --                      blendspace X kept up), BROKE, or INCONCLUSIVE when he never ran in the window.
 --   "gemthief moving-idle" the thief is moving (velocity over MOVING_SPEED) while the
 --                      blendspace X is under IDLE_SPEED, i.e. the pose the game shows is the idle one.
@@ -44,7 +46,8 @@ local GRACE = 1.0           -- seconds to leave a newly constructed thief alone 
 local MOVING_SPEED = 40     -- horizontal speed that counts as running
 local IDLE_SPEED = 5        -- blendspace X below which the pose is the idle sample
 local BLENDSPACE_X = "AnimGraphNode_BlendSpacePlayer_581DD95C4C6817BE6F6AA08BA69716AC"
-local HEAL = true           -- write the live speed over a NaN Speed, to see the animation come back
+local HEAL = false          -- OFF: the shipped fixes/animspeed.lua is being tested, so it must be the only
+                            -- thing that can repair a NaN. Set true to heal from the probe instead.
 
 local VERDICT_WINDOW = 5    -- seconds watched after a heal, to say whether it held
 local POISON_HOLD = 5       -- seconds the T test holds the heal back, so the broken pose is visible
@@ -216,12 +219,22 @@ local function sample(e, r)
                 v.idleWhileMoving = v.idleWhileMoving + 1
             end
         end
+        -- The first finite frame after a NaN stretch: how long whatever is doing the healing took.
+        if finite and v.nanFrames > 0 and not v.recoveredAfter then
+            v.recoveredAfter = r.time - v.startsAt
+        end
         if r.time >= v.endsAt then
             e.verdict = nil
-            local held = v.nanFrames == 0 and v.moving > 0 and v.idleWhileMoving == 0
-            log("gemthief verdict %s %s frames=%d moving=%d idleWhileMoving=%d nanFrames=%d maxVel=%s maxBlendX=%s",
+            -- Held means it ran and ended up animating: either it never went bad, or it was repaired and
+            -- stayed repaired. The frames before the repair are reported, not held against it.
+            local repaired = v.nanFrames == 0 or (v.recoveredAfter ~= nil and finite)
+            local held = repaired and v.moving > 0
+            log("gemthief verdict %s %s frames=%d moving=%d idleWhileMoving=%d nanFrames=%d "
+                .. "recoveredAfter=%s maxVel=%s maxBlendX=%s",
                 e.name, held and "HELD" or (v.moving == 0 and "INCONCLUSIVE (he never ran)" or "BROKE"),
-                v.frames, v.moving, v.idleWhileMoving, v.nanFrames, num(v.maxVel), num(v.maxShown))
+                v.frames, v.moving, v.idleWhileMoving, v.nanFrames,
+                v.recoveredAfter and string.format("%.3fs", v.recoveredAfter) or "never",
+                num(v.maxVel), num(v.maxShown))
         end
     end
     -- The first bad frame is worth a line of its own; after that the once-a-second line carries it, so a
@@ -261,8 +274,13 @@ function gemthief.update(r)
                     local instance = anim.instance(e.actor)
                     local wrote = instance and pcall(function() instance.Speed = NAN end)
                     e.healHoldUntil = r.time + POISON_HOLD
-                    log("gemthief poison-test %s %s, heal held %ds", e.name,
-                        wrote and "Speed set to NaN" or "could not write Speed", POISON_HOLD)
+                    log("gemthief poison-test %s %s, probe heal %s", e.name,
+                        wrote and "Speed set to NaN" or "could not write Speed",
+                        HEAL and string.format("held %ds", POISON_HOLD) or "off (the mod's fix should repair it)")
+                    -- The window runs whether the probe heals or the mod does, so T is also the test for
+                    -- fixes/animspeed.lua: the verdict then reports how long the mod took to repair it.
+                    e.verdict = { startsAt = r.time, endsAt = r.time + VERDICT_WINDOW, frames = 0, moving = 0,
+                                  idleWhileMoving = 0, nanFrames = 0, maxVel = 0, maxShown = 0 }
                 end
                 sample(e, r)
             end

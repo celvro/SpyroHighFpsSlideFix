@@ -33,7 +33,7 @@ local SCAN_PER_FRAME = 4      -- actors read per frame
 local LOG_INTERVAL = 5        -- seconds between lines for one class
 local SUMMARY_INTERVAL = 60
 local GRACE = 1.0            -- seconds to leave a newly constructed actor alone before reading it
-local HEAL = true
+local HEAL = false          -- OFF while fixes/animspeed.lua is being tested (see trackers/gemthief.lua)
 
 local entries = {}            -- address -> { actor, class, name, nextScan, bad, healed }
 local order = {}              -- addresses, for the round robin
