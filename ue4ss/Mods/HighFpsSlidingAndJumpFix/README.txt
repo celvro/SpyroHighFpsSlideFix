@@ -66,6 +66,12 @@ Fixes (numbers were recorded in game at 30 FPS and at 144 FPS, before and after 
   still be on the far side of the arena when Buzz catches fire and needs longer to reach him for the stomp.
     Time to reach full walking speed:  30 FPS 0.20 s  |  400-530 FPS before 0.4-1.1 s or never  |  after 0.17-0.18 s
 
+- Skelos Badlands (Spyro 2) lava lizards: in the orb mission, the lizard that walks the long route
+  stops at the two steps near the end at high FPS. It gets up on a frame hitch, or never, in which case
+  the mission gives up on it.
+    Time to walk its route:  30 FPS 6.9 s  |  160-210 FPS before 9.8 s, or 17.0 s and stuck for good
+    |  after 6.8 s, with 0.15 s of standing still against 3.0-12.8 s
+
 - Idle animation while running (Artisans gem thief, and any other NPC or enemy): at high FPS a character
   can start running away in its idle animation and keep it for the rest of the level, because the speed
   its animation reads stops being a number. The fix puts the character's real speed back, which the game

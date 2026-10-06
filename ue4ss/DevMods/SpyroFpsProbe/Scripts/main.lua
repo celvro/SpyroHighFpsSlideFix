@@ -34,6 +34,8 @@
 --   buzz_<stamp>.csv     one row per frame while Buzz exists (trackers/buzz.lua)
 --   hits_<stamp>.csv     one row per blocking hit during a ground charge (trackers/hits.lua)
 --   stalls_<stamp>.csv   one row per NPC/enemy movement stretch (trackers/stalls.lua)
+--   lizard_<stamp>.csv   one row per frame per active Skelos Badlands lava lizard, plus
+--   lizard_hits_<stamp>.csv  their blocking hits (trackers/lizard.lua)
 --   autotest_<stamp>.csv one row per world tour sample, per framerate (tools/worldtour/samples.lua)
 --   animtest_<stamp>.csv one row per montage per framerate (tools/animtest.lua)
 --   camdump_*.txt        every reflected FollowCameraComponent property (trackers/camera.lua)
@@ -44,7 +46,8 @@
 --                        (trackers/walkin.lua); "glide", "hover", "glideair" (trackers/glide.lua);
 --                        "flight", "flightramp", "flightrun" (trackers/flight.lua);
 --                        "chargestall" (trackers/hits.lua); "buzzrun" (trackers/buzz.lua);
---                        "stall", "stallsummary" (trackers/stalls.lua); "gemthief" (trackers/gemthief.lua); "nanspeed" (trackers/nanspeed.lua); "autotest", "review" (tools/worldtour/); "animtest" (tools/animtest.lua); "routes" (tools/routes.lua); "resume" (lib/resume.lua); "spawntest" (tools/spawntest.lua); "slide" (tools/slide.lua);
+--                        "stall", "stallsummary" (trackers/stalls.lua); "lizardstall", "lizardstep",
+--                        "lizardsummary" (trackers/lizard.lua); "gemthief" (trackers/gemthief.lua); "nanspeed" (trackers/nanspeed.lua); "autotest", "review" (tools/worldtour/); "animtest" (tools/animtest.lua); "routes" (tools/routes.lua); "resume" (lib/resume.lua); "spawntest" (tools/spawntest.lua); "slide" (tools/slide.lua);
 --                        quicksave, reload and travel lines (tools/quicksave.lua); "glidetest" (tools/glidetest.lua)
 --
 -- Scripts/
@@ -76,6 +79,7 @@ local movement = require("trackers.movement")
 local supercharge = require("trackers.supercharge")
 local thieves = require("trackers.thieves")
 local stalls = require("trackers.stalls")
+local lizard = require("trackers.lizard")
 local gemthief = require("trackers.gemthief")
 local nanspeed = require("trackers.nanspeed")
 local walkin = require("trackers.walkin")
@@ -162,6 +166,7 @@ local function sample()
         thieves.pawnChanged()
         buzz.pawnChanged()
         stalls.pawnChanged()
+        lizard.pawnChanged()
         gemthief.pawnChanged()
         nanspeed.pawnChanged()
         flames.rescan()
@@ -171,6 +176,7 @@ local function sample()
         buzz.update(r, prev)
     end
     stalls.update(r, prev, pawn)
+    lizard.update(r, prev)
     gemthief.update(r)
     nanspeed.update(r)
     flames.update(r, frameTime)
@@ -271,6 +277,7 @@ NotifyOnNewObject(stalls.CLASS, function(object)
     stalls.onNewObject(object)
     nanspeed.onNewObject(object)
     gemthief.onNewObject(object)
+    lizard.onNewObject(object)
 end)
 
 -- Level Blueprint classes load with their level; look for their instances for a while afterwards.

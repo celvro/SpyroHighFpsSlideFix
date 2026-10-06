@@ -26,6 +26,7 @@ Investigation logs live in `docs/`; each fix module in `ue4ss/Mods/HighFpsSlidin
 | `docs/findings/balloon-camera.md` | Camera whirls around the balloonist's balloon (0.5 deg per tick timeline) | fixed, verified |
 | `docs/findings/buzz-charge-run.md` | Spyro 3 boss Buzz runs in place (car movement from rest rounds to zero), slides after rolls | fixed, verified |
 | `docs/findings/sheila-buzz-walk.md` | Sheila stalls and crawls around Buzz's arena (requested moves from rest round to zero) | fixed, verified |
+| `docs/findings/skelos-badlands.md` | Skelos Badlands orb mission: lava lizard stuck at two steps (blocked sweeps in Phasmid custom mode), steam vent gust | fixed, verified; vent matches 30 FPS |
 | `docs/findings/npc-stalls.md` | Every NPC/enemy checked for the same stall from rest (static survey, probe stall tracker and level tour) | stalls confirmed (low-acceleration walkers), not fixed |
 | `docs/findings/gem-thief-anim.md` | Artisans gem thief runs in his idle pose (NaN `Velocity` when a flee starts from rest latches the anim Blueprint `Speed`) | cause measured, heal verified at 30 and 320 FPS, not shipped |
 | `docs/findings/animations.md` | Every character's animations at 30 vs 320 FPS: the montage sweep (duration, root motion, notify effects) and the scripted tour's animation sampling, including minigames | tooling built, first level measured |

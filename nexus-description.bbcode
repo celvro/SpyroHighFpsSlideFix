@@ -26,6 +26,8 @@ Spyro Reignited Trilogy was made for 30 FPS. At higher framerates the game quiet
 [*][b]Balloonist (Spyro 1):[/b] as the loading screen after a balloon ride ends, the camera whirls around the balloon instead of drifting slowly.[/*]
 [*][b]Buzz (Spyro 3 boss):[/b] his running attack often plays the run animation without moving, and after his rolling attack he can keep sliding.[/*]
 [*][b]Sheila in the Buzz fight:[/b] she stands still or crawls between her spots, so she can be on the far side of the arena when it's time to stomp Buzz.[/*]
+[*][b]Skelos Badlands lizards (Spyro 2):[/b] in the orb mission, the lizard with the longest walk stops at the two steps near the end, and can stay stuck there until the mission gives up on it.[/*]
+[*][b]Idle animation while running:[/b] a character that starts running away can keep its standing-still animation for the rest of the level, sliding along in its idle pose (the Artisans gem thief, and any other NPC or enemy).[/*]
 [/list]
 With this mod, all of these behave [b]the same as at 30 FPS[/b], at any framerate (the camera lock is fixed at every framerate).
 [b]At 30 FPS the mod changes nothing[/b], except the camera lock fix, which fixes a bug the game also has at 30 FPS.
@@ -161,6 +163,13 @@ How long Sheila takes to reach full walking speed:
 [*]400 to 530 FPS without the mod: [color=#ff6666][b]0.4 to 1.1 s, or never[/b][/color] (short walks cover 5 to 60 units instead of 100 to 250)[/*]
 [*]380 to 550 FPS with the mod: [color=#6aa84f][b]0.17 to 0.18 s[/b][/color][/*]
 [/list]
+[size=4][b]Skelos Badlands lizards[/b][/size]
+How long the mission lizard takes to walk its route past the two steps:
+[list]
+[*]30 FPS: [b]6.9 s[/b], standing still for [b]0.1 s[/b] of it[/*]
+[*]160 to 210 FPS without the mod: [color=#ff6666][b]9.8 s, or stuck for good[/b][/color] (standing still for 3.0 s of it, and in one run 12.8 s of a 17.0 s walk before the mission gave up on it)[/*]
+[*]200 to 220 FPS with the mod: [color=#6aa84f][b]6.8 s[/b][/color], standing still for [b]0.15 s[/b][/*]
+[/list]
 [spoiler]
 [b]Why these happen, in plain words[/b]
 
@@ -218,7 +227,13 @@ At the end of the balloon's loading screen, the camera turns around the balloon 
 Buzz's arena also sits far from the center of the world. His running attack builds up his speed from how far he moved the frame before, and at high framerates his first step from standing still rounds to nothing. So he runs in place until a hitch gets him going, and even then he can stay stuck at a crawl. Once his rolling attack ends, his braking hits the same rounding as Spyro's sliding. The mod keeps track of the speed the game intended for him, as it does for Spyro.
 
 [b]Sheila[/b]
-Sheila walks between spots around Buzz's arena, and her first step from standing still rounds to nothing in the same way. She stands still or crawls, and can end up far from Buzz when it's time for the stomp. The mod keeps track of her intended speed too.[/spoiler]
+Sheila walks between spots around Buzz's arena, and her first step from standing still rounds to nothing in the same way. She stands still or crawls, and can end up far from Buzz when it's time for the stomp. The mod keeps track of her intended speed too.
+
+[b]Skelos Badlands lizards[/b]
+The lizards of the orb mission walk a set route, asking the game to carry them forward a little each frame. Against the face of a step, a short frame's move is small enough that the game blocks it outright and moves them nothing, so they are still in front of the step on the next frame, and the next. At 30 FPS each move is long enough to be let up the step. The mod hands a blocked lizard its time in 30 FPS-sized pieces, so the game lets it up the step exactly as it does at 30 FPS.
+
+[b]Idle animation while running[/b]
+A character tells its animations how fast it is going. When one of them starts running from a standstill after the level has been alive for a long time, that speed can come out as "not a number", which sticks: the animation stays at standing still for the rest of the level while the character slides along in its idle pose. The mod puts the character's real speed back, and the game carries on from there.[/spoiler]
 [line]
 [size=5][b]Requirements[/b][/size]
 [list]

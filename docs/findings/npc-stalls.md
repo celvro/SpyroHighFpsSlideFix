@@ -18,7 +18,7 @@ Question (2026-09-19): do other characters have the rounding bug that stopped Sp
 | 2048 (default) | 304–362 |
 | 3000–5000 | 367–566 |
 
-- Exempt: velocity set directly (`bRequestedMoveUseAcceleration` false, only `BP_CES1062_HauntedTinSoldier`), anim root motion, car movement once Buzz's fix covers it, and possibly Phasmid custom movement (mode 6, the thieves' flee), which is untested.
+- Exempt: velocity set directly (`bRequestedMoveUseAcceleration` false, only `BP_CES1062_HauntedTinSoldier`), anim root motion, car movement once Buzz's fix covers it, and the velocity reset itself in Phasmid custom movement (mode 6, the thieves' flee and the waypoint traversal), which keeps its speed instead — but a mode-6 character can still be blocked completely by a step or wall, see `skelos-badlands.md` (2026-10-06).
 
 ## Static survey (2026-09-19)
 

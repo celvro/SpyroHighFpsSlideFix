@@ -22,6 +22,8 @@ Spyro Reignited Trilogy was tuned for 30 FPS. At higher framerates Spyro handles
 - **Balloonist (Spyro 1):** as the loading screen after a balloon ride ends, the camera whirls around the balloon (160°/s at 320 FPS instead of 15°/s).
 - **Buzz (Spyro 3 boss):** his running attack often plays the run animation without moving, and after his rolling attack he can keep sliding.
 - **Sheila in the Buzz fight:** she stands still or crawls between her spots, so she can be on the far side of the arena when it's time to stomp Buzz.
+- **Skelos Badlands lizards (Spyro 2):** in the orb mission, the lizard with the longest walk stops at the two steps near the end, and can stay stuck there until the mission gives up on it (6.8 s with the mod against 6.9 s at 30 FPS, and 9.8 s or never without it).
+- **Idle animation while running:** a character that starts running away can keep its standing-still animation for the rest of the level, sliding along in its idle pose (the Artisans gem thief, and any other NPC or enemy).
 
 `ue4ss/Mods/HighFpsSlidingAndJumpFix/README.txt` and `nexus-description.bbcode` list the recorded before/after numbers for each fix.
 
