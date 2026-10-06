@@ -18,6 +18,11 @@
 --   H                  record a stop in front of every kind of character in this level (tools/scan.lua)
 --   O                  world tour: every recorded stop, playing its input script, at 30/60/144/320 FPS (tools/worldtour/)
 --   I                  montage sweep: every animation of every kind of character here, at 30 and 320 FPS (tools/animtest.lua)
+--   Y                  non-finite velocity and anim speed: the gem thief (trackers/gemthief.lua) and a sweep
+--                      over every NPC and enemy (trackers/nanspeed.lua). The thief is watched from the
+--                      start; Y turns him off and the sweep on.
+--   T                  poison test: write NaN into the gem thief's anim Blueprint Speed and hold the heal
+--                      back for 5 s, to watch the pose break and come back (trackers/gemthief.lua)
 --
 -- Sparx is kept full while the probe is loaded (KEEP_SPARX_FULL below, lib/invuln.lua), so a test is not
 -- cut short by a death and a level reload; Spyro still takes hits and knockback.
@@ -39,7 +44,7 @@
 --                        (trackers/walkin.lua); "glide", "hover", "glideair" (trackers/glide.lua);
 --                        "flight", "flightramp", "flightrun" (trackers/flight.lua);
 --                        "chargestall" (trackers/hits.lua); "buzzrun" (trackers/buzz.lua);
---                        "stall", "stallsummary" (trackers/stalls.lua); "autotest", "review" (tools/worldtour/); "animtest" (tools/animtest.lua); "routes" (tools/routes.lua); "resume" (lib/resume.lua); "spawntest" (tools/spawntest.lua); "slide" (tools/slide.lua);
+--                        "stall", "stallsummary" (trackers/stalls.lua); "gemthief" (trackers/gemthief.lua); "nanspeed" (trackers/nanspeed.lua); "autotest", "review" (tools/worldtour/); "animtest" (tools/animtest.lua); "routes" (tools/routes.lua); "resume" (lib/resume.lua); "spawntest" (tools/spawntest.lua); "slide" (tools/slide.lua);
 --                        quicksave, reload and travel lines (tools/quicksave.lua); "glidetest" (tools/glidetest.lua)
 --
 -- Scripts/
@@ -71,6 +76,8 @@ local movement = require("trackers.movement")
 local supercharge = require("trackers.supercharge")
 local thieves = require("trackers.thieves")
 local stalls = require("trackers.stalls")
+local gemthief = require("trackers.gemthief")
+local nanspeed = require("trackers.nanspeed")
 local walkin = require("trackers.walkin")
 local resume = require("lib.resume")
 local quicksave = require("tools.quicksave")
@@ -155,6 +162,8 @@ local function sample()
         thieves.pawnChanged()
         buzz.pawnChanged()
         stalls.pawnChanged()
+        gemthief.pawnChanged()
+        nanspeed.pawnChanged()
         flames.rescan()
     end
     if measureLevel then
@@ -162,6 +171,8 @@ local function sample()
         buzz.update(r, prev)
     end
     stalls.update(r, prev, pawn)
+    gemthief.update(r)
+    nanspeed.update(r)
     flames.update(r, frameTime)
     if KEEP_SPARX_FULL then invuln.update(pawn) end
     quicksave.update(pawn, pc, cmc, r)
@@ -240,6 +251,11 @@ RegisterKeyBind(Key.F2, minigame.retry)
 RegisterKeyBind(Key.C, function() minigame.request("next") end)
 RegisterKeyBind(Key.H, scan.request)
 RegisterKeyBind(Key.I, animtest.toggle)
+RegisterKeyBind(Key.T, gemthief.poison)
+RegisterKeyBind(Key.Y, function()
+    gemthief.toggle()
+    nanspeed.toggle()
+end)
 
 -- Particle and audio components are watched by two things at once: the flame tracker wants the flame
 -- ones, and the montage sweep counts everything an animation notify spawns while it plays.
@@ -248,7 +264,14 @@ NotifyOnNewObject("/Script/Engine.ParticleSystemComponent", function(object)
     flames.onNewComponent(object)
 end)
 NotifyOnNewObject("/Script/Engine.AudioComponent", animtest.onNewAudio)
-NotifyOnNewObject(stalls.CLASS, stalls.onNewObject)
+-- One notification per class, fanned out: the three trackers that want every character share a callback.
+-- (The startup crashes while this was being written were two unrelated pak mods, not a second
+-- registration here and not the FindAllOf polling it replaced — docs/probe.md.)
+NotifyOnNewObject(stalls.CLASS, function(object)
+    stalls.onNewObject(object)
+    nanspeed.onNewObject(object)
+    gemthief.onNewObject(object)
+end)
 
 -- Level Blueprint classes load with their level; look for their instances for a while afterwards.
 local levelClasses = { [dragons.CLASS] = dragons }

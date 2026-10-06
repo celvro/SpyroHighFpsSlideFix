@@ -58,3 +58,35 @@ A **review** run (`review.txt` in the probe folder, or `review` in `autotest.txt
 The scripted tour (**O**) also writes `autotest_anims_<stamp>.csv`: two rows per sample, for the played character and the character the stop was recorded in front of, with the montage, how far into it, its section, the Falcon enemy state and where each has moved to. That covers the animations the sweep can't reach on its own — state-machine locomotion, dialogue and the minigames. `tools/Compare-Anims.ps1` joins the passes and reports how often each character was in a different animation than at 30 FPS. `tools/scan.lua` now records a stop per class *and script*: `walk`, `flame` and `charge` for enemies (CES/CBS), `walk` and `enterPlay` for NPCs and fauna (CNS/CFS) — `enterPlay` walks in, taps through the dialogue and then holds forward and jumps, which is how a minigame's own animations are reached. Reaching the character no longer stops the script's buttons, only its walking, so the tapping carries on.
 
 Sparx is kept full whenever the probe is loaded (`KEEP_SPARX_FULL` in `main.lua`, `lib/invuln.lua`: the game's own `GE_BasicHeal` applied once per missing point every 2 s), not just while a test tool runs, so a run is never cut short by a death and a level reload. Spyro still takes hits and knockback. A spawn test that is already going can be stopped from outside the game with an empty `spawntest.stop` file in the probe folder (the start trigger, `spawntest.txt`, is only read between runs).
+
+## Gem thief and non-finite speed (Y, added 2026-09-27)
+
+- `trackers/gemthief.lua` watches the Artisans gem thief (`BP_CES1012_GemThief`), whose flee animation
+  breaks because his anim Blueprint's `Speed` goes NaN (`docs/findings/gem-thief-anim.md`). **On by
+  default** (Y turns it off and on with the sweep), fed the level's characters by the shared
+  `PhasmidCharacter` notification rather than polling `FindAllOf`. It
+  logs `gemthief` once a second and on every state change (state, movement mode, velocity, the ABP `Speed`,
+  the blendspace X, the ABP's last DeltaTime and `lib/anim.diagnose`'s mesh flags), `gemthief poisoned` on
+  the finite → non-finite transition with the previous frame's values, `gemthief nan` /
+  `gemthief moving-idle` while the pose is wrong, and `gemthief healed` when `HEAL` writes the live speed
+  back over a NaN, and `gemthief verdict … HELD/BROKE/INCONCLUSIVE` `VERDICT_WINDOW` seconds later, which
+  is how the fix is checked: HELD means he ran with nothing non-finite and the blendspace X keeping up.
+- **T** writes the NaN into his anim Blueprint by hand and holds the heal back 5 s (`gemthief poison-test`),
+  because the real poisoning needs a world that has been alive for hours — see
+  `docs/findings/gem-thief-anim.md`. The pose should break for those 5 s and then come back.
+- `trackers/nanspeed.lua` is the same check over every `PhasmidCharacter`: `Velocity`, the anim
+  Blueprint's `Speed`, and the DeltaTime it last saw. **Y toggles it**, and it is off until then. Round
+  robin, `SCAN_PER_FRAME` actors a frame, each re-read every `SCAN_INTERVAL`, and a newly constructed
+  actor is left alone for `GRACE` seconds. Lines: `nanspeed <class> <name> <fields> mode=… vel=…`
+  (first sighting per class, then at most one per class per `LOG_INTERVAL`), `recovered`, `healed`, and
+  `nanspeed summary` per class every minute and on a pawn change.
+- **The startup crashes during this investigation were not the probe** (2026-09-27 and 2026-10-05):
+  `0xC0000005` at `Spyro-Win64-Shipping.exe+0x1891327` with `SecondsSinceStart=0`, i.e. before any tick,
+  level or pawn, so no tracker had run. It survived disabling the probe and then the fix mod, and stopped
+  when two unrelated pak mods (`SpyroFontMod_P.pak`, `SpyroHudDigits_P.pak`) were taken out of
+  `Content/Paks/~mods`. The faulting loop reads an `FName` pair out of a stale pointer during engine
+  init, which fits a mounted pak the game is iterating. Two suspicions along the way were wrong and are
+  recorded so they are not re-litigated: a duplicate `NotifyOnNewObject` for
+  `/Script/Phasmid.PhasmidCharacter`, and `trackers/gemthief.lua` polling `FindAllOf` every five seconds.
+  The polling was still worth removing on its own merits (CLAUDE.md), and Y stays as a way to silence the
+  level-wide sweep, but neither caused a crash.
