@@ -93,7 +93,7 @@ local watching = nil -- address of the actor whose montage is playing
 -- Reused, so holding a character still allocates nothing per frame.
 local ZERO = { X = 0, Y = 0, Z = 0 }
 local HOME = { X = 0, Y = 0, Z = 0 }
-local HIT = {} -- the teleport's SweepHitResult out-param, never read
+local HIT = {} -- the teleport's SweepHitResult out-param: never read, but UE4SS fills it in (util.clearHit)
 
 local function madeFor(object, address)
     if not address then return false end
@@ -445,7 +445,7 @@ local function holdStill(actor, m, loc, rootMotion)
     if moved < 0.01 then return end
     m.drift = m.drift + moved
     HOME.X, HOME.Y, HOME.Z = m.lastX, m.lastY, m.lastZ
-    pcall(function() actor:K2_SetActorLocation(HOME, false, HIT, true) end)
+    pcall(function() actor:K2_SetActorLocation(HOME, false, util.clearHit(HIT), true) end)
     pcall(function()
         local cmc = actor.CharacterMovement
         if not cmc:IsValid() then return end

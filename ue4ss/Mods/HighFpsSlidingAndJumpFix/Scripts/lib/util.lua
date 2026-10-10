@@ -19,6 +19,22 @@ function util.aboveReferenceFps(dt)
     return dt >= util.MIN_TICK_TIME and dt < util.REFERENCE_DT - 1e-4
 end
 
+-- A sweep's FHitResult out-param table, emptied for its next use. Pass every `K2_Set*`/`K2_Add*`
+-- sweep result through this, even when nothing reads it.
+--
+-- UE4SS copies a struct out-param back into the very table it was handed (push_structproperty's
+-- GetNonTrivialLocal with create_new false), so a table reused between calls comes back holding all
+-- 18 of FHitResult's fields -- among them its three TWeakObjectPtr members, PhysMaterial, Actor and
+-- Component. Handing those back in on the next call reaches push_weakobjectproperty's Operation::Set,
+-- which is unsupported and only logs "Operation::Set is not supported": three synchronous log writes
+-- (file plus console, measured at 0.122 ms each) on the game thread, per call, forever. An empty
+-- table is skipped field by field instead, which also spares the table-to-struct conversion of the
+-- fields the engine is about to overwrite anyway.
+function util.clearHit(hit)
+    for k in next, hit do hit[k] = nil end
+    return hit
+end
+
 -- An angle difference folded into (-180, 180].
 function util.wrapDegrees(a)
     a = a % 360

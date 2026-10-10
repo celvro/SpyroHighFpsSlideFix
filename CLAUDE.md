@@ -58,6 +58,7 @@ So `chunk1\Plugins\Levels\...` is the game path `Falcon/Plugins/Levels/...`. Pro
 
 - **Never poll `StaticFindObject` for something that may not exist**: a miss scans the whole object array (~10 ms). Trigger lookups from `NotifyOnNewObject` instead.
 - `RegisterHook` on a **Blueprint** function (this UE4SS build) calls only the pre callback, and it runs **after** the function body; post never fires. Register the same idempotent callback as pre and post.
+- **A struct out-param table comes back filled, so empty it before every call**: pass it through `util.clearHit` (both mods' `lib/util.lua`). UE4SS copies a struct out-param back into the very table it was handed, so a table reused at module level holds all of `FHitResult`'s fields from the second call on, and feeding its three `TWeakObjectPtr` members (`PhysMaterial`, `Actor`, `Component`) back in logs `[push_weakobjectproperty] Operation::Set is not supported` three times per call — 0.122 ms each, file plus console, on the game thread, even though nothing reads the out-param. An empty table is skipped field by field. Omitting the param throws (the supplied count must match the UFunction's) and so does `nil` (a struct out-param needs a table on the stack). See `docs/findings/jump-glide.md`.
 - UE4SS Lua is 5.4 (no `math.pow`/`math.frexp`). Per-frame errors log once (`errorLogged`), so check `UE4SS.log` for `error:` lines before trusting a test.
 - Lua trap: `local a, b = x and x:match(...)` truncates to one value.
 - Hot reload (Ctrl+R) occasionally crashes this UE4SS build; restart the game instead if it does.
@@ -83,7 +84,7 @@ Examples: `fixes/balloon.lua` and `fixes/dragon.lua` (level Blueprints), `fixes/
 6. **Inside the callback**:
    - For dt, use `engine.worldDeltaSeconds(actor)` (times the actor's `CustomTimeDilation` if the Blueprint's timing uses it), not `engine.dt`, which is from the tick.
    - Leave frames alone unless `util.aboveReferenceFps(dt)`.
-   - Pass out-params (e.g. `SweepHitResult`) and struct arguments as tables reused at module level, so the hook doesn't allocate every frame.
+   - Pass out-params (e.g. `SweepHitResult`) and struct arguments as tables reused at module level, so the hook doesn't allocate every frame. **Empty a reused struct out-param table before every call** (`util.clearHit`, in both mods' `lib/util.lua`) — see the rule below.
    - To move a component, call its `K2_Set*`/`K2_Add*` function. Writing `RelativeRotation`/`RelativeLocation` directly doesn't update the transform.
 7. **Wire it up**: add a `FIX_*` switch to `config.lua`, the module to `main.lua`, a findings doc plus a row in the table above, and a `README.txt` line once it's verified.
 

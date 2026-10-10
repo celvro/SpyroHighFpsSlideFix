@@ -17,7 +17,8 @@ local util = require("lib.util")
 
 local SPIN_PER_UPDATE = 0.5 -- deg the Timeline_0 update adds to SpringArm's yaw
 
--- Reused so the hook doesn't allocate every frame (the sweep result is an unread out-param).
+-- Reused so the hook doesn't allocate every frame. Nothing reads the sweep result, but UE4SS
+-- fills it in anyway, so it goes through util.clearHit on every call.
 local ROTATION = { Pitch = 0, Yaw = 0, Roll = 0 }
 local SWEEP_HIT = {}
 
@@ -56,7 +57,7 @@ local function onSpinUpdate(context)
     local rotation = arm.RelativeRotation
     ROTATION.Pitch, ROTATION.Roll = rotation.Pitch, rotation.Roll
     ROTATION.Yaw = rotation.Yaw - SPIN_PER_UPDATE + SPIN_PER_UPDATE * dt * util.REFERENCE_FPS
-    arm:K2_SetRelativeRotation(ROTATION, false, SWEEP_HIT, false)
+    arm:K2_SetRelativeRotation(ROTATION, false, util.clearHit(SWEEP_HIT), false)
 end
 
 local function onSpinUpdateGuarded(context)

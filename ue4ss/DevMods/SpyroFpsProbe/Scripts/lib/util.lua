@@ -111,4 +111,15 @@ function util.avgFps(s)
     return s.dtSum > 0 and s.frames / s.dtSum or 0 / 0
 end
 
+-- A sweep's FHitResult out-param table, emptied for its next use. Pass every `K2_Set*`/`K2_Add*`
+-- sweep result through this, even when nothing reads it: UE4SS copies the struct back into the very
+-- table it was handed, so a reused table comes back holding FHitResult's three TWeakObjectPtr
+-- members, and handing those back in logs "[push_weakobjectproperty] Operation::Set is not
+-- supported" three times per call (0.122 ms each, file plus console, on the game thread). That is
+-- measurement noise here as much as it is cost. See the shipped mod's lib/util.lua for the detail.
+function util.clearHit(hit)
+    for k in next, hit do hit[k] = nil end
+    return hit
+end
+
 return util

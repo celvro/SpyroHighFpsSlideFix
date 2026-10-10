@@ -25,7 +25,8 @@ local DRAGON_MESH_LIFT = 20    -- UpdatePrevActors raises the head's mesh this m
 
 -- Reused across calls (and dragons) so onDragonUpdate doesn't allocate a table every frame. Lua is
 -- single-threaded and each call finishes using these before the next starts, so sharing is safe; the
--- lift/lower vectors' values never change, and the sweep result is an unread out-param either way.
+-- lift/lower vectors' values never change. Nothing reads the sweep result, but UE4SS fills it in
+-- anyway, so it goes through util.clearHit on every call.
 local LIFT_VEC = { X = 0, Y = 0, Z = DRAGON_MESH_LIFT }
 local LOWER_VEC = { X = 0, Y = 0, Z = -DRAGON_MESH_LIFT }
 local SWEEP_HIT = {}
@@ -74,7 +75,7 @@ local function onDragonUpdate(context, deltaTime)
     fix.heads[head:GetAddress()] = head
     local delta = referenceDragonDelta(deltaTime:get())
     local mesh = head.Mesh
-    mesh:K2_AddRelativeLocation(LIFT_VEC, false, SWEEP_HIT, false)
+    mesh:K2_AddRelativeLocation(LIFT_VEC, false, util.clearHit(SWEEP_HIT), false)
     local leader = head
     local segments = head.BodySegments
     for i = 1, segments:GetArrayNum() do
@@ -94,7 +95,7 @@ local function onDragonUpdate(context, deltaTime)
             leader = segment
         end
     end
-    mesh:K2_AddRelativeLocation(LOWER_VEC, false, SWEEP_HIT, false)
+    mesh:K2_AddRelativeLocation(LOWER_VEC, false, util.clearHit(SWEEP_HIT), false)
 end
 
 local function onDragonUpdateGuarded(context, deltaTime)
