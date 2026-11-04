@@ -102,6 +102,20 @@ The code is in `tools/worldtour/`: `worldtour.lua` starts and stops a run and st
   A sweep that meets another game's levels now skips them at once with that instruction, instead of spending 180 s finding out. `switch` in the trigger file tries the call anyway, for anyone who wants to dig into why it is a no-op — **the world tour's own cross-game path is the same call**, so it is likely to have the same problem (the tour is marked "not verified in game yet").
 - **Tested without the game.** `tools/tests/scansweep_test.lua` drives the state machine against stubbed modules (`lua tools\tests\scansweep_test.lua`): every level in order, each option, a travel that cannot start, one that never arrives, a game that cannot be reached, a cutscene that will not end, the stop file and the resume. It is the one probe tool that can be tested this way — it reaches the game only through the modules it requires, so it needs no UE4SS globals.
 
+### Running it unattended (tools/Sweep-AllGames.ps1, added 2026-11-04)
+
+One game per run and a game that falls over every so often are both things a script can deal with, and this one does: per game it closes the game, points `resume.txt` at that game's first level, starts it with `Restart-Game.ps1`, drops the trigger and follows `UE4SS.log`. A finished sweep moves on; a dead game or one that has not finished a level in `-StallMinutes` is restarted and the trigger dropped again **without** `restart`, so `scansweep_progress.txt` picks the run up at the level it had reached. Stops are pulled into the repo after every game, so a run abandoned half way still leaves everything it recorded.
+
+```powershell
+.\tools\Sweep-AllGames.ps1                                   # all three games
+.\tools\Sweep-AllGames.ps1 -Games 2,3 -Range 120000
+.\tools\Sweep-AllGames.ps1 -Games 1 -Levels LS104,LS106      # top one up, or try the driver out
+```
+
+`-MaxRestarts` (6) gives up on a game and moves to the next; an empty `sweepall.stop` in the probe folder ends the whole thing after the current game. Verified 2026-11-04 by killing the game two levels into a six-level run: the driver noticed in 10 s, restarted, and the resumed sweep reported `starting at 3 (LS110)` and finished the remaining four.
+
+Two things it has to do that are easy to get wrong, both commented in the script: `Restart-Game.ps1` reports with `Write-Host`, so capturing its output and matching on it finds nothing however well the restart went (ask the log instead — UE4SS starts it over on every launch), and the trigger file has to be written without a BOM.
+
 ### First sweep: the whole trilogy (2026-11-04)
 
 **1843 stops over 85 levels**, in about 45 minutes of game time including the restarts, one game per run:
