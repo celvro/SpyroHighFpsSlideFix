@@ -349,8 +349,13 @@ function quicksave.travel(pawn, level)
     return travelToLevel(pawn, level, false)
 end
 
--- Into another game (Spyro 1, 2 or 3) the way the menu does it: the game state's "start game"(game
--- index, save slot), which is what picking a game on the game select screen calls (lib/frontend.lua).
+-- The game state's "start game"(game index, save slot), which is what picking a game on the game select
+-- screen calls (lib/frontend.lua).
+--
+-- **It does nothing when called from inside a loaded level** (measured 2026-11-04): the call goes
+-- through and Spyro stays where he is. lib/gameswap.lua is what swaps games -- out to the title, then
+-- the game select -- and lib/resume.lua only gets away with this call because it runs at the title.
+-- Left here for tools/scansweep.lua's "switch" option, which exists to poke at it.
 -- Travelling straight into another game's level sets the index but starts Spyro at a checkpoint of the
 -- game he was in, falling through a black void (tools/worldtour/arrive.lua); "start game" loads that
 -- game's own level first, and an ordinary travel goes on from there. True means the call went through,

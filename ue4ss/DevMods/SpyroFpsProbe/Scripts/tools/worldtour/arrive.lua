@@ -8,13 +8,14 @@
 --
 -- Travelling live from LS135 into LS201 sets the game index, streams the level in and then leaves Spyro
 -- falling in a black void, because the checkpoint it starts at belongs to the game he was in. So a run
--- that reaches another game's stops goes through the game state's "start game" first, as picking the game
--- on the menu does (switchGame), and travels on from wherever that lands him.
+-- that reaches another game's stops leaves the level to the title and comes back in through the game
+-- select (switchGame, lib/gameswap.lua), and travels on from wherever that lands him.
 local anim = require("lib.anim")
 local igc = require("lib.igc")
 local levels = require("lib.levels")
 local log = require("lib.log")
 local subworld = require("lib.subworld")
+local gameswap = require("lib.gameswap")
 local quicksave = require("tools.quicksave")
 local routes = require("tools.routes")
 local drive = require("tools.worldtour.drive")
@@ -22,7 +23,7 @@ local drive = require("tools.worldtour.drive")
 local arrive = {}
 
 local TRAVEL_GRACE = 5     -- seconds after a travel arrives before the teleport (the level is still settling)
-local SWITCH_TIMEOUT = 180 -- seconds for "start game" to land him in the next game before its stops are skipped
+local SWITCH_TIMEOUT = 300 -- seconds for the swap to land him in the next game before its stops are skipped
 local CLEAR_SECONDS = 30.0 -- waiting for a conversation to be pressed through before a teleport
 local CLEAR_RETRY = 0.1    -- seconds between checks (lib/dialogue.lua spaces the presses itself)
 arrive.LOCKED_STOPS = 2    -- stops in a row that could not move (or a failed check, play.lua) before
@@ -47,14 +48,14 @@ local function reload(run, pawn, level)
     return true
 end
 
--- Into another game (Spyro 1, 2 or 3) the way the menu does it: quicksave.startGame, which is what
--- picking a game on the game select screen calls. Travelling straight into another game's level sets
--- the index but starts him at a checkpoint of the game he was in, falling through a black void; "start
--- game" loads the new game's own level first, and the normal travel goes on from there.
-local function switchGame(pawn, game)
-    local ok = quicksave.startGame(pawn, game)
-    log("autotest: switching to Spyro %d with start game (%s)", game, ok and "ok" or "failed")
-    return ok
+-- Into another game (Spyro 1, 2 or 3) the way a player does it: quit to the title and pick the game on
+-- the game select (lib/gameswap.lua). Travelling straight into another game's level sets the index but
+-- starts him at a checkpoint of the game he was in, falling through a black void, and "start game" on
+-- its own -- what this used to call -- does nothing at all from inside a level, which cost a tour every
+-- stop of the game it was trying to reach on 2026-11-04.
+local function switchGame(game)
+    gameswap.begin(game)
+    return true
 end
 
 -- Starts the current step's stop: whichever of the phases above it needs first, or straight onto the
@@ -97,7 +98,8 @@ function arrive.start(run, pawn, pc, cmc)
             arrive.LOCKED_STOPS, stop.level, run.reloads, MAX_RELOADS)
         if reload(run, pawn, stop.level) then return end
     end
-    -- Another game: through "start game" first (switchGame), then the travel below from its level.
+    -- Another game: out to the title and back in through the game select (switchGame), then the travel
+    -- below from whatever level that lands him in.
     local want = tonumber(stop.level:match("^LS(%d)"))
     local have = tonumber(tostring(levels.current(pawn)):match("^LS(%d)"))
     if want and have and want ~= have then
@@ -106,11 +108,8 @@ function arrive.start(run, pawn, pc, cmc)
             return
         end
         letGo(run)
-        if switchGame(pawn, want) then
-            run.phase, run.switchTo, run.switchStarted = "switch", want, os.clock()
-        else
-            run.skipGame, run.phase = want, "next"
-        end
+        switchGame(want)
+        run.phase, run.switchTo, run.switchStarted = "switch", want, os.clock()
         return
     end
     if levels.current(pawn) ~= stop.level then
@@ -179,14 +178,25 @@ function arrive.travel(run, pawn)
     return false
 end
 
--- "switch": waiting for "start game" to put him in a level of the game it was asked for.
+-- "switch": waiting for lib/gameswap.lua to take him out to the title and back in through the game
+-- select. It runs from main.lua, before the pawn checks, because most of a swap has no pawn at all --
+-- so this only reads the result. A swap that fails costs this game's stops, not the run.
 function arrive.switch(run, pawn)
-    local here = tostring(levels.current(pawn))
-    if here:match("^LS" .. run.switchTo) then
-        log("autotest: in Spyro %d (%s) after %.0f s", run.switchTo, here, os.clock() - run.switchStarted)
+    local outcome = gameswap.finished()
+    if not outcome then
+        if os.clock() - run.switchStarted > SWITCH_TIMEOUT then
+            log("autotest: the swap to Spyro %d is still going after %.0f s; skipping its stops",
+                run.switchTo, SWITCH_TIMEOUT)
+            run.skipGame, run.phase = run.switchTo, "next"
+        end
+        return
+    end
+    if outcome == "done" then
+        log("autotest: in Spyro %d (%s) after %.0f s",
+            run.switchTo, tostring(levels.current(pawn)), os.clock() - run.switchStarted)
         run.phase, run.grace = "grace", TRAVEL_GRACE
-    elseif os.clock() - run.switchStarted > SWITCH_TIMEOUT then
-        log("autotest: never got into Spyro %d (still in %s); skipping its stops", run.switchTo, here)
+    else
+        log("autotest: never got into Spyro %d (%s); skipping its stops", run.switchTo, outcome)
         run.skipGame, run.phase = run.switchTo, "next"
     end
 end

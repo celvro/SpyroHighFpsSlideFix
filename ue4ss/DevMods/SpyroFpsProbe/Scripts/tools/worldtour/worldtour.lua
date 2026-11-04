@@ -130,10 +130,30 @@ local function start(pawn, pc, cmc, options, setFpsCap)
     arrive.start(run, pawn, pc, cmc)
 end
 
+-- A stop in a level or a game this run has given up on. Those are retired here in one go rather than a
+-- frame at a time: at 320 FPS a frame apiece meant hundreds of stops a second, each of them setting the
+-- framerate cap again (an ExecuteInGameThread and a console command each), and on 2026-11-04 a tour that
+-- had given up on a whole game went through 2296 of them and took the game down with it.
+local function givenUp(step)
+    local level = step.entry.stop.level
+    if run.skipLevel == level then return true end
+    local game = tonumber(level:match("^LS(%d)"))
+    return game ~= nil and run.skipGame == game
+end
+
 local function nextStop(pawn, pc, cmc, setFpsCap)
     local was = run.step
     run.index = run.index + 1
     run.step = run.plan[run.index]
+    local dropped = 0
+    while run.step and givenUp(run.step) do
+        dropped = dropped + 1
+        run.index = run.index + 1
+        run.step = run.plan[run.index]
+    end
+    if dropped > 0 then
+        log("autotest: skipped %d stop(s) of a level or game this run gave up on", dropped)
+    end
     local now = run.step
     if not now then
         log("autotest: done, %d stops at %d framerates; %s", #run.stops, #run.caps, samples.CSV)
@@ -147,10 +167,13 @@ local function nextStop(pawn, pc, cmc, setFpsCap)
         run = nil
         return
     end
+    -- Once per level and cap, not once per stop: every setFpsCap is an ExecuteInGameThread running a
+    -- console command, and one per stop is one per frame while stops are being retired quickly. Still
+    -- re-applied on a new level, in case a load puts the cap back.
     if not was or was.cap ~= now.cap or was.entry.stop.level ~= now.entry.stop.level then
         log("autotest: %s at %d FPS", now.entry.stop.level, now.cap)
+        setFpsCap(now.cap)
     end
-    setFpsCap(now.cap)
     plan.saveProgress(run.index)
     arrive.start(run, pawn, pc, cmc)
 end

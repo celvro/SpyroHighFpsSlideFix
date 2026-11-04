@@ -123,6 +123,7 @@ local gemthief = tracker("gemthief")
 local nanspeed = tracker("nanspeed")
 local walkin = tracker("walkin")
 local resume = require("lib.resume")
+local gameswap = require("lib.gameswap")
 local quicksave = require("tools.quicksave")
 local glidetest = require("tools.glidetest")
 local spawntest = require("tools.spawntest")
@@ -150,6 +151,7 @@ local function sample()
     hits.register()
     flames.beforeSample()
     resume.update()     -- also runs with no pawn: it drives the title screen after a restart
+    gameswap.update()   -- the same, for a tour swapping games through the title (lib/gameswap.lua)
     dumpstate.update()  -- the dumpstate.txt diagnostic, also with no pawn
     local pc = UEHelpers.GetPlayerController()
     if not pc:IsValid() then return end
