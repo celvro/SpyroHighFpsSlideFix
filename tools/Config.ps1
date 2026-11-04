@@ -11,3 +11,7 @@ $BuildDir = Join-Path $RepoRoot 'build'
 # Game save files, and where Save-GameSnapshot.ps1 keeps named copies of them.
 $SaveGamesDir = Join-Path $env:LOCALAPPDATA 'Falcon\Saved\SaveGames'
 $SnapshotDir = Join-Path $BuildDir 'saves'
+
+# The deployed probe folder: where the probe writes its CSVs, logs and the files it is driven with
+# (routes.txt, the trigger files). Install-UE4SS.ps1 -Probe creates it.
+$ProbeDir = Join-Path $GameDir 'Falcon\Binaries\Win64\ue4ss\Mods\SpyroFpsProbe'

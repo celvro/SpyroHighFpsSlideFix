@@ -39,10 +39,15 @@ local DOWN = 130       -- and ends this far below the character centre: deeper t
                        -- water under the Save Fairy, 2026-09-20)
 local CLEARANCE = 5    -- above the floor, so the teleport is not inside it
 local MIN_GAP = 110    -- last resort: right next to the character, far enough that the capsules do not overlap
-local RANGE = 30000    -- ignore characters further than this from the player (other levels enemies)
+local RANGE = 30000    -- ignore characters further than this from the player (other levels enemies).
+                       -- Levels are placed on a 300000 grid (LEVEL_OFFSET), so anything under about
+                       -- 150000 is still this level; a sweep can raise it to reach the far side of a
+                       -- big one (tools/scansweep.lua, range=).
 -- Scripts per kind of character, by the letter in its class name (BP_CES1015_Ram_C, BP_CNS3706_Hunter_C).
 local ENEMY_SCRIPTS = { "walk", "flame", "charge" }
 local NPC_SCRIPTS = { "walk", "enterPlay" }
+
+scan.RANGE = RANGE -- the default a sweep starts from (tools/scansweep.lua)
 
 local requested = false
 local nextPoll = 0
@@ -103,11 +108,11 @@ local function halfHeightOf(actor)
     return (ok and type(half) == "number") and half or 50
 end
 
-local function consider(actor, pawn, level, origin, here, seen, playerHalf)
+local function consider(actor, pawn, level, origin, here, seen, playerHalf, range)
     local class = className(actor)
     local loc = actor:K2_GetActorLocation()
     local dist = math.sqrt((loc.X - here.X) ^ 2 + (loc.Y - here.Y) ^ 2)
-    if not class or dist > RANGE then return 0 end
+    if not class or dist > range then return 0 end
     local wanted = {}
     for _, script in ipairs(scriptsFor(actor, class)) do
         if not seen[script .. " " .. class] then wanted[#wanted + 1] = script end
@@ -136,11 +141,12 @@ local function consider(actor, pawn, level, origin, here, seen, playerHalf)
     return written
 end
 
-local function record(pawn, pc)
+local function record(pawn, pc, range)
+    range = range or RANGE
     local level, origin = levels.current(pawn)
     if not (level and origin) then
         log("scan: the level name or placement is unavailable here")
-        return
+        return nil
     end
     local seen = covered(level)
     local playerAddress = pawn:GetAddress()
@@ -153,7 +159,7 @@ local function record(pawn, pc)
         local name = ok and actor:GetFName():ToString() or nil
         if ok and name and not name:match("^Default__") and actor:GetAddress() ~= playerAddress then
             found = found + 1
-            local okConsider, result = pcall(consider, actor, pawn, level, origin, here, seen, playerHalf)
+            local okConsider, result = pcall(consider, actor, pawn, level, origin, here, seen, playerHalf, range)
             if okConsider and (result or 0) > 0 then
                 written = written + result
             else
@@ -163,10 +169,23 @@ local function record(pawn, pc)
     end
     log("scan: %s: %d characters, %d new stops, %d characters skipped (already covered, out of range or no ground)",
         level, found, written, skipped)
+    return found, written, skipped
 end
 
 function scan.request()
     requested = true
+end
+
+-- Scans the level now instead of on the next frame, for a caller that is already on the game thread
+-- and wants to know what it got (tools/scansweep.lua). Returns the characters found, the stops
+-- written and the characters skipped, or nil when the scan could not run. `range` overrides RANGE.
+function scan.recordNow(pawn, pc, range)
+    local ok, found, written, skipped = pcall(record, pawn, pc, range)
+    if not ok then
+        log("scan error: %s", tostring(found))
+        return nil
+    end
+    return found, written, skipped
 end
 
 -- Called once per frame from main.lua's sample().

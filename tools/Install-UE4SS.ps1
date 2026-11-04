@@ -9,6 +9,10 @@
     without it, any previously deployed dev mod is disabled (its enabled.txt is removed, logs kept).
     Re-run after editing a Lua mod, then restart the game. Use -ModsOnly to skip reinstalling UE4SS.
 
+    Files in $SeedOnly (routes.txt) are only copied when the deployed mod has none: the game writes to
+    them, so the repo copy is a seed and never an overwrite. Use tools\Sync-Routes.ps1 to bring
+    recorded stops back into the repo.
+
 .EXAMPLE
     .\tools\Install-UE4SS.ps1
     .\tools\Install-UE4SS.ps1 -ModsOnly
@@ -57,6 +61,12 @@ if (-not $ModsOnly) {
     Write-Host "Installed UE4SS to $win64"
 }
 
+# Files a mod owns but the game writes to: deployed when they are missing and never overwritten, so a
+# redeploy doesn't throw away what was recorded in game. routes.txt is the world tour's stops
+# (tools/routes.lua, tools/scansweep.lua) — hours of recording, and the repo copy is only ever a seed.
+# Move recordings the other way with tools\Sync-Routes.ps1.
+$SeedOnly = @('routes.txt')
+
 function Deploy-LuaMod($mod) {
     $target = Join-Path $gameUe4ss "Mods\$($mod.Name)"
     New-Item -ItemType Directory -Force $target | Out-Null
@@ -65,9 +75,17 @@ function Deploy-LuaMod($mod) {
     # reloading is the risky moment (see docs/ue4ss.md). Sizes and contents, not timestamps: a copy
     # keeps the source's write time.
     $copied = 0
+    $seeded = 0
     foreach ($source in Get-ChildItem $mod.FullName -Recurse -File) {
         $relative = $source.FullName.Substring($mod.FullName.Length + 1)
         $destination = Join-Path $target $relative
+        if ($SeedOnly -contains $relative) {
+            if (Test-Path $destination) { continue }
+            New-Item -ItemType Directory -Force (Split-Path -Parent $destination) | Out-Null
+            Copy-Item $source.FullName $destination -Force
+            $seeded++
+            continue
+        }
         $existing = Get-Item $destination -ErrorAction SilentlyContinue
         if ($existing -and $existing.Length -eq $source.Length -and
             (Get-FileHash $destination).Hash -eq (Get-FileHash $source.FullName).Hash) {
@@ -79,6 +97,7 @@ function Deploy-LuaMod($mod) {
     }
     $enabled = Join-Path $target 'enabled.txt'
     if (-not (Test-Path $enabled)) { Set-Content $enabled '' -NoNewline }
+    if ($seeded) { Write-Host "Seeded $seeded file(s) into $($mod.Name) that it had none of yet" }
     if ($copied) {
         Write-Host "Deployed Lua mod $($mod.Name) ($copied file(s) changed)"
     } else {

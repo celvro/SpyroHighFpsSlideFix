@@ -16,6 +16,17 @@ function util.isGrounded(mode)
     return mode == 1 or mode == 2 or mode == 4
 end
 
+-- The text of a trigger file, without a leading byte order mark. Windows PowerShell 5.1 writes one
+-- for -Encoding utf8 (and for > and Out-File), and the tooling here is PowerShell, so a trigger file
+-- written by a script usually starts with EF BB BF. Those three bytes stick to the first word, so
+-- "game=2" stops matching "^(%w+)=(.*)$" and is taken for a flag instead: on 2026-11-04 a sweep
+-- asked for game=2 swept all three games' level lists because of it. Every tools/ trigger reader
+-- wants this (animtest, dumpstate, minigame, scan, scansweep, spawntest, worldtour).
+function util.stripBom(text)
+    if not text then return text end
+    return (text:gsub("^\239\187\191", ""))
+end
+
 -- Properties missing from this build come back as non-number objects; log them as NaN.
 function util.num(v)
     return type(v) == "number" and v or 0 / 0

@@ -12,3 +12,6 @@ tools/bin/
 *.utoc
 *.wem
 *.bnk
+
+# Sync-Routes.ps1 keeps the overwritten routes.txt next to the new one
+routes.backup.txt

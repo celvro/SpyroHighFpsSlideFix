@@ -10,7 +10,6 @@
 -- falling in a black void, because the checkpoint it starts at belongs to the game he was in. So a run
 -- that reaches another game's stops goes through the game state's "start game" first, as picking the game
 -- on the menu does (switchGame), and travels on from wherever that lands him.
-local UEHelpers = require("UEHelpers")
 local anim = require("lib.anim")
 local igc = require("lib.igc")
 local levels = require("lib.levels")
@@ -48,19 +47,13 @@ local function reload(run, pawn, level)
     return true
 end
 
--- Into another game (Spyro 1, 2 or 3) the way the menu does it: the game state's "start game"(game
--- index, save slot), which is what picking a game on the game select screen calls (lib/frontend.lua).
--- Travelling straight into another game's level sets the index but starts him at a checkpoint of the
--- game he was in, falling through a black void; "start game" loads the new game's own level first, and
--- the normal travel goes on from there.
+-- Into another game (Spyro 1, 2 or 3) the way the menu does it: quicksave.startGame, which is what
+-- picking a game on the game select screen calls. Travelling straight into another game's level sets
+-- the index but starts him at a checkpoint of the game he was in, falling through a black void; "start
+-- game" loads the new game's own level first, and the normal travel goes on from there.
 local function switchGame(pawn, game)
-    local ok, err = pcall(function()
-        local statics = StaticFindObject("/Script/Falcon.Default__FalconGameplayStatics")
-        local slot = statics:GetActiveSaveSlotIndex(pawn)
-        local gs = UEHelpers.GetGameplayStatics():GetGameState(pawn)
-        gs["start game"](gs, game - 1, slot)
-    end)
-    log("autotest: switching to Spyro %d with start game (%s)", game, ok and "ok" or tostring(err))
+    local ok = quicksave.startGame(pawn, game)
+    log("autotest: switching to Spyro %d with start game (%s)", game, ok and "ok" or "failed")
     return ok
 end
 

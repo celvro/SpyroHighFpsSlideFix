@@ -349,6 +349,23 @@ function quicksave.travel(pawn, level)
     return travelToLevel(pawn, level, false)
 end
 
+-- Into another game (Spyro 1, 2 or 3) the way the menu does it: the game state's "start game"(game
+-- index, save slot), which is what picking a game on the game select screen calls (lib/frontend.lua).
+-- Travelling straight into another game's level sets the index but starts Spyro at a checkpoint of the
+-- game he was in, falling through a black void (tools/worldtour/arrive.lua); "start game" loads that
+-- game's own level first, and an ordinary travel goes on from there. True means the call went through,
+-- not that the level is up: the caller waits for one of that game's levels to come round.
+function quicksave.startGame(pawn, game)
+    local ok, err = pcall(function()
+        local statics = StaticFindObject("/Script/Falcon.Default__FalconGameplayStatics")
+        local slot = statics:GetActiveSaveSlotIndex(pawn)
+        local gs = UEHelpers.GetGameplayStatics():GetGameState(pawn)
+        gs["start game"](gs, game - 1, slot)
+    end)
+    if not ok then log("travel: start game(Spyro %d) failed: %s", game, tostring(err)) end
+    return ok
+end
+
 function quicksave.travelling()
     return travel ~= nil
 end

@@ -18,7 +18,11 @@
 --                      rate, the same two at the 210 mouse rate, then stop-and-restart), again to cancel.
 --                      The controlled A/B for FIX_STUCK_CAMERA; needs ROW_CAMERA (tools/camrepro.lua)
 --   M                  a minigame take: start/stop recording; otherwise record a tour stop (routes.txt)
---   H                  record a stop in front of every kind of character in this level (tools/scan.lua)
+--   H                  record a stop in front of every kind of character in this level (tools/scan.lua).
+--                      For every level instead, drop a scansweep.txt file in this mod folder: it travels
+--                      to each one in turn and scans it, which is how routes.txt is built without
+--                      playing through all three games (tools/scansweep.lua). No key: a sweep runs for
+--                      hours and every letter is bound already.
 --   O                  world tour: every recorded stop, playing its input script, at 30/60/144/320 FPS (tools/worldtour/)
 --   I                  montage sweep: every animation of every kind of character here, at 30 and 320 FPS (tools/animtest.lua)
 --   Y                  non-finite velocity and anim speed: the gem thief (trackers/gemthief.lua) and a sweep
@@ -43,6 +47,7 @@
 --   turtle_hits_<stamp>.csv  their blocking hits and slide bounces (trackers/turtle.lua)
 --   autotest_<stamp>.csv one row per world tour sample, per framerate (tools/worldtour/samples.lua)
 --   animtest_<stamp>.csv one row per montage per framerate (tools/animtest.lua)
+--   scansweep_<stamp>.txt one line per level scanned by a sweep (tools/scansweep.lua)
 --   camdump_*.txt        every reflected FollowCameraComponent property (trackers/camera.lua)
 --   log lines            "seg", "drift", "rise" (trackers/movement.lua); "charge", "turn" (trackers/charge.lua);
 --                        "camlock", "camstuck", "camtransition", "camdump diff" (trackers/camera.lua);
@@ -53,7 +58,7 @@
 --                        "chargestall" (trackers/hits.lua); "buzzrun" (trackers/buzz.lua);
 --                        "stall", "stallsummary" (trackers/stalls.lua); "lizardstall", "lizardstep",
 --                        "lizardsummary" (trackers/lizard.lua); "turtleslide", "turtlerun",
---                        "turtlestall", "turtlestart" (trackers/turtle.lua); "gemthief" (trackers/gemthief.lua); "nanspeed" (trackers/nanspeed.lua); "autotest", "review" (tools/worldtour/); "animtest" (tools/animtest.lua); "routes" (tools/routes.lua); "resume" (lib/resume.lua); "spawntest" (tools/spawntest.lua); "slide" (tools/slide.lua);
+--                        "turtlestall", "turtlestart" (trackers/turtle.lua); "gemthief" (trackers/gemthief.lua); "nanspeed" (trackers/nanspeed.lua); "autotest", "review" (tools/worldtour/); "animtest" (tools/animtest.lua); "routes" (tools/routes.lua); "scan" (tools/scan.lua); "scansweep" (tools/scansweep.lua); "resume" (lib/resume.lua); "spawntest" (tools/spawntest.lua); "slide" (tools/slide.lua);
 --                        quicksave, reload and travel lines (tools/quicksave.lua); "glidetest" (tools/glidetest.lua)
 --
 -- Scripts/
@@ -128,6 +133,7 @@ local minigame = require("tools.minigame")
 local animtest = require("tools.animtest")
 local routes = require("tools.routes")
 local scan = require("tools.scan")
+local scansweep = require("tools.scansweep")
 local dumpstate = require("tools.dumpstate")
 
 -- Sparx is topped up to full every couple of seconds while the probe runs, so a test is not cut short by a
@@ -158,8 +164,9 @@ local function sample()
     if state.lastTime == time then
         -- Paused. A save fairy's or Moneybags' prompt pauses the world, and returning here is
         -- what used to leave the scripted tour sitting in one: nothing ran to answer it. The
-        -- tour answers it the way a player does, with Continue (lib/dialogue.lua).
-        if worldtour.running() then dialogue.advance() end
+        -- tour answers it the way a player does, with Continue (lib/dialogue.lua). An unattended
+        -- run of any kind has to get out of one: a paused world never reaches its own stop file.
+        if worldtour.running() or scansweep.running() then dialogue.advance() end
         return
     end
     state.lastTime = time
@@ -228,6 +235,7 @@ local function sample()
     minigame.update(pawn, pc, cmc, r, state.fpsCap or 0)
     animtest.update(pawn, pc, r, setFpsCap)
     scan.update(pawn, pc)
+    scansweep.update(pawn, pc, r, touring)
     if requestClose then
         requestClose = false
         igc.forget() -- asked for by hand, so never trust a list from an earlier level
