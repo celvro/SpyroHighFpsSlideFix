@@ -56,8 +56,8 @@ local function finishTurn()
     local yawRate = math.abs(t.yaw) / t.avgTime
     local friction, accel, dt = t.friction / t.avgTime, t.maxAccel / t.avgTime, t.dtSum / t.frames
     local baseFriction = BASE_FRICTION_BY_ACCEL[math.floor(accel + 0.5)] or friction
-    log("turn %s cap=%s avgFps=%.1f dur=%.3fs stick=%.2f yawRate=%.1f velYawRate=%.1f camYawRate=%.1f radius=%.1f speed=%.1f accelAngle=%+.2f slip=%+.2f groundFriction=%.2f camLag=%+.1f camLagMax=%.1f camLagEnd=%+.1f ctrInterp=%.3f super=%s maxAccel=%.0f slipModel30=%.2f slipModelHere=%.2f camLagModelHere=%.1f",
-        t.id, tostring(state.fpsCap or "?"), avgFps(t), t.lastTime - t.startTime, t.stick / t.avgTime,
+    log("turn %s level=%s cap=%s avgFps=%.1f dur=%.3fs stick=%.2f yawRate=%.1f velYawRate=%.1f camYawRate=%.1f radius=%.1f speed=%.1f accelAngle=%+.2f slip=%+.2f groundFriction=%.2f camLag=%+.1f camLagMax=%.1f camLagEnd=%+.1f ctrInterp=%.3f super=%s maxAccel=%.0f slipModel30=%.2f slipModelHere=%.2f camLagModelHere=%.1f",
+        t.id, tostring(state.level or "?"), tostring(state.fpsCap or "?"), avgFps(t), t.lastTime - t.startTime, t.stick / t.avgTime,
         yawRate, velYawRate, dir * t.camYaw / t.avgTime,
         velYawRate > 0 and speed / math.rad(velYawRate) or math.huge, speed,
         dir * t.accelAngle / t.avgTime, dir * t.slip / t.avgTime, friction,
@@ -112,8 +112,8 @@ function charge.update(r, prev)
         if not c then return end
         finishTurn()
         camera.finishLock("chargeEnd")
-        log("charge %d cap=%s avgFps=%.1f dt=%.1f-%.1fms dur=%.3fs startSpeed=%.1f t400=%s speedAvg=%.1f speedMax=%.1f yawChange=%+.1f camOffset0=%+.1f turns=%d mouseDist=%.2f yawPerMouse=%s dustSpawns=%d dustRate=%.1f/s dustEmitRate=%.1f/s dustDilationMax=%.2f detectedBy=%s",
-            c.id, tostring(state.fpsCap or "?"), avgFps(c), c.dtMin * 1000, c.dtMax * 1000, r.time - c.startTime,
+        log("charge %d level=%s cap=%s avgFps=%.1f dt=%.1f-%.1fms dur=%.3fs startSpeed=%.1f t400=%s speedAvg=%.1f speedMax=%.1f yawChange=%+.1f camOffset0=%+.1f turns=%d mouseDist=%.2f yawPerMouse=%s dustSpawns=%d dustRate=%.1f/s dustEmitRate=%.1f/s dustDilationMax=%.2f detectedBy=%s",
+            c.id, tostring(state.level or "?"), tostring(state.fpsCap or "?"), avgFps(c), c.dtMin * 1000, c.dtMax * 1000, r.time - c.startTime,
             c.startSpeed, c.t400 and string.format("%.3fs", c.t400) or "n/a",
             c.dtSum > 0 and c.speedSum / c.dtSum or 0 / 0, c.maxSpeed, c.yaw, c.camOffset0, c.turnCount,
             c.mouseDist, c.mouseDist > 0 and string.format("%.2f", c.mouseYaw / c.mouseDist) or "n/a",

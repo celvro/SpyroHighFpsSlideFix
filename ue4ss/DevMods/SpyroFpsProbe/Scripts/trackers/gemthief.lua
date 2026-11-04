@@ -151,10 +151,29 @@ local function sample(e, r)
     local movingIdle = (not finite) or (speed > MOVING_SPEED and shown ~= nil and shown < IDLE_SPEED)
 
     -- The frame it went bad, with the last good values: the only chance to see where it comes from.
+    -- The geometry goes in too, because the flee direction is taken from Spyro's position: if the NaN is
+    -- a normalize of a zero-length vector, the horizontal distance to Spyro is 0 on this frame, and that
+    -- would also explain the bug following the mod around without any fix touching this actor (the
+    -- walking and charge fixes change where Spyro is).
     if not finite and e.finite then
-        log("gemthief poisoned %s state=%s mode=%s vel=%s animSpeed=%s prevSpeed=%s animDt=%s prevDt=%s time=%s",
+        local loc = get(function() return actor:K2_GetActorLocation() end)
+        local dx = loc and r.x and (loc.X - r.x)
+        local dy = loc and r.y and (loc.Y - r.y)
+        local dist = dx and math.sqrt(dx * dx + dy * dy)
+        local request = get(function()
+            local rv = cmc.RequestedVelocity
+            return math.sqrt(rv.X * rv.X + rv.Y * rv.Y)
+        end)
+        local accel = get(function()
+            local a = cmc:GetCurrentAcceleration()
+            return math.sqrt(a.X * a.X + a.Y * a.Y)
+        end)
+        log("gemthief poisoned %s state=%s mode=%s vel=%s animSpeed=%s prevSpeed=%s animDt=%s prevDt=%s "
+            .. "distToSpyro=%s thiefAt=(%s,%s) spyroAt=(%s,%s) request=%s accel=%s dilation=%s time=%s",
             e.name, state, util.MOVE_MODE_NAMES[mode] or tostring(mode), num(speed), num(animSpeed),
-            num(e.prevSpeed), num(animDt), num(e.prevDt), num(r.time))
+            num(e.prevSpeed), num(animDt), num(e.prevDt), num(dist),
+            num(loc and loc.X), num(loc and loc.Y), num(r.x), num(r.y), num(request), num(accel),
+            num(get(function() return actor.CustomTimeDilation end)), num(r.time))
     end
     e.finite, e.prevSpeed, e.prevDt = finite, animSpeed, animDt
 

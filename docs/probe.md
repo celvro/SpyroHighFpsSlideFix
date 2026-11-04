@@ -2,8 +2,44 @@
 
 ## Code layout
 
-`main.lua` holds `sample()` (one row per unpaused frame, handed to every tracker in order), the key binds and the `NotifyOnNewObject` hooks. `lib/row.lua` builds the row, `lib/trace.lua` writes it to `trace_*.csv` (column list there), and `lib/state.lua` holds what trackers share: the previous row, the last 10 rows, and the measurement each tracker has in progress (the CSV's id columns). Each `trackers/*.lua` module documents its own log lines in its header: `movement` (seg/drift/rise), `charge` (charge/turn), `camera` (camlock/camstuck/camtransition/camdump), `supercharge`, `dragons`, `thieves`, `flames` (plus the K experiment), `walkin`, `flight` (Spyro 1 flight levels: per-second speed, MaxFlySpeed ramps, run totals), `hits` (a `ReceiveHit` hook: `hits_*.csv` with every blocking hit during ground charges, and `chargestall` lines when a charge frame loses over half its speed), `buzz` (Spyro 3 boss fight: `buzzrun` lines per moving state of Buzz and Sheila with t50/t90 to MaxWalkSpeed, `buzz_*.csv` per frame per actor including RequestedVelocity, one-off `camdump_*_buzzcmc.txt`/`_sheilacmc.txt` movement component dumps), `stalls` (every NPC/enemy: `stall` lines, `stallsummary` per class, `stalls_*.csv` per movement stretch; see `docs/findings/npc-stalls.md`), `lizard` (Skelos Badlands lava lizards: `lizardstall`/`lizardstep`/`lizardsummary`, `lizard_*.csv` per frame and `lizard_hits_*.csv` from a hook on BP_Base_Enemy's capsule hit event) (see `docs/findings/skelos-badlands.md`; the steam-vent tracker that lived next to it was removed on 2026-10-06 once the vent measured the same at every framerate). **J** runs `tools/slide.lua` (starts Spyro's steep-slope slide where he stands for screenshots, press again to end) — **still in progress, not verified in game yet**. The quicksave aid is `tools/quicksave.lua`, with level streaming queries in `lib/levels.lua`. The level tour (**T**, `tools/tour.lua`: every level for 25 s uncapped, for the stall tracker) and the travel test (**Y**, `tools/traveltest.lua`) were removed on 2026-09-22; the world tour (**O**, `tools/worldtour/`) visits every level that has a stop.
+`main.lua` holds `sample()` (one row per unpaused frame, handed to every tracker in order), the key binds and the `NotifyOnNewObject` hooks. `lib/row.lua` builds the row, `lib/trace.lua` writes it to `trace_*.csv` (column list there), and `lib/state.lua` holds what trackers share: the previous row, the last 10 rows, and the measurement each tracker has in progress (the CSV's id columns). Each `trackers/*.lua` module documents its own log lines in its header: `movement` (seg/drift/rise), `charge` (charge/turn), `camera` (camlock/camstuck/camtransition/camdump), `supercharge`, `dragons`, `thieves`, `flames` (plus the K experiment), `walkin`, `flight` (Spyro 1 flight levels: per-second speed, MaxFlySpeed ramps, run totals), `hits` (a `ReceiveHit` hook: `hits_*.csv` with every blocking hit during ground charges, and `chargestall` lines when a charge frame loses over half its speed), `buzz` (Spyro 3 boss fight: `buzzrun` lines per moving state of Buzz and Sheila with t50/t90 to MaxWalkSpeed, `buzz_*.csv` per frame per actor including RequestedVelocity, one-off `camdump_*_buzzcmc.txt`/`_sheilacmc.txt` movement component dumps), `stalls` (every NPC/enemy: `stall` lines, `stallsummary` per class, `stalls_*.csv` per movement stretch; see `docs/findings/npc-stalls.md`), `lizard` (Skelos Badlands lava lizards: `lizardstall`/`lizardstep`/`lizardsummary`, `lizard_*.csv` per frame and `lizard_hits_*.csv` from `lib/enemyhits.lua`, the shared hook on BP_Base_Enemy's capsule hit event) (see `docs/findings/skelos-badlands.md`; the steam-vent tracker that lived next to it was removed on 2026-10-06 once the vent measured the same at every framerate), `turtle` (Sunny Beach box turtles: `turtleslide` per charge slide, `turtlestart`/`turtlestall`/`turtlerun` for the walking, `turtle_*.csv` per frame with the character movement component and the projectile movement component side by side plus `turtle_hits_*.csv`, and one-off `turtlecmc`/`turtlepmc` dumps; see `docs/findings/turtle-soup.md`). **J** runs `tools/slide.lua` (starts Spyro's steep-slope slide where he stands for screenshots, press again to end) — **still in progress, not verified in game yet**. The quicksave aid is `tools/quicksave.lua`, with level streaming queries in `lib/levels.lua`. The level tour (**T**, `tools/tour.lua`: every level for 25 s uncapped, for the stall tracker) and the travel test (**Y**, `tools/traveltest.lua`) were removed on 2026-09-22; the world tour (**O**, `tools/worldtour/`) visits every level that has a stop. `config.lua` switches each tracker on or off (see the section below); `lib/profile.lua` times them.
 
+## What the probe costs, and switching it off (config.lua, added 2026-10-10)
+
+The probe samples on the game thread, so every tracker left on is frame time the game doesn't get. At
+320 FPS a whole frame is 3.1 ms. The expensive ones are the trackers that walk a list of actors or
+write a CSV row per actor per frame (`turtle`, `stalls`, `lizard`, `buzz`, `thieves`, `flames`), the
+`trace_*.csv` write (a `string.format` of 60 fields and an `io.write` every frame) and the optional
+reflection reads in `lib/row.lua`. **A framerate measured with the probe loaded is not the game's own.**
+
+`Scripts/config.lua` holds a switch per tracker, plus `TRACE` for the per-frame CSV and the `ROW_*`
+groups for the camera, stick, charge-tag and dust reads in `lib/row.lua`. Most trackers are off
+because their bug is fixed and verified; turn one back on to re-measure it or to pick an
+investigation back up. The load line in `UE4SS.log` lists what was on, so a CSV with a blank column
+can be traced back to the switches it was recorded with.
+
+A tracker that is off is still loaded, so its constants still read as themselves (`stalls.CLASS`,
+`thieves.CLASSES`), but every function on it becomes a no-op: nothing per frame, no log lines, no
+CSV. Its `NotifyOnNewObject` registration is skipped when nothing is listening. Two consequences
+worth knowing:
+
+- The keys that belong to an off tracker do nothing: F9 and F10 (camera dump, flame rescan), K (the
+  flame experiment), T and Y (the gem thief and the NaN sweep).
+- `trackers/charge.lua` drives the camera tracker's lock measurements itself, so `camlock` and
+  `camstuck` still run while `charge` is on even with `camera` off. The world tour's camera columns
+  (`tools/worldtour/samples.lua`) come from `ROW_CAMERA`, not from a tracker — turn it on for a tour.
+
+`PROFILE = true` times each tracker, `row.build` and the trace write into their own buckets with the
+engine's clock (`os.clock` is only 1 ms on Windows) and logs a ranked summary every
+`PROFILE_INTERVAL` seconds:
+
+```
+profile: 2400 frames (avg frame 4.15 ms, 241 FPS), probe avg 0.92 ms/frame (22.2% of frame), max 3.10 ms
+profile ms/frame: turtle 0.412, trace 0.180, row 0.153, movement 0.012
+```
+
+It costs two clock reads per timed call, so it is a measurement run of its own, not something to
+leave on — and it must be `false` in commits.
 ## Glide test (G, added 2026-09-18)
 
 **G** puts Spyro 600 above the quicksave spot (V), facing the saved way, with zero velocity, and sends `Character.Event.Glide.Start` (`AbilitySystemBlueprintLibrary.SendGameplayEventToActor`) so `GA_Spyro_Glide` starts a glide from speed 0. The glide pushes forward on its own, so dont steer. `tools/glidetest.lua` logs one `glidetest` line per run: time to 50/90/99% of the glide speed, ground distance and drop at 0.25–3 s, and ground distance and time at drops of 50–400. Save the spot facing open air.

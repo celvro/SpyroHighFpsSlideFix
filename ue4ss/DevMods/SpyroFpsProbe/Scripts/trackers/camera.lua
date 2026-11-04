@@ -5,7 +5,15 @@
 --                          (interpolated between frames), k50/k90 the matching exponential interp speeds
 --                          (ln 2 / t50, ln 10 / t90). Only offsets >= CAM_MIN_OFFSET. Timing starts at the
 --                          first frame with the tag, so up to one frame late.
---   "camstuck" lines       a charge where the camera stops catching up (see updateStuck).
+--   "camstuck" lines       a charge where the camera stops catching up (see updateStuck). A second line
+--                          gives the native phase test's terms at the moment of detection.
+--   "camphase" lines       each time a charge crosses the native centering phase test (exe 0x141EF670B):
+--                          |gap| <= |yawChange this frame * m_ctrDecelAngleTurnModifier| + scale *
+--                          m_ctrDecelAngle. Phase A caps the camera at scale * 180 deg/s and is where it
+--                          gets stuck; phase B interpolates at m_ctrInterp and recovers. `scale` is
+--                          latched once per episode by the game and frozen, so it is reconstructed from
+--                          the gap at the charge's start (+0xC20 is not reflected). Edge triggered, so a
+--                          charge that stays in one phase logs nothing, and capped per charge.
 --   "camtransition" lines  each camera settings transition (FollowCamera:IsTransitioning() true): its
 --                          duration and m_ctrInterp at the start, after CAMTRANSITION_SAMPLES seconds and
 --                          at the end, to see how the game blends it (the camera fix skips these).
@@ -14,6 +22,7 @@
 --                          camera transition, when a charge camera gets stuck, and on F9. After the charge
 --                          and stuck dumps, "camdump diff" lines list what changed.
 local dump = require("lib.dump")
+local levels = require("lib.levels")
 local log = require("lib.log")
 local state = require("lib.state")
 local util = require("lib.util")
@@ -32,12 +41,86 @@ local CAMSTUCK_MAX_RATE = 170     -- deg/s; at the 180 deg/s centering cap the c
 local CAMSTUCK_NOLOCK_OFFSET = 20 -- degrees off Spyro's back, without steering, that should close
 local CAMSTUCK_NOLOCK_KEEP = 0.7  -- "noLock" if more than this fraction of the gap is left after CAMSTUCK_WINDOW
 local CAMSTUCK_NOLOCK_MAX_YAW_RATE = 30 -- deg/s; Spyro turning faster than this counts as steering
-local CAMSTUCK_MAX_DUMPS = 3      -- "stuck" camdumps per session
+local CAMSTUCK_MAX_DUMPS = 12     -- "stuck" camdumps per session (3 was spent in one world on
+                                  -- 2026-10-10, before the run reached the next game)
+local CAMPHASE_MAX_LINES = 20     -- "camphase" lines per charge, in case the phase oscillates
+local CTR_SCALE_DIVISOR = 90      -- the native latch is min(|gap| / 90, 1), exe 0x141EF6647
 
 local camera = {}
 
 -- Dumps are lists of { path, value }.
 local camDump = { idle = nil, charge = nil, requested = false, stuckRequested = false, stuckCount = 0 }
+
+-- The level Spyro is in (LS101 = Spyro 1, LS2xx = 2, LS3xx = 3), so a `camstuck` line says which game
+-- it came from: positions alone can't name a level, several sit near +/-300000. `levels.current` walks
+-- every streaming level, so it is read once a second from updateDump (which already has the pawn) and
+-- cached here rather than put in the per-frame row. A level change is logged as it happens.
+local LEVEL_INTERVAL = 1.0
+local level = { name = nil, checkedAt = nil }
+
+-- The native centering phase test, rebuilt from the disassembly (see docs/findings/charge-turn-camera.md).
+-- Each frame the game stays in phase A (camera capped at scale * 180 deg/s) unless
+--     |gap| <= |yawChangeThisFrame * m_ctrDecelAngleTurnModifier| + scale * m_ctrDecelAngle
+-- (exe 0x141EF670B). `scale` is latched once per centering episode from the gap at its start
+-- (0x141EF6654, gated by the byte at +0xAA5) and then frozen, so it is reconstructed here from the
+-- gap at the charge's start rather than read: +0xC20 is not a reflected property.
+-- The two properties are read per charging frame because the centering switch fix rewrites the
+-- modifier every frame from dt, so a cached value would not be the one the game just used.
+local camComp = nil -- Spyro's FollowCameraComponent, cached by updateDump (which has the pawn)
+
+-- Built once: a closure per charging frame would be garbage the collector has to sweep up.
+local function readDecelProps()
+    return camComp.m_ctrDecelAngle, camComp.m_ctrDecelAngleTurnModifier
+end
+
+local function phase(r, c)
+    if not camComp then return nil end
+    local ok, decelAngle, modifier = pcall(readDecelProps)
+    if not ok or not decelAngle or not modifier then return nil end
+    -- Frozen at the charge's first frame, the closest proxy we have for the centering episode's start.
+    local scale = math.min(math.abs(c.camOffset0 or 0) / CTR_SCALE_DIVISOR, 1)
+    local turnTerm = math.abs(r.yawRate * r.dt) * modifier
+    local angleTerm = scale * decelAngle
+    local threshold = turnTerm + angleTerm
+    return {
+        threshold = threshold, turnTerm = turnTerm, angleTerm = angleTerm,
+        scale = scale, modifier = modifier, decelAngle = decelAngle,
+        -- true = the game should be in phase B (FInterpTo at m_ctrInterp), i.e. not stuck
+        phaseB = math.abs(r.camOffset) <= threshold,
+    }
+end
+
+-- Logs only when the phase flips, so a charge that sits in one phase costs nothing in the log.
+local function updatePhase(r, c)
+    local p = phase(r, c)
+    if not p then return end
+    if c.phaseB == nil then c.phaseB, c.phaseLines = p.phaseB, 0 end
+    if p.phaseB == c.phaseB then return end
+    c.phaseB = p.phaseB
+    if c.phaseLines >= CAMPHASE_MAX_LINES then return end
+    c.phaseLines = c.phaseLines + 1
+    log("camphase %d -> %s level=%s cap=%s t=%.2fs into charge: gap %.1f vs threshold %.1f "
+        .. "(turn %.1f = |%.1f deg/frame| * %.2f, angle %.1f = scale %.3f * %.1f) "
+        .. "yawRate=%.1f camRate=%.1f dt=%.2fms transitioning=%s",
+        c.id, p.phaseB and "B (interp, should recover)" or "A (capped at scale*180 = "
+            .. string.format("%.0f deg/s)", p.scale * 180),
+        tostring(level.name or "?"), tostring(state.fpsCap or "?"), r.time - c.startTime,
+        math.abs(r.camOffset), p.threshold,
+        p.turnTerm, r.yawRate * r.dt, p.modifier, p.angleTerm, p.scale, p.decelAngle,
+        r.yawRate, r.camRate, r.dt * 1000, tostring(r.camTransitioning))
+end
+
+local function updateLevel(pawn, r)
+    if level.checkedAt and r.time - level.checkedAt < LEVEL_INTERVAL then return end
+    level.checkedAt = r.time
+    local ok, name = pcall(levels.current, pawn)
+    if not ok or not name then return end
+    if name ~= level.name then
+        log("camlevel %s (was %s)", tostring(name), tostring(level.name))
+        level.name = name
+        state.level = name
+    end
+end
 
 function camera.finishLock(endedBy)
     local l = state.camLock
@@ -45,8 +128,8 @@ function camera.finishLock(endedBy)
     if not l then return end
     local function seconds(t) return t and string.format("%.3fs", t) or "n/a" end
     local function speed(logRatio, t) return t and t > 0 and string.format("%.2f", logRatio / t) or "n/a" end
-    log("camlock %s cause=%s cap=%s avgFps=%.1f offset0=%.1f t50=%s t90=%s k50=%s k90=%s camRateMax=%.0f ctrInterp=%.3f endedBy=%s",
-        l.id, l.cause, tostring(state.fpsCap or "?"), avgFps(l), l.offset0, seconds(l.t50), seconds(l.t90),
+    log("camlock %s cause=%s level=%s cap=%s avgFps=%.1f offset0=%.1f t50=%s t90=%s k50=%s k90=%s camRateMax=%.0f ctrInterp=%.3f endedBy=%s",
+        l.id, l.cause, tostring(level.name or "?"), tostring(state.fpsCap or "?"), avgFps(l), l.offset0, seconds(l.t50), seconds(l.t90),
         speed(math.log(2), l.t50), speed(math.log(10), l.t90), l.camRateMax, l.ctrInterp, endedBy)
 end
 
@@ -98,6 +181,7 @@ end
 function camera.updateStuck(r)
     local c = state.charge
     local offset = math.abs(r.camOffset)
+    updatePhase(r, c) -- before the early return: the phase matters most while an episode is running
     local s = c.stuck
     if s and s.active then
         s.offsetMax = math.max(s.offsetMax, offset)
@@ -112,8 +196,15 @@ function camera.updateStuck(r)
 
     local function detect(kind, refTime, refOffset, endBelow)
         s.count, s.active, s.since, s.offsetMax, s.endBelow = s.count + 1, true, r.time, offset, endBelow
-        log("camstuck %d.%d kind=%s cap=%s dt=%.2fms t=%.2fs into charge: offset %.1f -> %.1f in %.2fs camRate=%.1f spyroYawRate=%.1f ctrInterp=%.3f transitioning=%s pos=(%.0f, %.0f, %.1f) floorNz=%.4f stick=(%.2f, %.2f) mouse=%.3f",
-            c.id, s.count, kind, tostring(state.fpsCap or "?"), r.dt * 1000, r.time - c.startTime, refOffset, offset, r.time - refTime,
+        local p = phase(r, c)
+        if p then
+            log("camstuck %d.%d phase=%s gap %.1f vs threshold %.1f (turn %.1f, angle %.1f = scale %.3f * %.1f, "
+                .. "modifier %.2f) scale*180=%.0f deg/s against yawRate %.1f",
+                c.id, s.count, p.phaseB and "B" or "A", offset, p.threshold, p.turnTerm, p.angleTerm,
+                p.scale, p.decelAngle, p.modifier, p.scale * 180, r.yawRate)
+        end
+        log("camstuck %d.%d kind=%s level=%s cap=%s dt=%.2fms t=%.2fs into charge: offset %.1f -> %.1f in %.2fs camRate=%.1f spyroYawRate=%.1f ctrInterp=%.3f transitioning=%s pos=(%.0f, %.0f, %.1f) floorNz=%.4f stick=(%.2f, %.2f) mouse=%.3f",
+            c.id, s.count, kind, tostring(level.name or "?"), tostring(state.fpsCap or "?"), r.dt * 1000, r.time - c.startTime, refOffset, offset, r.time - refTime,
             r.camRate, r.yawRate, r.camCtrInterp, tostring(r.camTransitioning), r.x, r.y, r.z, r.floorNz,
             r.stickX, r.stickY, r.mouseRaw)
         camDump.stuckRequested = true
@@ -187,6 +278,11 @@ end
 -- Dumps the FollowCameraComponent once while idle, once mid-charge, when a charge camera gets
 -- stuck (updateStuck), and on F9.
 function camera.updateDump(pawn, r)
+    updateLevel(pawn, r)
+    -- Cached for phase(): updateStuck runs from the charge tracker and has no pawn. Re-read each
+    -- frame because the component is replaced with the pawn on a level load or respawn.
+    local okCam, comp = pcall(function() return pawn.FollowCamera end)
+    camComp = (okCam and comp and comp:IsValid()) and comp or nil
     local d = camDump
     local label
     local stuck = d.stuckRequested and d.stuckCount < CAMSTUCK_MAX_DUMPS

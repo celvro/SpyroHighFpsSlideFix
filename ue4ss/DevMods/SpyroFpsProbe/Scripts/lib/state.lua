@@ -3,6 +3,9 @@
 -- one tracker touches lives in that tracker instead.
 return {
     fpsCap = nil,        -- last t.MaxFPS set with F5-F8, for the log lines
+    level = nil,         -- level Spyro is in (LS101 = Spyro 1, LS2xx = 2, LS3xx = 3), refreshed once a
+                         -- second by trackers/camera.lua; nil while that tracker is off. On the log
+                         -- lines so a measurement can be attributed to a game, which positions can't do.
     lastTime = nil,      -- game time of the last sample, to skip paused and repeated frames
     prevRow = nil,       -- the previous frame's row
     recent = {},         -- last RECENT_FRAMES rows, oldest first

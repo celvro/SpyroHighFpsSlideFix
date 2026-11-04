@@ -11,8 +11,9 @@
 -- back to `CharacterMovement.MaxStepHeight` on a mission reset.
 --
 --   lizard_<stamp>.csv       one row per frame per active lizard (header below)
---   lizard_hits_<stamp>.csv  every blocking hit of a lizard's own moves, from BP_Base_Enemy's capsule hit
---                            event: what was hit, the normals, the sweep and its Time
+--   lizard_hits_<stamp>.csv  every blocking hit of a lizard's own moves, from lib/enemyhits.lua (the
+--                            shared hook on BP_Base_Enemy's capsule hit event): what was hit, the
+--                            normals, the sweep and its Time
 --   "lizardstall" lines   a stretch in a moving state that got nowhere: duration, still frames, where it
 --                         stood, z gained, the velocity and request it had, the hits that blocked it
 --                         (normals and how many at Time 0), and what ended it
@@ -21,6 +22,7 @@
 --   "lizardsummary" lines per lizard when it leaves a moving state: time, distance, stalled time, climbs
 --   "lizardcmc" dump      every reflected movement-component property, once, for the first lizard found
 local dump = require("lib.dump")
+local enemyhits = require("lib.enemyhits")
 local log = require("lib.log")
 local paths = require("lib.paths")
 local state = require("lib.state")
@@ -30,11 +32,6 @@ local num, tryCall, lookupDue = util.num, util.tryCall, util.lookupDue
 
 local lizard = { CLASS = "BP_LavaLizard_C" }
 
--- BP_Base_Enemy binds this to its CapsuleComponent's OnComponentHit, so every enemy's blocking hits come
--- through it (params: HitComponent, OtherActor, OtherComp, NormalImpulse, Hit).
-local HIT_FUNCTION = "/CharacterCommon/BaseClasses/BP_Base_Enemy.BP_Base_Enemy_C:"
-    .. "BndEvt__CapsuleComponent_K2Node_ComponentBoundEvent_3_ComponentHitSignature__DelegateSignature"
-local HOOK_RETRY_FRAMES = 60
 local MAX_PENDING = 32          -- hits kept per lizard per frame
 local MAX_ROWS = 8              -- CSV rows per frame, worst case 16 lizards are loaded
 local FAR = 12000               -- lizards further than this from the player are left alone
@@ -52,7 +49,6 @@ local actors = {}
 local entries = {}  -- address -> { name, prevLoc, stateName, dtAvg, stall, climbs, run, hits }
 local lookup = { lookups = util.NEW_OBJECT_LOOKUPS, nextLookup = 0 }
 local pending = {}  -- address -> list of hits since the last frame
-local registered, hookFailed, retryIn = false, false, 0
 local cmcDumped = false
 local errorLogged = false
 local file, hitFile = nil, nil
@@ -67,10 +63,6 @@ local function className(object)
     return ok and s or "?"
 end
 
-local function vec(v)
-    return { num(v.X), num(v.Y), num(v.Z) }
-end
-
 local function add(actor)
     if not (actor and actor:IsValid()) then return end
     local name = actorName(actor)
@@ -82,12 +74,10 @@ local function add(actor)
     actors[#actors + 1] = actor
 end
 
--- Hits of the lizards' own moves. The engine calls this for the step-up and slide sweeps too, which is
--- what tells a blocked climb from a lizard that never tried.
-local function onHit(context, hitComp, otherActor, otherComp, normalImpulse, hit)
-    local actor = context:get()
-    if not (actor and actor:IsValid()) then return end
-    if className(actor) ~= lizard.CLASS then return end
+-- Hits of the lizards' own moves, from the hook shared with the other enemy trackers (lib/enemyhits.lua).
+-- The engine calls it for the step-up and slide sweeps too, which is what tells a blocked climb from a
+-- lizard that never tried.
+local function onHit(actor, entry)
     local address = actor:GetAddress()
     local list = pending[address]
     if not list then
@@ -95,53 +85,11 @@ local function onHit(context, hitComp, otherActor, otherComp, normalImpulse, hit
         pending[address] = list
     end
     if #list >= MAX_PENDING then return end
-    local h = hit:get()
-    local other, comp = otherActor:get(), otherComp:get()
-    local entry = {
-        other = (other and other:IsValid()) and actorName(other) or "none",
-        comp = (comp and comp:IsValid()) and actorName(comp) or "none",
-        normal = vec(h.Normal), impactNormal = vec(h.ImpactNormal), impactPoint = vec(h.ImpactPoint),
-        location = vec(h.Location), traceStart = vec(h.TraceStart), traceEnd = vec(h.TraceEnd),
-        time = num(h.Time), startPenetrating = h.bStartPenetrating, penetration = num(h.PenetrationDepth),
-    }
-    -- A Blueprint hook here fires the pre callback only, but it is registered as both (CLAUDE.md), so
-    -- drop a repeat of the hit that was just stored.
-    local last = list[#list]
-    if last and last.time == entry.time and last.impactPoint[1] == entry.impactPoint[1]
-        and last.impactPoint[2] == entry.impactPoint[2] and last.impactPoint[3] == entry.impactPoint[3] then
-        return
-    end
+    if enemyhits.sameHit(list[#list], entry) then return end
     list[#list + 1] = entry
 end
 
--- Registered once a lizard exists, so the function name is never looked up while it cannot be there
--- (a StaticFindObject miss scans the whole object array).
-local function tryRegister()
-    if registered or hookFailed then return end
-    if retryIn > 0 then
-        retryIn = retryIn - 1
-        return
-    end
-    retryIn = HOOK_RETRY_FRAMES
-    local fn = StaticFindObject(HIT_FUNCTION)
-    if not (fn and fn:IsValid()) then return end -- no enemies loaded yet; never polled for a missing name
-    local hitErrorLogged = false
-    local function guarded(...)
-        local ok, err = pcall(onHit, ...)
-        if not ok and not hitErrorLogged then
-            hitErrorLogged = true
-            log("lizard hit hook error: %s", tostring(err))
-        end
-    end
-    local ok, err = pcall(RegisterHook, HIT_FUNCTION, guarded, guarded)
-    if ok then
-        registered = true
-        log("lizard capsule hit hook registered")
-    else
-        hookFailed = true
-        log("lizard capsule hit hook unavailable: %s", tostring(err))
-    end
-end
+enemyhits.subscribe(lizard.CLASS, onHit)
 
 local function hitSummary(stall)
     local parts = {}
@@ -375,7 +323,7 @@ local function update(r, prev)
         pending = {}
         return
     end
-    tryRegister()
+    enemyhits.register()
     local dt = prev and r.time - prev.time or 0
     if dt <= 0 then return end
 

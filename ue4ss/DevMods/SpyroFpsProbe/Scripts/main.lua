@@ -14,6 +14,9 @@
 --   G                  scripted glide from a standstill, 600 above the saved spot (tools/glidetest.lua)
 --   U                  spawn test: every chase/flee character type in front of Spyro, one at a time (tools/spawntest.lua)
 --   J                  slide pose for screenshots: start the steep-slope slide here, press again to end it (tools/slide.lua)
+--   R                  stuck charge camera repro: cycles 5 presets per press (12/33 deg at the 130.8 stick
+--                      rate, the same two at the 210 mouse rate, then stop-and-restart), again to cancel.
+--                      The controlled A/B for FIX_STUCK_CAMERA; needs ROW_CAMERA (tools/camrepro.lua)
 --   M                  a minigame take: start/stop recording; otherwise record a tour stop (routes.txt)
 --   H                  record a stop in front of every kind of character in this level (tools/scan.lua)
 --   O                  world tour: every recorded stop, playing its input script, at 30/60/144/320 FPS (tools/worldtour/)
@@ -36,6 +39,8 @@
 --   stalls_<stamp>.csv   one row per NPC/enemy movement stretch (trackers/stalls.lua)
 --   lizard_<stamp>.csv   one row per frame per active Skelos Badlands lava lizard, plus
 --   lizard_hits_<stamp>.csv  their blocking hits (trackers/lizard.lua)
+--   turtle_<stamp>.csv   one row per frame per active Sunny Beach box turtle, plus
+--   turtle_hits_<stamp>.csv  their blocking hits and slide bounces (trackers/turtle.lua)
 --   autotest_<stamp>.csv one row per world tour sample, per framerate (tools/worldtour/samples.lua)
 --   animtest_<stamp>.csv one row per montage per framerate (tools/animtest.lua)
 --   camdump_*.txt        every reflected FollowCameraComponent property (trackers/camera.lua)
@@ -47,7 +52,8 @@
 --                        "flight", "flightramp", "flightrun" (trackers/flight.lua);
 --                        "chargestall" (trackers/hits.lua); "buzzrun" (trackers/buzz.lua);
 --                        "stall", "stallsummary" (trackers/stalls.lua); "lizardstall", "lizardstep",
---                        "lizardsummary" (trackers/lizard.lua); "gemthief" (trackers/gemthief.lua); "nanspeed" (trackers/nanspeed.lua); "autotest", "review" (tools/worldtour/); "animtest" (tools/animtest.lua); "routes" (tools/routes.lua); "resume" (lib/resume.lua); "spawntest" (tools/spawntest.lua); "slide" (tools/slide.lua);
+--                        "lizardsummary" (trackers/lizard.lua); "turtleslide", "turtlerun",
+--                        "turtlestall", "turtlestart" (trackers/turtle.lua); "gemthief" (trackers/gemthief.lua); "nanspeed" (trackers/nanspeed.lua); "autotest", "review" (tools/worldtour/); "animtest" (tools/animtest.lua); "routes" (tools/routes.lua); "resume" (lib/resume.lua); "spawntest" (tools/spawntest.lua); "slide" (tools/slide.lua);
 --                        quicksave, reload and travel lines (tools/quicksave.lua); "glidetest" (tools/glidetest.lua)
 --
 -- Scripts/
@@ -57,37 +63,66 @@
 
 local UEHelpers = require("UEHelpers")
 local log = require("lib.log")
+local config = require("config")
+local profile = require("lib.profile")
 local levels = require("lib.levels")
 local igc = require("lib.igc")
 local dialogue = require("lib.dialogue")
 local invuln = require("lib.invuln")
 local mouse = require("lib.mouse")
 local paths = require("lib.paths")
-local row = require("lib.row")
+local row = profile.wrap("row", require("lib.row"))
 local state = require("lib.state")
-local trace = require("lib.trace")
+local trace = profile.wrap("trace", require("lib.trace"))
 local util = require("lib.util")
-local buzz = require("trackers.buzz")
-local camera = require("trackers.camera")
-local charge = require("trackers.charge")
-local dragons = require("trackers.dragons")
-local flames = require("trackers.flames")
-local flight = require("trackers.flight")
-local glide = require("trackers.glide")
-local hits = require("trackers.hits")
-local movement = require("trackers.movement")
-local supercharge = require("trackers.supercharge")
-local thieves = require("trackers.thieves")
-local stalls = require("trackers.stalls")
-local lizard = require("trackers.lizard")
-local gemthief = require("trackers.gemthief")
-local nanspeed = require("trackers.nanspeed")
-local walkin = require("trackers.walkin")
+
+-- Which trackers run is config.lua, because each one costs frame time on the game thread (see the
+-- comments there). A tracker that is off is still loaded, so its constants still read as themselves
+-- (stalls.CLASS, thieves.CLASSES), but every function on it is replaced by a no-op: it costs nothing
+-- per frame, measures nothing and logs nothing. config.PROFILE instead times each one into its own
+-- bucket (lib/profile.lua).
+local function noop() end
+local function tracker(name)
+    local module = require("trackers." .. name)
+    if config.TRACKERS[name] then return profile.wrap(name, module) end
+    local disabled = {}
+    for key, value in pairs(module) do
+        disabled[key] = type(value) == "function" and noop or value
+    end
+    return disabled
+end
+
+-- True if any of the named trackers is on; used to skip a NotifyOnNewObject nothing is listening for.
+local function anyOn(...)
+    for _, name in ipairs({ ... }) do
+        if config.TRACKERS[name] then return true end
+    end
+    return false
+end
+
+local buzz = tracker("buzz")
+local camera = tracker("camera")
+local charge = tracker("charge")
+local dragons = tracker("dragons")
+local flames = tracker("flames")
+local flight = tracker("flight")
+local glide = tracker("glide")
+local hits = tracker("hits")
+local movement = tracker("movement")
+local supercharge = tracker("supercharge")
+local thieves = tracker("thieves")
+local stalls = tracker("stalls")
+local lizard = tracker("lizard")
+local turtle = tracker("turtle")
+local gemthief = tracker("gemthief")
+local nanspeed = tracker("nanspeed")
+local walkin = tracker("walkin")
 local resume = require("lib.resume")
 local quicksave = require("tools.quicksave")
 local glidetest = require("tools.glidetest")
 local spawntest = require("tools.spawntest")
 local slide = require("tools.slide")
+local camrepro = require("tools.camrepro")
 local worldtour = require("tools.worldtour.worldtour")
 local minigame = require("tools.minigame")
 local animtest = require("tools.animtest")
@@ -128,6 +163,7 @@ local function sample()
         return
     end
     state.lastTime = time
+    profile.beginFrame(pc, statics)
 
     local prev = state.prevRow
     local r = row.build(pc, pawn, cmc, statics, time, prev)
@@ -167,6 +203,7 @@ local function sample()
         buzz.pawnChanged()
         stalls.pawnChanged()
         lizard.pawnChanged()
+        turtle.pawnChanged()
         gemthief.pawnChanged()
         nanspeed.pawnChanged()
         flames.rescan()
@@ -177,6 +214,7 @@ local function sample()
     end
     stalls.update(r, prev, pawn)
     lizard.update(r, prev)
+    turtle.update(r, prev)
     gemthief.update(r)
     nanspeed.update(r)
     flames.update(r, frameTime)
@@ -185,6 +223,7 @@ local function sample()
     glidetest.update(pawn, pc, cmc, r)
     spawntest.update(pawn, pc, setFpsCap, frameTime)
     slide.update(pawn, r)
+    camrepro.update(pawn, r)
     worldtour.update(pawn, pc, cmc, r, setFpsCap)
     minigame.update(pawn, pc, cmc, r, state.fpsCap or 0)
     animtest.update(pawn, pc, r, setFpsCap)
@@ -216,6 +255,7 @@ local function sample()
     state.prevRow = r
     table.insert(state.recent, r)
     if #state.recent > RECENT_FRAMES then table.remove(state.recent, 1) end
+    profile.endFrame(r.dt)
 end
 
 setFpsCap = function(cap)
@@ -247,6 +287,7 @@ RegisterKeyBind(Key.K, flames.cycleExperiment)
 RegisterKeyBind(Key.G, glidetest.request)
 RegisterKeyBind(Key.U, spawntest.toggle)
 RegisterKeyBind(Key.J, slide.request)
+RegisterKeyBind(Key.R, camrepro.arm)
 RegisterKeyBind(Key.O, worldtour.toggle)
 RegisterKeyBind(Key.M, function() requestRecord = true end)
 RegisterKeyBind(Key.F3, function()
@@ -270,25 +311,31 @@ NotifyOnNewObject("/Script/Engine.ParticleSystemComponent", function(object)
     flames.onNewComponent(object)
 end)
 NotifyOnNewObject("/Script/Engine.AudioComponent", animtest.onNewAudio)
--- One notification per class, fanned out: the three trackers that want every character share a callback.
+-- One notification per class, fanned out: the trackers that want every character share a callback.
+-- It fires on every character the game constructs, so it is only registered when one of them is on.
 -- (The startup crashes while this was being written were two unrelated pak mods, not a second
 -- registration here and not the FindAllOf polling it replaced — docs/probe.md.)
-NotifyOnNewObject(stalls.CLASS, function(object)
-    stalls.onNewObject(object)
-    nanspeed.onNewObject(object)
-    gemthief.onNewObject(object)
-    lizard.onNewObject(object)
-end)
+if anyOn("stalls", "nanspeed", "gemthief", "lizard", "turtle") then
+    NotifyOnNewObject(stalls.CLASS, function(object)
+        stalls.onNewObject(object)
+        nanspeed.onNewObject(object)
+        gemthief.onNewObject(object)
+        lizard.onNewObject(object)
+        turtle.onNewObject(object)
+    end)
+end
 
 -- Level Blueprint classes load with their level; look for their instances for a while afterwards.
-local levelClasses = { [dragons.CLASS] = dragons }
-for className in pairs(thieves.CLASSES) do levelClasses[className] = thieves end
-for className in pairs(buzz.CLASSES) do levelClasses[className] = buzz end
-NotifyOnNewObject("/Script/Engine.BlueprintGeneratedClass", function(object)
-    local ok, name = pcall(function() return object:GetFName():ToString() end)
-    local tracker = ok and levelClasses[name]
-    if tracker then tracker.classLoaded() end
-end)
+if anyOn("dragons", "thieves", "buzz") then
+    local levelClasses = { [dragons.CLASS] = dragons }
+    for className in pairs(thieves.CLASSES) do levelClasses[className] = thieves end
+    for className in pairs(buzz.CLASSES) do levelClasses[className] = buzz end
+    NotifyOnNewObject("/Script/Engine.BlueprintGeneratedClass", function(object)
+        local ok, name = pcall(function() return object:GetFName():ToString() end)
+        local watcher = ok and levelClasses[name]
+        if watcher then watcher.classLoaded() end
+    end)
+end
 
 if not EngineTickAvailable then
     log("EngineTick hook unavailable; per-frame sampling disabled")
@@ -305,4 +352,16 @@ LoopInGameThreadAfterFrames(1, function()
     end
 end)
 
-log("loaded; writing %s", paths.trace)
+-- What this run measures goes in the log, so a CSV with a column missing can be traced back to the
+-- switches it was recorded with (config.lua).
+local on = {}
+for name, enabled in pairs(config.TRACKERS) do
+    if enabled then on[#on + 1] = name end
+end
+table.sort(on)
+log("loaded; trackers on: %s", #on > 0 and table.concat(on, " ") or "none")
+if config.TRACE then
+    log("writing %s", paths.trace)
+else
+    log("trace CSV off (config.TRACE)")
+end
