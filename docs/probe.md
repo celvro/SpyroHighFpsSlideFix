@@ -64,7 +64,7 @@ Testing aid, in the probe only. One quicksave slot, not one per level. **V** sav
 - `ue4ss/DevMods/SpyroFpsProbe` (deploy with `Install-UE4SS.ps1 -ModsOnly -Probe`): F5/F6/F7/F8 set `t.MaxFPS` to 30/60/120/0. F3 presses Continue on the NPC text box that is up (`lib/dialogue.lua`, through the box's own `OnMouseButtonDownFromGameInstance` with the pad's confirm key). A conversation that puts choices on screen is a second widget, `UI_DialogueQuestions_C`, which Continue does nothing to; that one is answered with its first option (Confirm on `questionlist` child 0 — "Stay here" on a balloonist, the option the game itself focuses), after Marco the Balloonist held the tour in LS101 on 2026-09-27. The scripted tour presses through conversations the same way and never ends a cinematic, changes the input mode or touches the HUD (`lib/igc.lua`, `lib/frontend.lua`: removing the HUD container once hid every text box). After a restart the resume presses Continue on the title and picks the game on the game select, as a player does. `tools/minigame.lua` records a minigame played by hand, because the scripted tour cannot play one: write a level name, `next` or `list` into `minigame.txt` (or press C for the next one) and it travels there, puts you on the recorded spot as the right character with 30000 gems for Moneybags, and hands the controller over without moving you or touching input, so you start the minigame yourself (boarding the Spyro 2 trolley or the shark's boat, or talking to whoever runs it). M then starts and stops a take, F1 marks the moment something went wrong (and logs which widgets are drawn) and F2 puts you back at the start for another go. Set the cap with F5/F4 before each take: rows carry it, and takes are numbered, so the same minigame at 30 and at 320 lines up. Output is `minigame_*.csv` and `minigame_anims_*.csv` in the tour's own column shape, so `tools/Compare-Anims.ps1` reads them, plus `minigame_notes_*.txt`, one line per mark with the take, the time into it, the cap and the montage that was playing. On load it restores `MaxSimulationTimeStep` to 0.05 if an old build changed it. It prints a `seg` summary per airborne segment, a `drift` line for grounded sliding without input, a `rise` line for every zero-gravity rise (kind ground/water/glide-hover/air, time at launch speed, apex from the launch frame), and charge lines. Those are `charge` (per charge), `turn` (grounded full-lock steer ≥ 0.5 s: yaw rates of Spyro/velocity/camera, radius, accel angle, slip, camera lag), and `camlock` (camera closing a ≥ 10° yaw offset after charge start or turn release: t50/t90 and the equivalent exponential speeds k50/k90, to compare against m_ctrInterp 3.5). Charge detection calls `IGetIsCharging` and falls back to MaxWalkSpeed ≥ 450, and optional calls that fail log `... unavailable` once. The `charge` line also has `startSpeed`, `t400` (from the last untagged frame to 400 speed, for starts below 150), `mouseDist` (raw mouse X), `yawPerMouse`, and `dustSpawns`/`dustRate`/`dustDilationMax` (charge dust effect respawns). CSV `mouse_raw` comes from the probe's own hook on `InputAxis_RightStick_X`; `stick_rx` is the stored value, which the mouse fix replaces. `camdump_<time>_<idle|charge|manual>.txt` holds every reflected `FollowCameraComponent` property (recursing into structs and arrays). It is written once while idle, once ≥ 0.75 s into a charge after the camera transition, and on F9. After the charge dump, `camdump diff` log lines list the values that changed. Per-frame CSV goes to `ue4ss\Mods\SpyroFpsProbe\trace_*.csv` in the game dir. `thief` lines (once a second per thief that is chasing or moving) give speed from position and from velocity, MaxWalkSpeed (average and range), % of time at MaxWalkSpeed, `accelObserved` vs MaxAcceleration, distance to Spyro vs CurrentDesiredDistance, DesiredSpeed, ChaseTime, the most common enemy state, and predicted laughs. Per-frame rows go to `thieves_*.csv`. `flame` lines (one per flame breath, from `NotifyOnNewObject` on `ParticleSystemComponent` plus a `FindAllOf` scan at startup, on pawn change and on F10) give the flame particle component's bounds via `KismetSystemLibrary:GetComponentBounds` and its `InstanceParameters`; per-frame rows go to `flames_*.csv`. Thief (`ChaseSpeedManager_C`/`_S3_C`) and dragon lookups use `FindAllOf`, which only runs for 15 lookups, 1 s apart, after `NotifyOnNewObject` reports the class loading or the pawn changes. The dragon lookup used to poll every 60 frames.
 
 
-## World tour (M / O, added 2026-09-20) — first complete runs 2026-11-04; full trilogy run in progress
+## World tour (M / O, added 2026-09-20) — full trilogy run 2026-11-04/05: 1843 stops at 30/30/60/160
 
 A comprehensive comparison run: load each level, stand on a recorded spot, play a preset controller script, and compare where the character and camera end up at each framerate.
 
@@ -85,6 +85,27 @@ The code is in `tools/worldtour/`: `worldtour.lua` starts and stops a run and st
 - **The progress file now says which plan it belongs to.** `autotest_progress.txt` holds an index into the plan the run's *options* built, so resuming a `caps=30,60` run with `caps=30` landed in the middle of a different level. It carries an options signature (caps, level, script, review) and a mismatch starts the route over with a log line saying so — the same guard `tools/scansweep.lua` keeps, and the driver above depends on it, since it re-drops its trigger after every crash.
 - **Nothing else may be travelling Spyro at the same time.** The crash above happened during a scan sweep, with the two fighting over where he was. The sweep now refuses to start while a tour runs and stops if one starts (`main.lua` passes `worldtour.running()` into `scansweep.update`); the tour has no such guard yet.
 - **Both comparisons mixed the lead stops up until 2026-11-04.** A lead stop plays four scripts (flame, charge, hop, glide) under **one stop id**, and every join key left `script` out, so a pass was compared against whichever of the four was written last. `Compare-Anims.ps1` was worse: its dedup, which exists to drop a stop's abandoned first attempt, keyed on `(cap, stop, t, who)` and so threw three of the four scripts away as duplicates — **1437 of 4632 rows** of the 2026-11-04 LS101→LS110 run, 31% of it, reported as "abandoned attempts". `script` is in every key now.
+- **Samples taken before the teleport landed are the loudest thing in the report, and they are not
+  repairable (2026-11-05).** `play.settle` waited `SETTLE` = 1 s after asking for the teleport and then
+  took the stop's origin. The teleport does not always take effect in that second: over the trilogy run
+  **349 of 3733 runs (9%), across 182 stops**, spent their first second still standing where the last
+  stop left them, 3000-odd units away, with the camera not yet placed anywhere near him (`camDist` in the
+  hundreds of thousands against about 150 in gameplay), and snapped onto the spot afterwards. Every
+  sample of such a run is offset by the distance between the two places, and the script's input was
+  driven at the old one, so there is nothing in it to salvage.
+  - **It reads as a framerate difference**, because how many frames the teleport takes depends on the
+    framerate: 11% of the 30 FPS runs against 7% of the 160 FPS ones. It filled the top of the first
+    report — **17 of the 21 stops in the headline table** — and the single loudest "finding" of the run
+    (LS211/687, floor 4.4 units, both fast passes 3200 away, agreeing to within 24) was nothing but this.
+  - `play.settle` now refuses to finish until he is within `PLACED_DISTANCE` of `run.spot`, and gives up
+    on the stop after `SETTLE_MAX`. `Compare-Autotest.ps1` throws such runs away by their `camDist` and
+    says how many, so the data already on disk is usable without a second night.
+- **Nothing under two frames of walking means anything (2026-11-05).** The script presses and releases
+  the stick on a frame boundary, so the same walk ends up to a frame further on at 30 FPS than at 160
+  with no bug involved. Walking measured **269 units/s**, so a 30 FPS frame is **9 units** — and 44 of
+  the run's 68 cross-checked findings sat between 10 and 50 units, **clustered tightly around 16**, which
+  is two frames. That is one artefact, not 44 bugs. `Compare-Autotest.ps1` measures the speed from the
+  run itself and puts the bar at two frames of it.
 - **A stop's own noise floor is the only thing that makes the numbers mean anything (2026-11-04).** Run
   the baseline framerate twice (`caps=30,30,60,160`) and the second pass is how far a stop lands from
   *itself* — same script, same framerate, so whatever it covers is the stop failing to repeat. Measured
@@ -117,6 +138,19 @@ The code is in `tools/worldtour/`: `worldtour.lua` starts and stops a run and st
   reload saying "the stops that cannot move here are the spots" and carry on. That is right for a stop
   teleported against a wall and wrong for a level holding the input; the remaining stops are retired in
   one pass now (`worldtour.lua`'s `givenUp`) and the log names the level so it can be revisited.
+- **The fast passes agreeing with each other is the test; the floor alone is not (2026-11-05).** Most
+  stops repeat *exactly*: over the trilogy run the **median floor was 0**. Dividing by it makes every
+  drift past the tolerance a finding at an enormous ratio — **426 of 962 pairs**, which is not a list
+  anybody works through. What separates a framerate difference from a stop that merely wandered is that
+  **60 and 160 are wrong in the same way**: a cause in the framerate shows at both, while a charge
+  compounding a small difference in facing sends them somewhere unrelated each time. So a finding needs
+  every fast pass past the stop's floor, the baseline pass to have gone somewhere, and the fast passes to
+  land within half their own drift of each other. On the same data that is **37 cross-checked findings**,
+  one screen, and the run's loudest entry is not among them.
+  - A stop played at only **one** framerate above the baseline has nothing to agree with, so its spread
+    is 0 for free. Those are listed apart, as weaker. It is not a rare case: a crash costs a level its
+    later passes, and that is most of what games 2 and 3 lost (game 1 finished all four passes on ~460
+    stops; game 2 had 227 stops at 30 FPS but 87 at 160, game 3 535 against 168).
 - **Comparing.** `tools/Compare-Autotest.ps1` joins the passes on (stop, script, t) and reports, per stop and framerate, the largest and final distance from the 30 FPS pass and the largest camera yaw/pitch difference, worst first.
 - **Restarting from outside the game.** `tools/Restart-Game.ps1` closes the game, arms `resume.go` and starts it again. `lib/resume.lua` notes the level, game index and save slot to `resume.txt` every 5 s (the game itself only records the loaded level at an autosave or a menu quit, so Alt+F4 or a kill loses it); with `resume.go` set it waits out the title screen, calls `"start game"(game, slot)` and travels back to the noted level.
 

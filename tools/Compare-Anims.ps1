@@ -209,6 +209,58 @@ $shown |
     Select-Object Cap, Stop, Script, Who, Class, Samples, Differ, Shift, State, Drift |
     Format-Table -AutoSize | Out-String -Width 200 | Write-Host
 
+# The findings, by the same two tests tools/Compare-Autotest.ps1 uses on position, because the table
+# above has the same flaw its raw table had: it is sorted by how much a pass differs, and the loudest
+# rows are stops where the SECOND 30 FPS pass differs just as much -- the enemy was simply in a
+# different mood that time round. Those are at 100% in both, so they say nothing about the framerate.
+#
+#   floor = what the repeat pass at the baseline framerate did on this stop and character
+#   least = the least convinced pass above the baseline
+# A finding needs every fast pass past the floor, and, where there is more than one, needs them to agree
+# with each other -- a difference caused by the framerate shows up at 60 and at 160 alike.
+$floorOf = @{}
+foreach ($r in $results) {
+    if ($r.Cap -ne $Baseline -or $r.Pass -eq [int] $basePass) { continue }
+    $k = "$($r.Stop)|$($r.Script)|$($r.Who)"
+    if (-not $floorOf.ContainsKey($k) -or $r.Differ -gt $floorOf[$k]) { $floorOf[$k] = $r.Differ }
+}
+$byStop = @{}
+foreach ($r in $results) {
+    if ($r.Cap -eq $Baseline) { continue }
+    $k = "$($r.Stop)|$($r.Script)|$($r.Who)"
+    if (-not $byStop.ContainsKey($k)) { $byStop[$k] = @() }
+    $byStop[$k] += $r
+}
+$anim = @()
+foreach ($k in $byStop.Keys) {
+    $fast = $byStop[$k]
+    if (-not $floorOf.ContainsKey($k)) { continue }    # the repeat pass never played it: unmeasured
+    $floor = $floorOf[$k]
+    $least = ($fast | Measure-Object Differ -Minimum).Minimum
+    if ($least -le $floor + 10) { continue }           # inside what the same framerate does to itself
+    $caps = @($fast | ForEach-Object { $_.Cap } | Sort-Object -Unique)
+    $anim += [pscustomobject] @{
+        Stop = $fast[0].Stop; Script = $fast[0].Script; Who = $fast[0].Who; Class = $fast[0].Class
+        Caps = $caps -join '/'
+        Floor = $floor
+        Least = $least
+        Worst = ($fast | Measure-Object Differ -Maximum).Maximum
+        # The fast passes differing from the baseline by about the same share is the cross-check; with
+        # one fast pass there is nothing to compare, and the row rests on the floor alone.
+        Agree = $(if ($caps.Count -lt 2) { 'one pass' }
+                  else { "{0}pp" -f (($fast | Measure-Object Differ -Maximum).Maximum - $least) })
+        Drift = $fast[0].Drift
+    }
+}
+Write-Host ''
+Write-Host (("ANIMATION FINDINGS: {0} of {1} stop/character pairs play something the baseline did not, " +
+    "by more than the repeat pass at {2} FPS did on the same stop.") -f $anim.Count, $byStop.Count, $Baseline)
+if ($anim.Count -gt 0) {
+    $anim | Sort-Object Least -Descending | Select-Object -First $Top `
+        Stop, Script, Who, Class, Caps, Floor, Least, Worst, Agree, Drift |
+        Format-Table -AutoSize | Out-String -Width 200 | Write-Host
+}
+
 $bad = @($results | Where-Object { $_.Differ -gt 0 -or $_.dPos -gt $PosTolerance -or $_.dMove -gt $MoveTolerance })
 Write-Host ""
 Write-Host ("{0} of {1} stop/character/framerate groups differ from the {2} FPS pass (a different

@@ -33,6 +33,7 @@ local play = {}
 
 local SETTLE = 1.0   -- seconds standing still after the teleport, before the script starts
 local SETTLE_MAX = 4.0 -- but a fall from the teleport is given this long to land before the stop is dropped
+local PLACED_DISTANCE = 300 -- how far off the spot he may still be and be counted as placed on it
 local FELL_HEIGHT = 90     -- below the stop AND falling: put him back before the water kills him. Walking
                            -- down steps and slopes is not falling, so it does not count.
 local DEATH_SETTLE = 1.0    -- seconds on his feet again after a death before the run carries on
@@ -100,6 +101,25 @@ function play.settle(run, r)
         return
     end
     if run.settled < SETTLE then return end
+    -- Settling for a second is not the same as having arrived. The teleport does not always take effect
+    -- in that second: in the trilogy run of 2026-11-04, 349 of 3733 runs (9%) started their script still
+    -- standing where the last stop left them, 3000-odd units away, and snapped onto the spot a second
+    -- later. The origin is taken below, so every sample of such a run is offset by the distance between
+    -- the two places and the input was driven at the wrong one -- unrepairable afterwards, and loud
+    -- enough to fill the top of the report. How many frames the teleport takes depends on the framerate,
+    -- so it reads as a framerate difference (11% of the 30 FPS runs, 7% of the 160 FPS ones).
+    if run.spot then
+        local dx, dy, dz = r.x - run.spot.x, r.y - run.spot.y, r.z - run.spot.z
+        if dx * dx + dy * dy + dz * dz > PLACED_DISTANCE * PLACED_DISTANCE then
+            if run.settled >= SETTLE_MAX then
+                log("autotest: %s stop %d skipped, still %.0f units from the spot after %.1f s " ..
+                    "(the teleport never landed)", entry.stop.level, entry.id,
+                    math.sqrt(dx * dx + dy * dy + dz * dz), run.settled)
+                run.phase = "next"
+            end
+            return
+        end
+    end
     -- The last stop could not move, so before this one is played, find out whether he still
     -- cannot. Here is the place to ask: the teleport has moved him away from whoever was
     -- talking to him. Asking at the locked stop itself only ever said yes, because the NPC was

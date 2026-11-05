@@ -33,6 +33,7 @@ Investigation logs live in `docs/`; each fix module in `ue4ss/Mods/HighFpsSlidin
 | `docs/findings/animations.md` | Every character's animations at 30 vs 320 FPS: the montage sweep (duration, root motion, notify effects) and the scripted tour's animation sampling, including minigames | tooling built, first level measured |
 | `docs/ue4ss.md` | UE4SS install details, profiling history, Lua GC experiments | reference |
 | `docs/tools.md` | Full packaging/Vortex/tool notes | reference |
+| `docs/findings/tour-2026-11.md` | First full trilogy tour (1843 stops at 30/30/60/160): 37 cross-checked findings, all 16 of the large ones a charge; the two harness artefacts it exposed | measured, charge cluster open |
 | `docs/probe.md` | Probe mod: log lines, CSV columns, hotkeys, quicksave, level streaming | reference |
 
 ## Game install
