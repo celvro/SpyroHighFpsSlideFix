@@ -59,18 +59,33 @@ foreach ($f in $files) { Write-Host "  $f" }
 
 $rows = @($files | ForEach-Object { Import-Csv $_ })
 if ($Who -ne 'both') { $rows = $rows | Where-Object { $_.who -eq $Who } }
-$caps = $rows | ForEach-Object { [int] $_.cap } | Sort-Object -Unique
-if ($caps -notcontains $Baseline) { throw "No $Baseline FPS pass in this run (caps: $($caps -join ', '))." }
-Write-Host "Caps: $($caps -join ', '); baseline $Baseline; characters: $Who"
+# The cap is not an identity: a run asked for caps=30,30,60,160 has two passes that both say 30, and the
+# second is the point -- it is what a stop does against ITSELF, the noise floor every other pass has to
+# beat to be a finding. The `pass` column tells them apart; a CSV from before that column existed
+# (2026-11-04) has one pass per cap, so the cap stands in for it.
+if ($null -eq $rows[0].PSObject.Properties['pass']) {
+    Write-Host 'This CSV has no pass column (written before 2026-11-04); treating each cap as one pass.'
+    foreach ($r in $rows) { Add-Member -InputObject $r -NotePropertyName pass -NotePropertyValue $r.cap -Force }
+}
+$passCap = @{}
+foreach ($g in $rows | Group-Object pass) { $passCap[$g.Name] = [int] $g.Group[0].cap }
+$ordered = @($passCap.Keys | Sort-Object { [int] $_ })
+$basePass = @($ordered | Where-Object { $passCap[$_] -eq $Baseline } | Select-Object -First 1)
+if ($basePass.Count -eq 0) {
+    throw "No $Baseline FPS pass in this run (passes: $(($ordered | ForEach-Object { "$_=$($passCap[$_])" }) -join ', '))."
+}
+$basePass = $basePass[0]
+Write-Host ("Passes: {0}; baseline is pass {1} at {2} FPS; characters: {3}" -f `
+    (($ordered | ForEach-Object { "$_=$($passCap[$_])FPS" }) -join ', '), $basePass, $Baseline, $Who)
 
 # A stop that is retried writes its samples twice: the recovery for a conversation that will not close
 # loads the level and plays the stop again, and the abandoned attempt is already in the CSV. Keep the
-# last of each (cap, stop, t, who), which is the attempt that ran to the end. Mixing two separate runs
+# last of each (cap, stop, script, t, who), which is the attempt that ran to the end. Mixing two separate runs
 # of the same stops collapses the same way, so pass one file per stop range if that is what you have.
 $byKey = [ordered] @{}
 $dupes = 0
 foreach ($r in $rows) {
-    $key = "$($r.cap)|$($r.stop)|$($r.t)|$($r.who)"
+    $key = "$($r.pass)|$($r.stop)|$($r.script)|$($r.t)|$($r.who)"
     if ($byKey.Contains($key)) { $dupes++ }
     $byKey[$key] = $r
 }
@@ -97,7 +112,7 @@ foreach ($r in $rows) { $r.montage = Get-MontageKey $r.montage }
 $runs = @{}
 foreach ($r in $rows) {
     if ($r.montage -eq '' -or $r.montage -eq '(dynamic)') { continue }
-    $k = "$($r.cap)|$($r.stop)|$($r.who)|$($r.montage)"
+    $k = "$($r.pass)|$($r.stop)|$($r.script)|$($r.who)|$($r.montage)"
     if (-not $runs.ContainsKey($k)) { $runs[$k] = [pscustomobject]@{ Last = $null; Steps = [System.Collections.Generic.List[double]]::new(); Looped = $false } }
     $run = $runs[$k]
     $pos = [double] $r.montagePos
@@ -122,19 +137,19 @@ function Test-Looped($key) { $run = $runs[$key]; return ($null -ne $run -and $ru
 
 $base = @{}
 foreach ($r in $rows) {
-    if ([int] $r.cap -ne $Baseline) { continue }
-    $base["$($r.stop)|$($r.t)|$($r.who)"] = $r
+    if ($r.pass -ne $basePass) { continue }
+    $base["$($r.stop)|$($r.script)|$($r.t)|$($r.who)"] = $r
 }
 
 $results = @()
-foreach ($group in $rows | Where-Object { [int] $_.cap -ne $Baseline } | Group-Object cap, stop, who) {
+foreach ($group in $rows | Where-Object { $_.pass -ne $basePass } | Group-Object pass, stop, script, who) {
     $sorted = $group.Group | Sort-Object { [double] $_.t }
     $first = $sorted[0]
     $matched = 0; $differ = 0; $shifted = 0; $stateDiffer = 0; $looped = @{}
     $maxPos = 0.0; $maxMove = 0.0
     $firstDiffer = $null
     foreach ($r in $sorted) {
-        $b = $base["$($r.stop)|$($r.t)|$($r.who)"]
+        $b = $base["$($r.stop)|$($r.script)|$($r.t)|$($r.who)"]
         if (-not $b) { continue }
         $matched++
         if ($r.montage -ne $b.montage) {
@@ -142,8 +157,8 @@ foreach ($group in $rows | Where-Object { [int] $_.cap -ne $Baseline } | Group-O
             # different moment, which is what a 0.1 s sample grid does to a montage that begins between
             # two samples. Counted apart from playing something else entirely.
             $t = [double] $r.t
-            $before = $base["$($r.stop)|$(('{0:0.000}' -f ($t - 0.1)))|$($r.who)"]
-            $after = $base["$($r.stop)|$(('{0:0.000}' -f ($t + 0.1)))|$($r.who)"]
+            $before = $base["$($r.stop)|$($r.script)|$(('{0:0.000}' -f ($t - 0.1)))|$($r.who)"]
+            $after = $base["$($r.stop)|$($r.script)|$(('{0:0.000}' -f ($t + 0.1)))|$($r.who)"]
             if (($before -and $before.montage -eq $r.montage) -or ($after -and $after.montage -eq $r.montage)) {
                 $shifted++
             } else {
@@ -153,8 +168,8 @@ foreach ($group in $rows | Where-Object { [int] $_.cap -ne $Baseline } | Group-O
         } else {
             # Only a montage that played straight through can be compared by where it had got to. One
             # that wrapped is compared by how fast it advances instead, after the loop.
-            $rk = "$($r.cap)|$($r.stop)|$($r.who)|$($r.montage)"
-            $bk = "$($b.cap)|$($b.stop)|$($b.who)|$($b.montage)"
+            $rk = "$($r.pass)|$($r.stop)|$($r.script)|$($r.who)|$($r.montage)"
+            $bk = "$($b.pass)|$($b.stop)|$($b.script)|$($b.who)|$($b.montage)"
             if ((Test-Looped $rk) -or (Test-Looped $bk)) {
                 $looped[$rk] = $bk
             } else {
@@ -170,6 +185,7 @@ foreach ($group in $rows | Where-Object { [int] $_.cap -ne $Baseline } | Group-O
     }
     if ($matched -eq 0) { continue }
     $results += [pscustomobject] @{
+        Pass    = [int] $first.pass
         Cap     = [int] $first.cap
         Level   = $first.level
         Stop    = "$($first.level)#$($first.stop)"
@@ -219,9 +235,10 @@ if ($firsts) {
 # and a loop is the one case where the position alone cannot show it.
 $rates = @()
 foreach ($k in $runs.Keys) {
+    # pass | stop | script | who | montage
     $parts = $k -split '\|'
-    if ([int] $parts[0] -eq $Baseline) { continue }
-    $bk = "$Baseline|$($parts[1])|$($parts[2])|$($parts[3])"
+    if ($parts[0] -eq $basePass) { continue }
+    $bk = "$basePass|$($parts[1])|$($parts[2])|$($parts[3])|$($parts[4])"
     if (-not $runs.ContainsKey($bk)) { continue }
     $a = Get-Advance $k
     $b = Get-Advance $bk
@@ -231,10 +248,12 @@ foreach ($k in $runs.Keys) {
     if ($null -eq $a -or $null -eq $b -or $b -lt 0.05) { continue }
     if ($runs[$k].Steps.Count -lt 10 -or $runs[$bk].Steps.Count -lt 10) { continue }
     $rates += [pscustomobject] @{
-        Cap     = [int] $parts[0]
+        Pass    = [int] $parts[0]
+        Cap     = $passCap[$parts[0]]
         Stop    = $parts[1]
-        Who     = $parts[2]
-        Montage = $parts[3]
+        Script  = $parts[2]
+        Who     = $parts[3]
+        Montage = $parts[4]
         Base    = [math]::Round($b, 4)
         This    = [math]::Round($a, 4)
         Ratio   = [math]::Round($a / $b, 3)
@@ -247,7 +266,7 @@ if ($rates.Count -gt 0) {
         $rates.Count, $Baseline, $off.Count)
     if ($off.Count -gt 0) {
         $off | Sort-Object { [math]::Abs($_.Ratio - 1) } -Descending |
-            Select-Object -First 15 Cap, Stop, Who, Montage, Base, This, Ratio |
+            Select-Object -First 15 Pass, Cap, Stop, Script, Who, Montage, Base, This, Ratio |
             Format-Table -AutoSize | Out-String -Width 200 | Write-Host
     }
 }

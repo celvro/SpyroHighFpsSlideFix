@@ -112,11 +112,13 @@ end
 local function start(pawn, pc, cmc, options, setFpsCap)
     local stops = plan.stops(options)
     if #stops == 0 then
-        log("autotest: no stops recorded yet (stand somewhere and press M, then edit routes.txt)")
+        log("autotest: no stops to run -- either routes.txt is empty (stand somewhere and press M) "
+            .. "or this run's level=/script=/game= matched none of them")
         run = nil
         return
     end
     local index = 1
+    plan.use(options) -- what the progress file's index has to belong to, before it is read
     if not options.restart then index = math.max(plan.savedIndex(), 1) end
     local caps = plan.caps(options)
     local steps = plan.build(stops, caps, options.review)

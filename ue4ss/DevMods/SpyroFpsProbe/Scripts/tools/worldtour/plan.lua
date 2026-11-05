@@ -24,6 +24,16 @@ local REVIEW_CAPS = "30" -- a review is somebody watching, and what they judge i
 local LEAD_SCRIPTS = { "flame", "charge", "hop", "glide" }
 local PROGRESS = paths.modDir .. "\\autotest_progress.txt"
 
+-- "LS101" or "LS101,LS102": which levels this run covers. A list, not one name: the driver takes
+-- -Levels as a list and an exact compare against "LS101,LS102" matched nothing while the log only said
+-- "no stops recorded yet".
+local function wantedLevels(text)
+    if not text then return nil end
+    local set = {}
+    for name in tostring(text):gmatch("[^,%s]+") do set[name:upper()] = true end
+    return next(set) and set or nil
+end
+
 -- "walk" or "walk,enterPlay": which scripts this run covers, so a route of a thousand stops can be cut
 -- down to the ones worth the hours (the walks that start a chase, the dialogue that starts a minigame).
 local function wantedScripts(text)
@@ -64,6 +74,7 @@ function plan.stops(options)
     routes.load()
     local all, picked, promoted, skipped = routes.all(), {}, 0, 0
     local only = wantedScripts(options.script)
+    local levels = wantedLevels(options.level)
     local game = tonumber(options.game)
     -- A walk stop in front of a character that also has an enterPlay stop does the same thing twice:
     -- enterPlay opens by walking into that character for two and a half seconds. 332 of the route's 707
@@ -82,7 +93,7 @@ function plan.stops(options)
         -- are walked into and talked to like everybody else.
         local script = stop.script
         if script == "walk" and subworldEntry(stop.note) then script = "enterPlay" end
-        local wanted = (not options.level or stop.level == options.level)
+        local wanted = (not levels or levels[stop.level:upper()])
             and (not game or stop.level:match("^LS(%d)") == tostring(game))
             and (not only or only[stop.script])
             and not duplicateWalk
@@ -103,6 +114,10 @@ function plan.stops(options)
                 log("autotest: stop %d (%s) has no script %q, skipped", index, stop.level, tostring(script))
             end
         end
+    end
+    if #picked == 0 and #all > 0 then
+        log("autotest: none of the %d recorded stops match this run (level=%s script=%s game=%s)",
+            #all, tostring(options.level), tostring(options.script), tostring(options.game))
     end
     if skipped > 0 then log("autotest: %d fodder stop(s) skipped", skipped) end
     if promoted > 0 then log("autotest: %d walk stop(s) in front of a minigame character played as enterPlay", promoted) end
@@ -146,8 +161,15 @@ function plan.caps(options)
     return #caps > 0 and caps or CAPS
 end
 
--- Every (stop, cap) in run order, { entry = { stop, id }, cap, measure } each: one level at a time, at
--- every framerate, before the next. measure is true on the lead stops at the head of each level.
+-- Every (stop, cap) in run order, { entry = { stop, id }, cap, pass, measure } each: one level at a
+-- time, at every framerate, before the next. measure is true on the lead stops at the head of each
+-- level.
+--
+-- `pass` is which run through the caps this step belongs to, and it is in the CSVs because the cap is
+-- not an identity: a run asked for caps=30,30,60,160 -- two passes at the same framerate, to measure
+-- how much a stop differs from *itself*, which is the noise floor a 60 or 160 FPS difference has to
+-- beat before it is a finding -- writes two passes of rows that say cap 30, and everything joining on
+-- the cap would fold them into one and drop the second as a duplicate.
 function plan.build(stops, caps, noLead)
     local steps = {}
     local index = 1
@@ -155,7 +177,7 @@ function plan.build(stops, caps, noLead)
         local level = stops[index].stop.level
         local last = index
         while last < #stops and stops[last + 1].stop.level == level do last = last + 1 end
-        for _, cap in ipairs(caps) do
+        for pass, cap in ipairs(caps) do
             -- Spyro's own abilities, once each at the start of the level, on the first stop's spot:
             -- flame, charge, a short hop and a glide. These are what the camera and jump trackers are
             -- for, and they belong to the level rather than to whichever character is standing there,
@@ -167,10 +189,11 @@ function plan.build(stops, caps, noLead)
                 for key, value in pairs(stops[index].stop) do stop[key] = value end
                 stop.script = script
                 stop.note = "Spyro " .. script
-                steps[#steps + 1] = { entry = { stop = stop, id = stops[index].id }, cap = cap, measure = true }
+                steps[#steps + 1] = { entry = { stop = stop, id = stops[index].id }, cap = cap,
+                                      pass = pass, measure = true }
             end
             for i = index, last do
-                steps[#steps + 1] = { entry = stops[i], cap = cap }
+                steps[#steps + 1] = { entry = stops[i], cap = cap, pass = pass }
             end
         end
         index = last + 1
@@ -178,12 +201,30 @@ function plan.build(stops, caps, noLead)
     return steps
 end
 
+-- What the saved index means: it is an index into the plan the run's options built, so a progress file
+-- written by a run with other caps or another level filter points at a different stop entirely. An
+-- unattended driver re-drops its trigger after every crash, so this has to be checked rather than
+-- trusted -- the same guard tools/scansweep.lua keeps on its own progress file.
+local signature = nil
+
+function plan.signature(options)
+    options = options or {}
+    return string.format("caps=%s|level=%s|script=%s|review=%s",
+        tostring(options.caps or ""), tostring(options.level or ""),
+        tostring(options.script or ""), tostring(options.review or false))
+end
+
+-- Called once as a run starts, before savedIndex: the options this run's progress belongs to.
+function plan.use(options)
+    signature = plan.signature(options)
+end
+
 -- The file's first number is left over from when a run did one framerate at a time; only the index
--- into the steps is read back.
+-- into the steps is read back, and only when the signature says it was this run's plan.
 function plan.saveProgress(index)
     local file = io.open(PROGRESS, "w")
     if not file then return end
-    file:write(string.format("%d %d\n", 1, index))
+    file:write(string.format("%d %d %s\n", 1, index, signature or plan.signature(nil)))
     file:close()
 end
 
@@ -192,7 +233,18 @@ function plan.savedIndex()
     if not file then return 0 end
     local line = file:read("l") or ""
     file:close()
-    return tonumber(line:match("^%d+%s+(%d+)")) or 0
+    local index = tonumber(line:match("^%d+%s+(%d+)")) or 0
+    if index == 0 then return 0 end
+    local saved = line:match("^%d+%s+%d+%s+(%S+)")
+    local want = signature or plan.signature(nil)
+    if saved ~= want then
+        -- Including a file from before the signature existed: there is no way to tell what plan its
+        -- index belonged to, so it is not used.
+        log("autotest: autotest_progress.txt is from a run with other options (%s, this run is %s); "
+            .. "starting from the beginning", saved or "no options recorded", want)
+        return 0
+    end
+    return index
 end
 
 function plan.forgetProgress()
