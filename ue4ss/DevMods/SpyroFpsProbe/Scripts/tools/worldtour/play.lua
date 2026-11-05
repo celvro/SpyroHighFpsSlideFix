@@ -40,6 +40,11 @@ local VERIFY_SECONDS = 0.6 -- pushing forward at the next stop, to see whether h
 local LOST_HEIGHT = 1000   -- drop from the stop that means he is out of the level, not playing the script
 local LOST_DISTANCE = 5000 -- and the same sideways (a respawn puts him at the level entrance)
 local LOCKED_SECONDS = 2.0 -- held forward for this long without moving: the game has taken input away
+-- A gameplay camera sits about 150 units behind him. A cinematic one is thousands: LS101 measured
+-- 2948 for every stop after Marco the Balloonist, with the camera and the input both gone. So a camera
+-- this far out, on a stop that cannot move, is the game driving rather than a stop wedged against a
+-- rock -- and it is believed in preference to igc.active(), which did not see that state at all.
+local CINEMATIC_CAM_DIST = 600
 local TALK_SECONDS = 25.0  -- longest a stop waits for a conversation it started to finish
 local SUBWORLD_SECONDS = 12.0 -- how long to play as whoever a subworld handed the controller to
 local DEATHS = paths.modDir .. "\\autotest_deaths.txt"
@@ -219,6 +224,17 @@ local function trouble(run, pawn, pc, cmc, r)
     -- rest of the script play where he stands, which is what the stop is for. Only a Spyro who never
     -- moved at all is one the game has taken input from, and that is the one worth ending early and
     -- recovering from.
+    -- The game has the camera as well as the input: it is playing something (a balloon ride, a
+    -- transporter, a cutscene with no IGC actor saying so), and nothing measured while that happens is
+    -- this stop's script. Ending here and escalating straight to arrive.lua's reload is what stops the
+    -- rest of the level being written down as a standstill -- which it was, for two whole passes of
+    -- LS101 on 2026-11-04, at 25 s a stop.
+    if (run.lockedFor or 0) >= LOCKED_SECONDS and (r.camDist or 0) > CINEMATIC_CAM_DIST then
+        run.lockedStops = arrive.LOCKED_STOPS
+        finish(run, pawn, pc, string.format(
+            "the game has the camera (%.0f units out, gameplay is about 150) and the input", r.camDist))
+        return true
+    end
     if (run.lockedFor or 0) >= LOCKED_SECONDS then
         -- A lead stop is not trying to reach anybody: it is Spyro performing one of his own
         -- abilities, and its walk exists only so the button press lands while he is moving. Wedged

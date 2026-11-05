@@ -22,7 +22,8 @@ param(
     [string] $Path,
     [double] $Tolerance = 10,
     [int] $Baseline = 30,
-    [int] $Top = 40
+    [int] $Top = 40,
+    [double] $FloorFactor = 3
 )
 
 $ErrorActionPreference = 'Stop'
@@ -61,9 +62,14 @@ Write-Host ("Passes: {0}; baseline is pass {1} at {2} FPS" -f `
 
 # Key every baseline sample by stop and time, so the other passes can look their own sample up.
 $base = @{}
+$baseMove = @{}
 foreach ($r in $rows) {
     if ($r.pass -ne $basePass) { continue }
     $base["$($r.stop)|$($r.script)|$($r.t)"] = $r
+    # Positions are relative to the stop, so this is simply how far the baseline pass got.
+    $d = [math]::Sqrt([math]::Pow([double] $r.x, 2) + [math]::Pow([double] $r.y, 2) + [math]::Pow([double] $r.z, 2))
+    $mk = "$($r.stop)|$($r.script)"
+    if (-not $baseMove.ContainsKey($mk) -or $d -gt $baseMove[$mk]) { $baseMove[$mk] = $d }
 }
 
 $results = @()
@@ -103,6 +109,81 @@ foreach ($group in $rows | Where-Object { $_.pass -ne $basePass } | Group-Object
 }
 
 $results | Sort-Object MaxDist -Descending | Select-Object -First $Top | Format-Table -AutoSize
+
+# The findings, and the only part of this worth reading first.
+#
+# A stop's own noise floor is what the SECOND pass at the baseline framerate did on that stop: the same
+# input script, the same framerate, so whatever distance it covers is the stop failing to repeat itself.
+# One number for the whole run is the wrong instrument, because the stops do not share a floor -- in the
+# LS101/LS102 run of 2026-11-04 a charge in LS101 wandered 2436 units at the SAME framerate while a walk
+# in LS102 repeated to within 182, so a run-wide 95th percentile of 775 called the first one normal and
+# the second one quiet, and both readings were wrong. Against its own floor the LS101 charge is noise (a
+# faster pass moved LESS than the floor) and the LS102 walk is a finding at six times its floor.
+$floorOf = @{}
+foreach ($r in $results) {
+    if ($r.Cap -ne $Baseline) { continue }     # the repeat pass at the baseline framerate
+    $key = "$($r.Stop)|$($r.Script)"
+    if (-not $floorOf.ContainsKey($key) -or $r.MaxDist -gt $floorOf[$key]) { $floorOf[$key] = $r.MaxDist }
+}
+$MIN_BASE_MOVE = 10   # units the baseline pass must cover for a stop to have measured anything at all
+# Low on purpose. It is there to tell a stop that never played from one that did, and a standstill is
+# essentially zero -- while a hop's whole travel is only about 40 units, so a bar of 50 hid every
+# jump-height difference there is. A flame, which does not move him at all, is still excluded, and
+# tools/Compare-Anims.ps1 is what measures those.
+
+Write-Host ''
+if ($floorOf.Count -eq 0) {
+    # -f binds tighter than +, so the format arguments have to be applied to the whole joined string.
+    Write-Host (("No per-stop noise floor: this run has only one pass at {0} FPS. Run the tour with " +
+        "the baseline framerate twice (caps={0},{0},...) and the stops that cannot repeat themselves " +
+        'stop looking like framerate bugs.') -f $Baseline)
+} else {
+    $graded = @()
+    foreach ($r in $results) {
+        if ($r.Cap -eq $Baseline) { continue }
+        $floor = $floorOf["$($r.Stop)|$($r.Script)"]
+        $moved = $baseMove["$($r.Stop)|$($r.Script)"]
+        $graded += [pscustomobject] @{
+            Cap = $r.Cap; Level = $r.Level; Stop = $r.Stop; Script = $r.Script; Note = $r.Note
+            MaxDist = $r.MaxDist
+            BaseMove = $(if ($null -eq $moved) { 0 } else { [math]::Round($moved, 1) })
+            Floor = $(if ($null -eq $floor) { $null } else { $floor })
+            # No floor for this stop means the repeat pass never played it (it was skipped, or the level
+            # was given up on). Unmeasured, so it is not ranked as a finding.
+            Ratio = $(if ($null -eq $floor) { $null }
+                      elseif ($floor -lt 1) { [math]::Round($r.MaxDist, 1) }
+                      else { [math]::Round($r.MaxDist / $floor, 1) })
+        }
+    }
+    # A stop only measured something if the baseline pass actually went somewhere. A stop where the
+    # baseline never moved has a floor of 0 for the dullest reason -- two passes of standing still agree
+    # perfectly -- and ranking that as a finding is how "the game took the input away" gets reported as a
+    # framerate bug. Those are listed separately, as what they are.
+    $measured = @($graded | Where-Object { $null -ne $_.Ratio -and $_.BaseMove -ge $MIN_BASE_MOVE })
+    $still = @($graded | Where-Object { $null -ne $_.Ratio -and $_.BaseMove -lt $MIN_BASE_MOVE })
+    $found = @($measured | Where-Object {
+        $_.MaxDist -gt $Tolerance -and $_.MaxDist -gt ($_.Floor * $FloorFactor)
+    } | Sort-Object Ratio -Descending)
+    Write-Host (("FINDINGS: {0} of {1} measured stop/framerate pairs move more than {2} units AND more " +
+        'than {3}x their own noise floor.') -f $found.Count, $measured.Count, $Tolerance, $FloorFactor)
+    if ($found.Count -gt 0) {
+        $found | Select-Object -First $Top Cap, Level, Stop, Script, Note, BaseMove, MaxDist, Floor, Ratio |
+            Format-Table -AutoSize
+    }
+    if ($still.Count -gt 0) {
+        $spots = @($still | ForEach-Object { "$($_.Level)/$($_.Stop) $($_.Script)" } | Sort-Object -Unique)
+        Write-Host (("{0} pair(s) measured nothing: the {1} FPS pass itself moved less than {2} units, so " +
+            'the stop never played. Not findings -- look at why (the game holding the input, a spot ' +
+            'against a wall, a script with no walk). {3}') -f $still.Count, $Baseline, $MIN_BASE_MOVE,
+            (($spots | Select-Object -First 12) -join ', '))
+    }
+    $unmeasured = @($graded | Where-Object { $null -eq $_.Ratio })
+    if ($unmeasured.Count -gt 0) {
+        $spots = @($unmeasured | ForEach-Object { "$($_.Level)/$($_.Stop) $($_.Script)" } | Sort-Object -Unique)
+        Write-Host (("{0} pair(s) have no floor (the repeat pass never played that stop) and are not " +
+            'ranked: {1}') -f $unmeasured.Count, (($spots | Select-Object -First 12) -join ', '))
+    }
+}
 
 $bad = $results | Where-Object { $_.MaxDist -gt $Tolerance }
 Write-Host ""

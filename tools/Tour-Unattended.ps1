@@ -105,6 +105,18 @@ if (-not $AllowTrace -and (Test-Path $deployedConfig)) {
     }
 }
 
+# The tour tells "the game has taken the camera" from the camera's distance (play.lua), and that is
+# NAN with ROW_CAMERA off -- every comparison against NAN is false in Lua, so the detector would simply
+# never fire and the run would write standstills again without saying why.
+if (Test-Path $deployedConfig) {
+    $camOff = Select-String -Path $deployedConfig -Pattern '^\s*ROW_CAMERA\s*=\s*false' -Quiet
+    if ($camOff) {
+        throw ("ROW_CAMERA is off in $deployedConfig. The tour needs the camera distance to notice that " +
+               'the game has taken control of a stop; without it a level that keeps the input is ' +
+               'recorded as a standstill. Set ROW_CAMERA = true there.')
+    }
+}
+
 $null = New-Item -ItemType Directory -Force $runDir
 $runDir = (Resolve-Path $runDir).Path
 # Both stop files: tourall.stop ends this script, autotest.stop ends the tour inside the game, and one
