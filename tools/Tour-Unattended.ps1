@@ -148,10 +148,12 @@ function Write-Trigger([string] $options) {
 
 # UE4SS truncates its log on every launch, so each launch's lines are saved before the next one starts.
 # These hold the trackers' own findings (seg / rise / charge / turn / camlock / stall lines), which are
-# nowhere else.
-function Save-Log([int] $attempt) {
-    if (-not (Test-Path $log)) { return }
-    $name = 'UE4SS_launch{0:d2}.log' -f $attempt
+# nowhere else. Numbered by the launch they belong to, and nothing is saved before the first one: the
+# log sitting there then is the previous session's.
+$launch = 0
+function Save-Log {
+    if ($launch -lt 1 -or -not (Test-Path $log)) { return }
+    $name = 'UE4SS_launch{0:d2}.log' -f $launch
     Copy-Item $log (Join-Path $runDir $name) -Force -ErrorAction SilentlyContinue
 }
 
@@ -183,6 +185,7 @@ function Watch-Run {
     while ($true) {
         Start-Sleep -Seconds 10
         if (Test-Path $stopFile) {
+            Write-Step '  tourall.stop was set; ending the run'
             Remove-Item $stopFile -Force -ErrorAction SilentlyContinue
             # Tell the tour to stop too, so it is not mid-stop when the game is closed.
             [IO.File]::WriteAllText((Join-Path $ProbeDir 'autotest.stop'), '', [Text.UTF8Encoding]::new($false))
@@ -208,8 +211,11 @@ function Watch-Run {
             }
             Write-Host "    $text"
             if ($text -match '^autotest: LS\d+ at \d+ FPS') { $lastProgress = Get-Date }
-            if ($text -match '^autotest: done') { return 'done' }
-            if ($text -match '^autotest: stopped') { return 'stopped' }
+            if ($text -match '^autotest: done,') { return 'done' }
+            # Matched whole, not as a prefix: drive.lua composes "autotest: stopped at the edge of a
+            # drop ..." when a walk runs out of ground, and a prefix match read that as the run ending
+            # and shut a good run down after twelve seconds.
+            if ($text -eq 'autotest: stopped') { return 'stopped' }
             # A run that has nothing to play will never have anything to play, and restarting into the
             # stall timeout three times to find that out cost 21 minutes once. Stop at the first one.
             if ($text -match '^autotest: (no stops to run|none of the)') { return 'nothing' }
@@ -237,9 +243,10 @@ $outcome = 'gave up'
 while ($attempt -le $MaxRestarts) {
     if ($attempt -gt 0) { Write-Step "restart $attempt of $MaxRestarts" }
     Stop-Game
-    Save-Log $attempt
+    Save-Log
     if ($attempt -eq 0) { Set-Resume $StartLevel }
     if (-not (Start-Game)) { $attempt++; continue }
+    $launch++
 
     $options = @()
     if ($fresh) { $options += 'restart' }
@@ -262,7 +269,7 @@ while ($attempt -le $MaxRestarts) {
     $attempt++
 }
 
-Save-Log ($attempt + 1)
+Save-Log
 Stop-Game
 Write-Step "$outcome after $([int]((Get-Date) - $started).TotalMinutes) min and $attempt restart(s)"
 
@@ -295,14 +302,18 @@ foreach ($extra in 'autotest_deaths.txt', 'autotest_progress.txt') {
     Copy-Item (Join-Path $ProbeDir $extra) $runDir -Force -ErrorAction SilentlyContinue
 }
 
+# *>&1 merges every stream, the information stream included, before Tee-Object sees it. Both
+# comparisons report with Write-Host, which does not go to the success stream, so a plain pipe into
+# Tee-Object saved the Format-Table and dropped every finding under it -- and wrote no anims file at
+# all. (The same trap as Restart-Game.ps1's output; see CLAUDE.md.)
 if ($tourCsv) {
     Write-Step 'comparing positions and camera (Compare-Autotest.ps1)'
-    & (Join-Path $PSScriptRoot 'Compare-Autotest.ps1') -Path $tourCsv -Baseline $baseline |
+    & (Join-Path $PSScriptRoot 'Compare-Autotest.ps1') -Path $tourCsv -Baseline $baseline *>&1 |
         Tee-Object -FilePath (Join-Path $runDir 'compare-autotest.txt')
 }
 if ($animCsv) {
     Write-Step 'comparing animations (Compare-Anims.ps1)'
-    & (Join-Path $PSScriptRoot 'Compare-Anims.ps1') -Path $animCsv -Baseline $baseline |
+    & (Join-Path $PSScriptRoot 'Compare-Anims.ps1') -Path $animCsv -Baseline $baseline *>&1 |
         Tee-Object -FilePath (Join-Path $runDir 'compare-anims.txt')
 }
 

@@ -228,17 +228,33 @@ end
 function igc.close(pc, pawn, level)
     if dialogue.advance() then return 1 end
     local running, pressed = false, false
+    local saying = nil
     for _, entry in ipairs(instances(level)) do
         if isActive(entry) then
             running = true
+            if not quiet then
+                -- Which actors say they are running, for the line below. Only collected while that
+                -- line is still to be logged, so the normal case costs nothing.
+                saying = saying or {}
+                local name = "?"
+                pcall(function() name = entry.object:GetClass():GetFName():ToString() end)
+                saying[name] = (saying[name] or 0) + 1
+            end
             local ok, did = pcall(pressSkip, entry.object)
             pressed = pressed or (ok and did)
         end
     end
     if running and not pressed and not quiet then
-        -- Running, with no text box and nothing that takes the skip button: it ends on its own.
+        -- Running, with no text box and nothing that takes the skip button. Either it really does end
+        -- on its own, or one of these actors is answering CurrentlyActiveIGC when it has no such
+        -- property -- which it cannot be told apart from the real thing without knowing which actor it
+        -- is, so the class is named here.
         quiet = true
-        log("igc: a cinematic is running that has no skip; waiting for it to end by itself")
+        local who = {}
+        for name, count in pairs(saying or {}) do who[#who + 1] = string.format("%s x%d", name, count) end
+        table.sort(who)
+        log("igc: a cinematic is running that has no skip and no text box, said by %s; "
+            .. "waiting for it to end by itself", #who > 0 and table.concat(who, ", ") or "nothing")
     end
     return running and 1 or 0
 end

@@ -86,12 +86,22 @@ function arrive.start(run, pawn, pc, cmc)
     end
     local locked = (run.lockedStops or 0) >= arrive.LOCKED_STOPS
     if locked and run.reloads >= MAX_RELOADS then
+        -- Out of reloads and still held. Carrying on used to mean playing the rest of the level with
+        -- the input gone: every remaining stop waited out a conversation that never ended (25 s each)
+        -- and then wrote a standstill into the CSV, which is not a framerate measurement and reads
+        -- like one. An LS101 run lost eight and a half minutes and two whole passes that way on
+        -- 2026-11-04, after Marco the Balloonist. The level is given up on instead -- its remaining
+        -- stops are retired in one pass (worldtour.lua's givenUp) -- and the log says so, so it can be
+        -- come back to rather than silently believed.
         run.lockedStops = 0
         if not run.reloadsNoted then
             run.reloadsNoted = true
-            log("autotest: %s has had its %d reloads; the stops that cannot move here are the spots",
-                stop.level, MAX_RELOADS)
+            log("autotest: %s is still holding the input after %d reloads; giving up on the level "
+                .. "rather than playing it with nothing moving", stop.level, MAX_RELOADS)
         end
+        run.skipLevel = stop.level
+        run.phase = "next" -- arrive.start owes its caller a phase; worldtour.nextStop retires the rest
+        return
     elseif locked then
         run.lockedStops, run.reloads = 0, run.reloads + 1
         log("autotest: %d stops in a row could not move, loading %s again to clear it (%d of %d)",
