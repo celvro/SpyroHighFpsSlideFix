@@ -25,10 +25,21 @@ local igc = {}
 -- the level stays the same, and the cinematic that starts it is not in a list swept before it existed.
 -- So the list goes stale after CACHE_SECONDS and is swept again -- at most once a stop, which is about
 -- ten milliseconds of the eight seconds a stop takes.
+--
+-- **Every actor taken out of the list is checked with IsValid again before it is touched.** Keeping
+-- actors for seconds means keeping them across their own destruction: a sublevel streams out (a teleport
+-- to the far side of a level is enough) and the cinematics in it are freed, while this list still holds
+-- Lua wrappers around the pointers. Asking a freed one anything is an access violation inside UE4SS, not
+-- a Lua error, so `pcall` does not catch it and the game goes down -- which is what cost the world tour
+-- every unattended run until 2026-11-04 (docs/findings, docs/probe.md "World tour"). UE4SS's `IsValid`
+-- is a real liveness test (the pointer is non-null, it is in the map of objects Lua has wrapped, which
+-- UE4SS's own delete listener erases from, and the object is not unreachable), and it never dereferences
+-- the pointer, so it is safe to ask about a wrapper that has gone dead.
 local CACHE_SECONDS = 5
-local found = nil
+local found = nil      -- { { object = actor, kind = "igc"|"dragon"|"movie" }, ... }
 local foundFor = nil
 local foundAt = 0
+local droppedNoted = false -- the "actors were freed under the list" line, once per sweep
 
 local quiet = false -- whether "a cutscene is running" has already been said for this level
 local lastSummary = nil -- what the last sweep found, so an unchanged one is not logged again
@@ -46,15 +57,24 @@ local skipKey = nil
 -- cached per class, not per actor.
 local isBase = {}
 
+-- Is this wrapper still backed by a live object? Asked before every single call on an actor that was
+-- found earlier, because a freed one takes the game down rather than raising a Lua error (see above).
+local function alive(object)
+    if not object then return false end
+    local ok, valid = pcall(function() return object:IsValid() end)
+    return ok and valid == true
+end
+
 local function derivesFromBase(object)
+    if not alive(object) then return false end
     local class
-    if not pcall(function() class = object:GetClass() end) or not class then return false end
+    if not pcall(function() class = object:GetClass() end) or not alive(class) then return false end
     local key
     if not pcall(function() key = class:GetAddress() end) then return false end
     if isBase[key] ~= nil then return isBase[key] end
     local answer, at = false, class
     for _ = 1, 16 do
-        if not at then break end
+        if not alive(at) then break end
         local name
         if not pcall(function() name = at:GetFName():ToString() end) then break end
         if name == "Collectable_Dragon_C" then answer = "dragon"; break end
@@ -72,8 +92,13 @@ local function derivesFromBase(object)
     return answer
 end
 
-local function isActive(object)
-    local kind = derivesFromBase(object)
+-- Is this cinematic running? The kind was worked out when the actor was found (the class chain cannot
+-- change under it), so the only call per frame per actor is the one property read -- and the liveness
+-- check in front of it, which is what keeps that read off a freed actor.
+local function isActive(entry)
+    local object = entry.object
+    if not alive(object) then return false end
+    local kind = entry.kind
     local ok, value = pcall(function()
         if kind == "dragon" then return object.CutsceneActive end
         if kind == "movie" then return object.Started == true and object.Finished ~= true end
@@ -82,25 +107,41 @@ local function isActive(object)
     return ok and value == true
 end
 
--- Every actor that is a Spyro_IGC_Base subclass, whatever its own class is called.
+-- Every actor that is a Spyro_IGC_Base subclass, whatever its own class is called. Entries whose actor
+-- has been freed since the sweep are dropped on the way out, so a list that went stale costs one
+-- IsValid each and nothing worse.
 local function instances(level)
-    if found and foundFor == level and os.clock() - foundAt < CACHE_SECONDS then return found end
+    if found and foundFor == level and os.clock() - foundAt < CACHE_SECONDS then
+        local live, dropped = {}, 0
+        for _, entry in ipairs(found) do
+            if alive(entry.object) then live[#live + 1] = entry else dropped = dropped + 1 end
+        end
+        if dropped > 0 then
+            found = live
+            if not droppedNoted then
+                droppedNoted = true
+                -- Worth a line: it is the thing that used to take the game down, and it says the level
+                -- streamed something out under the tour.
+                log("igc: %d cinematic(s) were freed since the sweep (dropped, not asked)", dropped)
+            end
+        end
+        return found
+    end
     local list = {}
     local ok, actors = pcall(FindAllOf, "Actor")
     if ok and actors then
         for _, actor in ipairs(actors) do
-            local valid = false
-            pcall(function() valid = actor:IsValid() end)
-            if valid and derivesFromBase(actor) then
-                list[#list + 1] = actor
+            local kind = alive(actor) and derivesFromBase(actor)
+            if kind then
+                list[#list + 1] = { object = actor, kind = kind }
             end
         end
         if foundFor ~= level then quiet = false end
-        found, foundFor, foundAt = list, level, os.clock()
+        found, foundFor, foundAt, droppedNoted = list, level, os.clock(), false
         local kinds, order = {}, {}
-        for _, object in ipairs(list) do
+        for _, entry in ipairs(list) do
             local name = "?"
-            pcall(function() name = object:GetClass():GetFName():ToString() end)
+            pcall(function() name = entry.object:GetClass():GetFName():ToString() end)
             if not kinds[name] then kinds[name] = 0; order[#order + 1] = name end
             kinds[name] = kinds[name] + 1
         end
@@ -121,15 +162,15 @@ end
 -- Whether a cinematic is running right now: a conversation holds the camera and the input, and it keeps
 -- holding them through a teleport, so the next stop is lost too. Cheap after the first call in a level.
 function igc.active(level)
-    for _, object in ipairs(instances(level)) do
-        if isActive(object) then return true end
+    for _, entry in ipairs(instances(level)) do
+        if isActive(entry) then return true end
     end
     return false
 end
 
 -- The level has changed (or is about to), so the actors kept above are gone.
 function igc.forget()
-    found, foundFor, foundAt, quiet, lastSummary = nil, nil, 0, false, nil
+    found, foundFor, foundAt, quiet, lastSummary, droppedNoted = nil, nil, 0, false, nil, false
     skippedAt = {}
 end
 
@@ -151,6 +192,7 @@ end
 -- that works is found once per class. The transporters bind it too, to end a travel "mission"; the tour
 -- never rides one, so they are not looked for.
 local function pressSkip(object)
+    if not alive(object) then return false end
     local address = object:GetAddress()
     if skippedAt[address] and os.clock() - skippedAt[address] < SKIP_AGAIN then return true end
     local classKey = object:GetClass():GetAddress()
@@ -186,10 +228,10 @@ end
 function igc.close(pc, pawn, level)
     if dialogue.advance() then return 1 end
     local running, pressed = false, false
-    for _, object in ipairs(instances(level)) do
-        if isActive(object) then
+    for _, entry in ipairs(instances(level)) do
+        if isActive(entry) then
             running = true
-            local ok, did = pcall(pressSkip, object)
+            local ok, did = pcall(pressSkip, entry.object)
             pressed = pressed or (ok and did)
         end
     end

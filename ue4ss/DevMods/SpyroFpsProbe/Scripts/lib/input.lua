@@ -35,39 +35,68 @@ input.BUTTONS = {
 local axes = {}        -- axis key -> value held this frame
 local buttons = {}     -- button key -> true while held
 local sent = {}        -- button key -> what the game was last told
-local component = nil  -- { pawnAddress, object }
+local component = nil  -- { pcAddress, classAddress, object }
 local missing = {}     -- event names this character does not have, logged once
 local warned = false   -- the "no input component" line is logged once
+local searchedAt = nil -- os.clock() of the last fruitless search, so one failure is not one per frame
+
+local SEARCH_AGAIN = 1.0 -- seconds before a search that found nothing is tried again
 
 -- The character's input component. It is a subobject of the player controller in this game, not of the
 -- pawn (lib/row.lua reads it as pc.CharacterInputComponent_Spyro), so both are accepted as its outer.
 -- FindAllOf takes the native base class and returns the Blueprint subclasses too, so this works for every
--- playable character; looked up once per pawn.
+-- playable character.
+--
+-- **The cache is keyed on the controller and the pawn's CLASS, not on the pawn's address.** The component
+-- belongs to the player controller, which outlives every level load, so a new pawn does not need a new
+-- lookup -- and a pawn address does get reused, so keying on it meant the hit test could pass for a
+-- different pawn. What does need a new one is a different kind of character (Spyro -> Sheila), which has
+-- its own CharacterInputComponent subclass; the class address catches exactly that.
+--
+-- Getting this wrong was not just a correctness risk: `input.clear` used to forget the component, and
+-- `play.dead` and the other per-frame clears call it every frame, so a run spent a whole
+-- FindAllOf("FalconCharacterInputComponent") walk of the object array -- and a "driving ..." log line --
+-- on every frame of every death (measured at 30 a second in LS109 on 2026-11-04). Clearing the input
+-- keeps the component now; input.forget() is the one that drops it.
 local function find(pawn, pc)
-    local address = pawn:GetAddress()
-    if component and component.pawnAddress == address and component.object:IsValid() then
+    local okClass, class = pcall(function() return pawn:GetClass() end)
+    local classAddress = (okClass and class and class:IsValid()) and class:GetAddress() or 0
+    local controller = pc
+    if not (controller and controller:IsValid()) then
+        local ok, own = pcall(function() return pawn.Controller end)
+        controller = (ok and own and own:IsValid()) and own or nil
+    end
+    local pcAddress = controller and controller:GetAddress() or 0
+    if component and component.pcAddress == pcAddress and component.classAddress == classAddress
+       and component.object:IsValid() then
         return component.object
     end
-    local wanted = { [address] = true }
-    if pc and pc:IsValid() then
-        wanted[pc:GetAddress()] = true
-        local ok, controller = pcall(function() return pawn.Controller end)
-        if ok and controller and controller:IsValid() then wanted[controller:GetAddress()] = true end
-    end
+    if searchedAt and os.clock() - searchedAt < SEARCH_AGAIN then return nil end
+    local wanted = { [pawn:GetAddress()] = true }
+    if pcAddress ~= 0 then wanted[pcAddress] = true end
+    if pc and pc:IsValid() then wanted[pc:GetAddress()] = true end
     local others = {}
+    -- IsValid before GetOuter, not after: FindAllOf hands back everything in the object array, a
+    -- component that is being destroyed included, and touching a freed one is an access violation inside
+    -- UE4SS that pcall does not catch (see the IsValid rule in CLAUDE.md).
     for _, c in ipairs(FindAllOf("FalconCharacterInputComponent") or {}) do
-        local ok, outer = pcall(function() return c:GetOuter() end)
-        if ok and outer and outer:IsValid() and c:IsValid() then
-            if wanted[outer:GetAddress()] then
-                component = { pawnAddress = address, object = c }
-                local named, name = pcall(function() return c:GetClass():GetFName():ToString() end)
-                log("input: driving %s", named and name or "an unnamed input component")
-                return c
+        local okValid, valid = pcall(function() return c:IsValid() end)
+        if okValid and valid then
+            local ok, outer = pcall(function() return c:GetOuter() end)
+            if ok and outer and outer:IsValid() then
+                if wanted[outer:GetAddress()] then
+                    component = { pcAddress = pcAddress, classAddress = classAddress, object = c }
+                    searchedAt = nil
+                    local named, name = pcall(function() return c:GetClass():GetFName():ToString() end)
+                    log("input: driving %s", named and name or "an unnamed input component")
+                    return c
+                end
+                local okName, outerName = pcall(function() return outer:GetFullName() end)
+                if okName and #others < 3 then others[#others + 1] = outerName end
             end
-            local okName, outerName = pcall(function() return outer:GetFullName() end)
-            if okName and #others < 3 then others[#others + 1] = outerName end
         end
     end
+    searchedAt = os.clock()
     if not warned then
         warned = true
         log("input: no FalconCharacterInputComponent on the pawn or its controller; found these instead: %s",
@@ -122,11 +151,19 @@ function input.apply(pawn, pc)
     return true
 end
 
--- Releases everything (a button left pressed would stay pressed for the player) and forgets the pawn.
+-- Releases everything: a button left pressed would stay pressed for the player. The component is kept
+-- (input.forget drops it): this is called every frame by the tour's death and verify phases, and
+-- dropping it there cost a full object-array walk per frame.
 function input.clear(pawn, pc)
     axes, buttons = {}, {}
     if pawn and pawn:IsValid() then input.apply(pawn, pc) end
-    sent, component = {}, nil
+    sent = {}
+end
+
+-- Drop the cached component. Nothing needs this during a run -- the cache notices a new controller or a
+-- new character class by itself -- but a tool that has finished with the character can say so.
+function input.forget()
+    component, searchedAt, warned = nil, nil, false
 end
 
 return input
