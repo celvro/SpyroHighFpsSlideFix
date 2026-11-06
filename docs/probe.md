@@ -106,6 +106,23 @@ The code is in `tools/worldtour/`: `worldtour.lua` starts and stops a run and st
   the run's 68 cross-checked findings sat between 10 and 50 units, **clustered tightly around 16**, which
   is two frames. That is one artefact, not 44 bugs. `Compare-Autotest.ps1` measures the speed from the
   run itself and puts the bar at two frames of it.
+- **A stop where Spyro is hit a different number of times is not measuring movement (2026-11-06).** The
+  hit knocks him back and cancels whatever he was doing, so the passes are in different states from then
+  on and the distance between them is the hit. It passes every other test, because it lines up with the
+  framerate for a reason that is not physics: the stop starts a fixed number of **frames** after the
+  teleport, so the enemy is further into its attack cycle at 30 FPS than at 160, and whether its next
+  attack connects falls on one side of that or the other. Both 30 FPS passes then agree with each other,
+  both fast passes agree with each other, and the cross-check is satisfied.
+  - `BP_CES1060_Cupid_C` is the case that showed it. At LS126/361 Spyro is hit twice at 30 FPS and once
+    at 60 and 160; the second arrow lands during the run-up, before the charge reaches its 458.5 units/s,
+    and pins him for 1.3 s of a 3 s script. 54 units at 30 FPS against 810 at speed — a 750-unit finding
+    that is one arrow. At LS127/369 the same enemy goes the other way (no hits at 30 FPS, seven at 60 and
+    160), and **that is the tell: a framerate bug does not change sides.**
+  - `lib/invuln.lua` cannot remove the confound — it keeps him alive, and its own header records that he
+    still takes hits and knockback (`GE_Invincibility` was tried in 2026-09 and stopped neither). So
+    `Compare-Autotest.ps1` counts the damage montages per pass from the animation CSV beside it (`-Anims`,
+    or guessed from the position CSV's name) and holds those stops back: **25 of the 67 it would otherwise
+    report, 9 of them over 200 units.** See `docs/findings/tour-2026-11.md`.
 - **A stop's own noise floor is the only thing that makes the numbers mean anything (2026-11-04).** Run
   the baseline framerate twice (`caps=30,30,60,160`) and the second pass is how far a stop lands from
   *itself* — same script, same framerate, so whatever it covers is the stop failing to repeat. Measured

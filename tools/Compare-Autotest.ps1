@@ -23,7 +23,8 @@ param(
     [double] $Tolerance = 10,
     [int] $Baseline = 30,
     [int] $Top = 40,
-    [double] $FloorFactor = 3
+    [double] $FloorFactor = 3,
+    [string] $Anims
 )
 
 $ErrorActionPreference = 'Stop'
@@ -206,6 +207,49 @@ if ($firstFast.Count -gt 0) {
     }
 }
 
+# How many times Spyro was hit, per stop and pass, read from the animation CSV written beside this one.
+#
+# A stop where he is hit in one pass and not another is not measuring movement. The hit knocks him back
+# and cancels whatever he was doing, so the two passes are in different states from then on and the
+# distance between them is the hit, not the framerate. And it lines up with the framerate for a reason
+# that has nothing to do with physics: the stop starts a fixed number of FRAMES after the teleport, so
+# the enemy is further into its attack cycle at 30 FPS than at 160, and whether its arrow connects falls
+# on one side of that or the other. Both 30 FPS passes then agree with each other, both fast passes agree
+# with each other, and the cross-check reads it as the framerate.
+#
+# BP_CES1060_Cupid_C is the case that showed this. At LS126/361 Spyro is hit twice at 30 FPS and once at
+# 60 and 160: the second arrow cancels the charge, so he travels 54 units at 30 FPS and 810 at speed --
+# a 750-unit "finding" that is one arrow. At LS127/369 it goes the other way (no hits at 30 FPS, seven at
+# 60 and 160), which is how the direction gives it away: a framerate bug does not change sides.
+#
+# lib/invuln.lua cannot help here. It keeps him alive, and its own header says he still takes hits and
+# knockback; GE_Invincibility was tried in 2026-09 and did not stop either.
+$hitsOf = @{}
+if (-not $Anims) {
+    $leaf = [IO.Path]::GetFileName($Path)
+    if ($leaf -like 'autotest*') {
+        $guess = Join-Path ([IO.Path]::GetDirectoryName($Path)) ($leaf -replace '^autotest', 'autotest_anims')
+        if (Test-Path $guess) { $Anims = $guess }
+    }
+}
+if ($Anims -and (Test-Path $Anims)) {
+    $wasHit = @{}; $lastPos = @{}
+    foreach ($a in Import-Csv $Anims) {
+        if ($a.who -ne 'player') { continue }
+        $id = "$($a.stop)|$($a.script)|$($a.pass)"
+        $dmg = $a.montage -like '*Damage*'
+        # A new hit is a damage montage where there was none, or one that restarted from the top.
+        if ($dmg -and (-not $wasHit[$id] -or [double] $a.montagePos -lt $lastPos[$id])) {
+            $hitsOf[$id] = 1 + $(if ($hitsOf.ContainsKey($id)) { $hitsOf[$id] } else { 0 })
+        }
+        $wasHit[$id] = $dmg
+        $lastPos[$id] = [double] $a.montagePos
+    }
+} else {
+    Write-Host ('No animation CSV beside this one, so stops decided by a hit cannot be told from stops ' +
+        'decided by the framerate. Pass -Anims to get that check.')
+}
+
 # One row per stop now, not per stop and framerate: a framerate bug is a property of the stop, and
 # listing it once per cap was what made the table three times longer than the work in it.
 $byStop = @{}
@@ -223,6 +267,16 @@ foreach ($k in $byStop.Keys) {
     $least = ($fast | Measure-Object MaxDist -Minimum).Minimum   # the least convinced fast pass
     $most = ($fast | Measure-Object MaxDist -Maximum).Maximum
     $spread = $(if ($spreadOf.ContainsKey($k)) { $spreadOf[$k] } else { 0 })
+    # The hits he took in each pass that played this stop, the baseline ones included.
+    $counts = @()
+    foreach ($pp in $passes) {
+        $id = "$($fast[0].Stop)|$($fast[0].Script)|$($pp.Pass)"
+        if ($wasHit.ContainsKey($id) -or $hitsOf.ContainsKey($id)) {
+            $counts += $(if ($hitsOf.ContainsKey($id)) { $hitsOf[$id] } else { 0 })
+        }
+    }
+    $hitLo = $(if ($counts.Count -gt 0) { ($counts | Measure-Object -Minimum).Minimum } else { 0 })
+    $hitHi = $(if ($counts.Count -gt 0) { ($counts | Measure-Object -Maximum).Maximum } else { 0 })
     $row = [pscustomobject] @{
         Level = $fast[0].Level; Stop = $fast[0].Stop; Script = $fast[0].Script; Note = $fast[0].Note
         Caps = ($fast | ForEach-Object { $_.Cap } | Sort-Object -Unique) -join '/'
@@ -234,6 +288,8 @@ foreach ($k in $byStop.Keys) {
         Least = [math]::Round($least, 1)
         Worst = [math]::Round($most, 1)
         Spread = [math]::Round($spread, 1)
+        Hits = $(if ($hitLo -eq $hitHi) { $hitLo } else { "$hitLo-$hitHi" })
+        Fought = ($hitLo -ne $hitHi)
         Ratio = $(if ($null -eq $floor) { $null }
                   elseif ($floor -lt 1) { [math]::Round($least, 1) }
                   else { [math]::Round($least / $floor, 1) })
@@ -278,13 +334,25 @@ if ($floorOf.Count -eq 0) {
     # stop played at only one has nothing to agree with, so all it has is its own floor, and a stop that
     # merely wandered can sit in that list. The second tier exists because a crash costs a level its
     # later passes, which is most of what games 2 and 3 lost in the run of 2026-11-04.
+    # A stop where the number of hits differs between passes is measuring the hit, not the framerate.
+    $fought = @($found | Where-Object { $_.Fought })
+    $found = @($found | Where-Object { -not $_.Fought })
     $crossed = @($found | Where-Object { $_.Fast -ge 2 })
     $single = @($found | Where-Object { $_.Fast -lt 2 })
-    $cols = 'Level', 'Stop', 'Script', 'Note', 'Caps', 'BaseMove', 'Floor', 'Least', 'Worst', 'Spread', 'Ratio'
+    $cols = 'Level', 'Stop', 'Script', 'Note', 'Caps', 'BaseMove', 'Floor', 'Least', 'Worst', 'Spread', 'Hits'
     Write-Host (("FINDINGS: {0} of {1} measured stops, {2} of them cross-checked at more than one " +
         "framerate. Every pass above {3} FPS beats the stop's own noise floor by {4}x, and they agree " +
         'with each other to within {5} of that drift, so it is the framerate and not the stop ' +
         'wandering.') -f $found.Count, $graded.Count, $crossed.Count, $Baseline, $FloorFactor, $AGREE)
+    if ($fought.Count -gt 0) {
+        Write-Host ''
+        Write-Host (("{0} stop(s) are left out because Spyro was hit a different number of times in " +
+            'different passes, so the distance between them is the hit and its knockback. The enemy is ' +
+            'further into its attack cycle at 30 FPS than at 160, which is why it sorts by framerate ' +
+            'and passes the cross-check:') -f $fought.Count)
+        $fought | Sort-Object Worst -Descending | Select-Object -First $Top `
+            Level, Stop, Script, Note, Caps, Hits, Floor, Least, Worst | Format-Table -AutoSize
+    }
     if ($granular.Count -gt 0) {
         Write-Host (("{0} more stop(s) beat their floor but by less than two frames of walking, which is " +
             'the harness and not the game.') -f $granular.Count)
