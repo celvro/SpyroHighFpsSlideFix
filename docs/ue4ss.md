@@ -31,3 +31,77 @@
 - UE4SS Lua is 5.4, so `math.frexp`, `math.pow` and friends don't exist. A Lua error inside a per-frame loop only logs once (the mods guard with `errorLogged`), so check `UE4SS.log` for `error:` lines before trusting a test.
 - Probe `drift` lines of ~0.15–0.2 s are normal stops: braking from full speed takes ~0.17 s. Multi-second drifts are the bug.
 - The first AOB scan fails because the exe is still unpacking; the second pass succeeds (EngineTick hook found). Log: `Falcon\Binaries\Win64\ue4ss\UE4SS.log`.
+
+## Hot reload: making it reliable (investigation 2026-11-15, not yet built)
+
+The goal is to stop closing the game to deploy Lua (`Install-UE4SS.ps1 -ModsOnly`, or a save into the
+deployed `Scripts/`): both trigger UE4SS's Lua auto-reload, which crashes this setup roughly 1 reload
+in 5–10 with a heap corruption and no dump (the log stops inside the reloaded mod's own startup). Edits
+that fix it are staged, **uncommitted**, in `~/code/RE-UE4SS` (not built yet — the game still runs the
+old DLL, so the "close before deploying" rule in `CLAUDE.md` still stands until the new DLL is in).
+
+**Versions (verified).** Deployed `UE4SS.dll` is **v3.0.1-1133**, built 2026-09-20 at SHA `35d1795`
+plus the old `tools/ue4ss-patches/luamod-hot-reload-actions-mutex.patch`. The clone
+(`~/code/RE-UE4SS`, fork `celvro/RE-UE4SS`) is `main` at `b2d936b9`, **v4.0 era**, two months ahead,
+and already carries the project's own upstreamed reload fixes: `cdbc0b66` (run queued events outside
+the event-queue lock), `97c5642a` (wait for running game-thread batches before closing a mod's Lua
+state — adds `m_game_thread_execution_mutex`), `544e7ef2`. So moving to the fix is a **v3.0.1 → v4.0
+upgrade + rebuild**, not a drop-in patch.
+
+**Crash dumps (verified parsed).** The two dumps in `backup/ue4ss/` (0xC0000005 at `UE4SS.dll+0xC5F4DD`
+and `+0x2DFD08`) are from the *stock pre-patch v3* DLL — the teardown race already diagnosed in
+`docs/tools.md` and fixed upstream, not the current failure. The remaining heap-corruption reload
+crash produces no dump, so the root cause below is from source analysis of current `main`.
+
+**Root causes in `UE4SS/src/Mod/LuaMod.cpp` (current main).**
+1. **Startup race (the live crash).** The auto-reload watcher runs `uninstall()` then `start_mod()`;
+   `start_mod` → `load_and_execute_script` runs `main.lua` holding **no lock**. The moment `main.lua`
+   queues `LoopInGameThreadAfterFrames`/`ExecuteInGameThread` or registers a hook, the game thread
+   runs that Lua in the **same `lua_State`** while `main.lua` is still executing on the watcher thread
+   → two threads in one Lua allocator → heap corruption. Matches "crashes during the reloaded mod's
+   own startup" exactly, and this mod queues `LoopInGameThreadAfterFrames` on frame 1.
+2. **Native `RegisterHook` callbacks held no lock** (`lua_unreal_script_function_hook_pre/post`): they
+   run Lua on the game thread unsynchronised, and `uninstall()` can `lua_close` mid-callback.
+3. **14 engine-callback dispatch loops + 2 console-command maps held no lock** (LoadMap, InitGameState,
+   BeginPlay, EndPlay, ULocalPlayerExec, CallFunctionByNameWithArguments, ProcessConsoleExec pre/post):
+   they run Lua and iterate vectors that registration appends to and uninstall erases.
+
+**Fix staged (uncommitted, 1 file, +89 lines, lock insertions + comments).** `LuaMod.cpp`:
+`start_mod` takes `m_game_thread_execution_mutex` then `m_thread_actions_mutex` (established lock
+order) around `main.lua` execution; the two native hook callbacks and the 14 dispatch loops + 2
+console maps take `m_thread_actions_mutex`. `std::lock_guard<std::recursive_mutex>` on existing public
+static members, no new state, order `execution → actions` throughout. `uninstall()` is untouched (its
+async join stays outside the locks, so no deadlock). The old `.patch` in `tools/ue4ss-patches/` is
+**superseded** — partly upstreamed, partly replaced by these edits — and must not be reapplied.
+
+**Build + deploy (next steps, not done — need the build error).**
+- The user builds with **xmake** (`xmake f --vs=2022 -m "LessEqual421__Shipping__Win64" -y`) and it
+  **errors on imgui**; the exact error was not captured, so it is the blocker. imgui here is **not a
+  git submodule** — `deps/third/imgui/CMakeLists.txt` pulls it via CMake `FetchContent` — so the fix
+  is not `submodule update`; the error text is needed. If xmake keeps fighting, the repo's **CMake**
+  path fetches imgui differently and may sidestep it (the subagent's route).
+- Use the **`LessEqual421`** build target: v4.0 defaults FName alignment to 4, but UE ≤ 4.21 (this is
+  4.19) needs `FNAME_ALIGN8` — a `Game__Shipping__Win64` build would give the wrong alignment and
+  likely crash. Use a fresh build dir; point `Resolve-Ue4ssStack.ps1 -Map` at the new `UE4SS.map`.
+- `git submodule update --init --recursive` first (main bumped the Unreal submodule on 11-15).
+- Game closed: drop the built `UE4SS.dll`/`.pdb` into `tools/bin/ue4ss-dist/ue4ss/` (bump VERSION.txt)
+  and `Install-UE4SS.ps1`, or straight into `Falcon\Binaries\Win64\ue4ss\`. **Keep the existing
+  `UE4SS-settings.ini`** (MajorVersion=4 / MinorVersion=19, hot-reload enabled).
+
+**v3 → v4 Lua compatibility (check after building).**
+- `AActor.GetWorld`/`GetLevel` now always return an object: `if world then` must become
+  `world:IsValid()`. Our mods are **low-exposure** — only `ue4ss/DevMods/SpyroFpsProbe/Scripts/lib/levels.lua`
+  calls `GetWorld`, and it already guards with `:IsValid()`. Re-grep after upgrading to be sure.
+- Retest the "Blueprint `RegisterHook` pre runs after body, post never fires" quirk (documented above
+  and in `CLAUDE.md`): 4.0 may behave differently, which would affect every fix hook.
+
+**Residual risks after the fix.**
+- Async-state Lua (`ExecuteWithDelay`/`LoopAsync` callbacks) still runs without the global mutex; these
+  mods don't use it and the APIs are deprecated in 4.0.
+- `uninstall()` clears *all* mods' pending `NotifyOnNewObject` callbacks, so reloading one mod can drop
+  another mod's just-pending notify (a missed callback, not a crash).
+- The game now hitches for the duration of `main.lua` on each reload (by design); a mod whose `main.lua`
+  busy-waited for its own game-thread callback would deadlock instead of corrupting memory.
+- **Verify before relaxing `CLAUDE.md`'s "close the game before deploying":** run the old repro — 20+
+  saves into the fixes mod's `Scripts/` in a level, plus `Install-UE4SS.ps1 -ModsOnly` while running.
+  These edits are the same shape as the user's merged fixes and are upstreamable if they hold.

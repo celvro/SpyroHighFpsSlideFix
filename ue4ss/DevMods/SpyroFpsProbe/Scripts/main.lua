@@ -28,6 +28,12 @@
 --   Y                  non-finite velocity and anim speed: the gem thief (trackers/gemthief.lua) and a sweep
 --                      over every NPC and enemy (trackers/nanspeed.lua). The thief is watched from the
 --                      start; Y turns him off and the sweep on.
+--   Home               record a replay take: every input of a hand-played run, from where Spyro
+--                      stands, until Home again (tools/replay.lua)
+--   End                closed: open the on-screen take picker for this level; open: play the
+--                      selected take at the current F5-F8 cap (newest if unmoved), writing a trace
+--                      to compare against the recording; while a replay runs: abort it (tools/replay.lua)
+--   Up / Down          move the take-picker selection while it is open (tools/replay.lua)
 --   T                  poison test: write NaN into the gem thief's anim Blueprint Speed and hold the heal
 --                      back for 5 s, to watch the pose break and come back (trackers/gemthief.lua)
 --
@@ -48,6 +54,7 @@
 --   autotest_<stamp>.csv one row per world tour sample, per framerate (tools/worldtour/samples.lua)
 --   animtest_<stamp>.csv one row per montage per framerate (tools/animtest.lua)
 --   scansweep_<stamp>.txt one line per level scanned by a sweep (tools/scansweep.lua)
+--   replay_<level>_<stamp>_{inputs,ref}.csv / ..._run<cap>_<t>.csv  replay takes and their runs (tools/replay.lua)
 --   camdump_*.txt        every reflected FollowCameraComponent property (trackers/camera.lua)
 --   log lines            "seg", "drift", "rise" (trackers/movement.lua); "charge", "turn" (trackers/charge.lua);
 --                        "camlock", "camstuck", "camtransition", "camdump diff" (trackers/camera.lua);
@@ -135,6 +142,7 @@ local animtest = require("tools.animtest")
 local routes = require("tools.routes")
 local scan = require("tools.scan")
 local scansweep = require("tools.scansweep")
+local replaytest = require("tools.replay")
 local dumpstate = require("tools.dumpstate")
 
 -- Sparx is topped up to full every couple of seconds while the probe runs, so a test is not cut short by a
@@ -168,7 +176,7 @@ local function sample()
         -- what used to leave the scripted tour sitting in one: nothing ran to answer it. The
         -- tour answers it the way a player does, with Continue (lib/dialogue.lua). An unattended
         -- run of any kind has to get out of one: a paused world never reaches its own stop file.
-        if worldtour.running() or scansweep.running() then dialogue.advance() end
+        if worldtour.running() or scansweep.running() or replaytest.running() then dialogue.advance() end
         return
     end
     state.lastTime = time
@@ -236,6 +244,7 @@ local function sample()
     worldtour.update(pawn, pc, cmc, r, setFpsCap)
     minigame.update(pawn, pc, cmc, r, state.fpsCap or 0)
     animtest.update(pawn, pc, r, setFpsCap)
+    replaytest.update(pawn, pc, cmc, r, setFpsCap)
     scan.update(pawn, pc)
     scansweep.update(pawn, pc, r, touring)
     if requestClose then
@@ -307,6 +316,22 @@ RegisterKeyBind(Key.F1, minigame.mark)
 RegisterKeyBind(Key.F2, minigame.retry)
 RegisterKeyBind(Key.C, function() minigame.request("next") end)
 RegisterKeyBind(Key.H, scan.request)
+-- Home/End because every letter is bound (see the key rules in CLAUDE.md); guarded so a UE4SS build
+-- whose Key table lacks them degrades to a log line instead of killing the mod's load.
+if Key.HOME then
+    RegisterKeyBind(Key.HOME, replaytest.requestRecord)
+else
+    log("replay: this UE4SS build has no Key.HOME; recording has no key")
+end
+if Key.END then
+    RegisterKeyBind(Key.END, replaytest.requestReplay)
+else
+    log("replay: this UE4SS build has no Key.END; replaying has no key")
+end
+-- The take picker: End opens it (and plays the selection), the arrows move through it. The game
+-- binds the arrows too, so only press them with the picker open and Spyro standing still.
+if Key.UP_ARROW then RegisterKeyBind(Key.UP_ARROW, replaytest.menuUp) end
+if Key.DOWN_ARROW then RegisterKeyBind(Key.DOWN_ARROW, replaytest.menuDown) end
 RegisterKeyBind(Key.I, animtest.toggle)
 RegisterKeyBind(Key.T, gemthief.poison)
 RegisterKeyBind(Key.Y, function()

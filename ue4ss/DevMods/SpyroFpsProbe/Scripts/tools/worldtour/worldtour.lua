@@ -121,7 +121,7 @@ local function start(pawn, pc, cmc, options, setFpsCap)
     plan.use(options) -- what the progress file's index has to belong to, before it is read
     if not options.restart then index = math.max(plan.savedIndex(), 1) end
     local caps = plan.caps(options)
-    local steps = plan.build(stops, caps, options.review)
+    local steps = plan.build(stops, caps, options.review or options.nolead)
     if index > #steps then index = 1 end
     run = { caps = caps, stops = stops, plan = steps, index = index, step = steps[index],
             phase = "start", started = os.clock(), review = options.review and { count = 0 } or nil }
@@ -209,7 +209,9 @@ local function update(pawn, pc, cmc, r, setFpsCap)
     if run.phase == "switch" then arrive.switch(run, pawn); return end
     if run.phase == "grace" then arrive.grace(run, pawn, pc, cmc, r); return end
     if run.phase == "clearing" then arrive.start(run, pawn, pc, cmc); return end
-    if run.phase == "settle" then play.settle(run, r); return end
+    if run.phase == "refresh" then arrive.refresh(run, pawn, pc, cmc); return end
+    if run.phase == "settle" then play.settle(run, r, pawn, pc, cmc); return end
+    if run.phase == "approach" then play.approach(run, pawn, pc, cmc, r); return end
     if run.phase == "verify" then play.verify(run, pawn, pc, r); return end
     if run.phase == "dead" then play.dead(run, pawn, pc, r); return end
     if run.phase == "play" and play.step(run, pawn, pc, cmc, r) then return end

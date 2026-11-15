@@ -54,6 +54,10 @@
     Carry on from autotest_progress.txt instead of starting the route over. Without it the first
     trigger says "restart".
 
+.PARAMETER NoLead
+    Leave out the lead stops (Spyro's own flame, charge, hop and glide at the head of each level), so
+    a run plays exactly one stop per character and script.
+
 .PARAMETER AllowTrace
     Run even though the probe's per-frame trace CSV is switched on. It writes a row per frame per
     character: at 160 FPS over a night that is tens of gigabytes, and it is not what the comparisons
@@ -74,6 +78,7 @@ param(
     [int] $MaxRestarts = 40,
     [int] $StallMinutes = 15,
     [switch] $Resume,
+    [switch] $NoLead,
     [switch] $AllowTrace
 )
 
@@ -250,6 +255,10 @@ if ($Levels)  { Write-Step "  levels: $($Levels -join ',')" }
 $csvCutoff = (Get-Date).AddSeconds(-5)
 
 $attempt = 0
+# A trigger left behind by a run that was killed is read the moment the probe loads, before this
+# run's own: on 2026-11-14 a stale one asking for a script that no longer existed logged "none of the
+# stops match", and the driver took that for its own run and gave up.
+Remove-Item (Join-Path $ProbeDir 'autotest.txt'), (Join-Path $ProbeDir 'review.txt') -ErrorAction SilentlyContinue
 $fresh = -not $Resume
 $outcome = 'gave up'
 while ($attempt -le $MaxRestarts) {
@@ -265,6 +274,7 @@ while ($attempt -le $MaxRestarts) {
     $options += "caps=$capList"
     if ($Levels)  { $options += "level=$($Levels -join ',')" }
     if ($Scripts) { $options += "script=$($Scripts -join ',')" }
+    if ($NoLead) { $options += 'nolead' }
     Write-Trigger ($options -join ' ')
     Write-Step "  trigger: $($options -join ' ')"
 
@@ -310,7 +320,7 @@ function Join-Csvs([string] $pattern, [string] $into) {
 
 $tourCsv = Join-Csvs 'autotest_2*.csv' 'autotest.csv'
 $animCsv = Join-Csvs 'autotest_anims_*.csv' 'autotest_anims.csv'
-foreach ($extra in 'autotest_deaths.txt', 'autotest_progress.txt') {
+foreach ($extra in 'autotest_deaths.txt', 'autotest_nohit.txt', 'autotest_progress.txt') {
     Copy-Item (Join-Path $ProbeDir $extra) $runDir -Force -ErrorAction SilentlyContinue
 }
 

@@ -19,6 +19,7 @@ local gameswap = require("lib.gameswap")
 local quicksave = require("tools.quicksave")
 local routes = require("tools.routes")
 local drive = require("tools.worldtour.drive")
+local scripts = require("tools.worldtour.scripts")
 
 local arrive = {}
 
@@ -35,7 +36,8 @@ local MAX_RELOADS = 2      -- but no more than this per level: past that the spo
 -- a pointer into freed memory.
 local function letGo(run)
     anim.release(run.targetHeld)
-    run.targetHeld, run.targetOrigin, run.target = nil, nil, nil
+    drive.thaw(run.frozen)
+    run.targetHeld, run.targetOrigin, run.target, run.frozen = nil, nil, nil, nil
     igc.forget()
 end
 
@@ -56,6 +58,17 @@ end
 local function switchGame(game)
     gameswap.begin(game)
     return true
+end
+
+-- "refresh": waiting for the sublevel reload asked for below, and a moment more for what it spawned.
+local REFRESH_SETTLE = 1.0
+function arrive.refresh(run, pawn, pc, cmc)
+    if quicksave.reloading() then
+        run.refreshAt = os.clock()
+        return
+    end
+    if os.clock() - run.refreshAt < REFRESH_SETTLE then return end
+    arrive.start(run, pawn, pc, cmc)
 end
 
 -- Starts the current step's stop: whichever of the phases above it needs first, or straight onto the
@@ -133,6 +146,20 @@ function arrive.start(run, pawn, pc, cmc)
         run.phase = "travel"
         return
     end
+    -- A flame or a charge that landed has killed or scattered what it hit, and the level keeps it that
+    -- way: the next pass would find that character gone and be sent at the next nearest of its kind,
+    -- somewhere else, which is a different stop under the same number (Zephyr, 2026-11-14: the parrot
+    -- was hit in pass 1 and never again). So before the next stop aimed at a character the level's
+    -- gameplay sublevels are streamed out and in (quicksave's L, about a second), which puts every
+    -- enemy back, and each pass meets the level as the first one did.
+    if run.dirty and scripts.approach(stop.script) then
+        run.dirty = nil
+        letGo(run)
+        quicksave.request("reload")
+        run.phase, run.refreshAt = "refresh", os.clock()
+        log("autotest: putting %s's enemies back before stop %d", stop.level, entry.id)
+        return
+    end
     -- Never teleport out of a conversation. A cinematic holds the camera and the input, and it keeps
     -- holding them wherever he is put next, so the stop after this one is lost as well -- which is how
     -- one NPC used to cost a whole run. Finish it first and only then move him.
@@ -157,7 +184,10 @@ function arrive.start(run, pawn, pc, cmc)
     run.clearing, run.nextClear = nil, nil
     local _, origin = levels.current(pawn)
     local x, y = routes.place(stop, origin)
-    run.target = drive.findTarget(pawn, stop, x, y)
+    drive.thaw(run.frozen)
+    local bystanders
+    run.target, bystanders = drive.findTarget(pawn, stop, x, y)
+    run.frozen = scripts.approach(stop.script) and run.target and drive.freeze(bystanders) or nil
     local ok, why, spot = drive.place(pawn, pc, cmc, stop, drive.yawTo(run.target, x, y))
     if not ok then
         log("autotest: %s stop %d skipped, can't place it (%s)", stop.level, entry.id, tostring(why))
@@ -165,6 +195,7 @@ function arrive.start(run, pawn, pc, cmc)
         return
     end
     run.phase, run.settled, run.elapsed, run.samples, run.nextSample = "settle", 0, 0, 0, 0
+    run.approached = nil -- play.lua walks him up to the target once per stop
     run.arrived, run.everMoved, run.talking = nil, nil, nil
     run.character, run.inSubworld = subworld.character(pawn), nil
     run.spot = spot

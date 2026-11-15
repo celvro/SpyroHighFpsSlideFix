@@ -198,7 +198,11 @@ local function updateReload(pawn, pc, cmc, r)
         log("reload: %s after %.1f s", what, elapsed)
         logTargets(s.targets, "after")
         -- Only put him on the spot if it belongs to this level; otherwise leave him where he reloaded.
-        if spot and spot.level == s.level then teleportToSpot(pawn, pc, cmc, "reload") end
+        if spot and spot.level == s.level and not s.skipSpot then teleportToSpot(pawn, pc, cmc, "reload") end
+        if s.onDone then
+            local okDone, doneErr = pcall(s.onDone)
+            if not okDone then log("reload: onDone failed: %s", tostring(doneErr)) end
+        end
     end
 
     if elapsed > RELOAD_TIMEOUT then
@@ -344,6 +348,17 @@ function quicksave.update(pawn, pc, cmc, r)
     end
 end
 
+-- A sublevel reload for another tool (tools/replay.lua), from the game thread: no teleport to the
+-- quicksave spot at the end, and onDone called once the sublevels are back (or the reload gave up).
+-- False when no gameplay sublevels were found to reload.
+function quicksave.reloadLevel(pawn, onDone)
+    requestReload(pawn)
+    if not reload then return false end
+    reload.skipSpot = true
+    reload.onDone = onDone
+    return true
+end
+
 -- For the world tour (call from the game thread): travel without teleporting on arrival.
 function quicksave.travel(pawn, level)
     return travelToLevel(pawn, level, false)
@@ -369,6 +384,11 @@ function quicksave.startGame(pawn, game)
     end)
     if not ok then log("travel: start game(Spyro %d) failed: %s", game, tostring(err)) end
     return ok
+end
+
+-- A sublevel reload (L) asked for or still streaming, for the world tour's refresh between stops.
+function quicksave.reloading()
+    return reload ~= nil or request == "reload"
 end
 
 function quicksave.travelling()

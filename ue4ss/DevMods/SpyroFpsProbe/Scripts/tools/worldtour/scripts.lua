@@ -46,6 +46,7 @@ scripts.list = {
     chargeJump = { STILL, { dur = 1.5, axes = { leftY = 1 }, hold = { "charge" } },
                    { dur = 0.6, axes = { leftY = 1 }, hold = { "charge", "jump" } },
                    { dur = 1.5, axes = { leftY = 1 }, hold = { "charge" } }, STILL },
+    -- Both are aimed at the stop's character when it has one: he walks up to it first (scripts.approach).
     -- Flame from a standstill. (It used to walk first: the probe had flame on FaceTop, which is
     -- FreeLook, so a standing press went into first person. Flame is FaceRight, lib/input.lua.)
     flame = { STILL, { dur = 0.2, hold = { "flame" } }, { dur = 2.0 }, STILL },
@@ -75,6 +76,16 @@ scripts.list = {
     -- Nothing at all: stand and let the level's own characters move.
     idle = { { dur = 8.0 } },
 }
+
+-- Scripts aimed at the stop's character, and how close he walks to it before the script starts
+-- (play.lua's "approach"). A flame from the recorded spot, 400 units away, never touched anything, and a
+-- charge from there met whatever stood between them first. The flame distance is inside the breath's
+-- reach (a Cowlek was hit from 130); the charge distance leaves him a run-up, since a charge that
+-- starts touching the target has not got up to speed. Stops with no character (the lead stops) skip it.
+local APPROACH = { flame = 140, charge = 350 }
+function scripts.approach(name)
+    return APPROACH[name]
+end
 
 -- Whether a script ever pushes the left stick. A script that doesn't (a flame on the spot, a hop) can
 -- never show that the game has taken input away: Spyro stands still either way, so the stop is called

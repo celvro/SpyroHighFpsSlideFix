@@ -25,6 +25,19 @@ input.AXES = {
     rightX = "InputAxis_RightStick_X", rightY = "InputAxis_RightStick_Y",
     triggerL = "InputAxis_TriggerLeft", triggerR = "InputAxis_TriggerRight",
 }
+-- The axis VALUE stored on the component each frame, which some Blueprint logic reads instead of the
+-- movement input vector: the charge steering reads InputAxisLeftStickX (docs/findings/charge-turn-camera.md,
+-- "Charge steering is Blueprint"), and the mouse charge steering fix reads InputAxisRightStickX. Calling
+-- the axis event alone drives walking (AddMovementInput) but never sets these, so a replayed charge turn
+-- steered straight (its yaw froze) until input.apply wrote them too. A property a character's component
+-- does not have is skipped (pcall). Recording reads the same names (tools/replay.lua).
+input.AXIS_PROPS = {
+    leftX = "InputAxisLeftStickX", leftY = "InputAxisLeftStickY",
+    rightX = "InputAxisRightStickX", rightY = "InputAxisRightStickY",
+    triggerL = "InputAxisTriggerLeft", triggerR = "InputAxisTriggerRight",
+}
+local axisPropMissing = {} -- property name -> true once writing it failed, logged once
+
 input.BUTTONS = {
     jump = "InputAction_FaceBottom", charge = "InputAction_FaceLeft", flame = "InputAction_FaceRight",
     shoulderL = "InputAction_ShoulderLeft", shoulderR = "InputAction_ShoulderRight",
@@ -141,6 +154,17 @@ function input.apply(pawn, pc)
     for key, event in pairs(input.AXES) do
         call(c, event, axes[key] or 0)
     end
+    -- Also set the stored axis value, for the Blueprint logic that reads it rather than the movement
+    -- input vector (the charge turn above all). Written after the event so it wins over a native zero.
+    for key, prop in pairs(input.AXIS_PROPS) do
+        if not axisPropMissing[prop] then
+            local ok = pcall(function() c[prop] = axes[key] or 0 end)
+            if not ok then
+                axisPropMissing[prop] = true
+                log("input: %s not writable on this character; charge/mouse steering from a script may not work", prop)
+            end
+        end
+    end
     for key, event in pairs(input.BUTTONS) do
         local want = buttons[key] == true
         if sent[key] ~= want then
@@ -158,6 +182,12 @@ function input.clear(pawn, pc)
     axes, buttons = {}, {}
     if pawn and pawn:IsValid() then input.apply(pawn, pc) end
     sent = {}
+end
+
+-- The character's input component, for tools that read the raw axes off it (tools/replay.lua).
+-- The same cached lookup input.apply uses; nil while there is no component to drive.
+function input.component(pawn, pc)
+    return find(pawn, pc)
 end
 
 -- Drop the cached component. Nothing needs this during a run -- the cache notices a new controller or a

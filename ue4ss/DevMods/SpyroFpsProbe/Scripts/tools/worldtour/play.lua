@@ -33,6 +33,9 @@ local play = {}
 
 local SETTLE = 1.0   -- seconds standing still after the teleport, before the script starts
 local SETTLE_MAX = 4.0 -- but a fall from the teleport is given this long to land before the stop is dropped
+local APPROACH_MAX = 6.0   -- seconds of walking at the target before he is put next to it instead
+local APPROACH_STALL = 1.0 -- told to walk and not moving for this long: the same
+local APPROACH_FACING = 12 -- degrees off the target he may face and still be counted as lined up
 local PLACED_DISTANCE = 300 -- how far off the spot he may still be and be counted as placed on it
 local FELL_HEIGHT = 90     -- below the stop AND falling: put him back before the water kills him. Walking
                            -- down steps and slopes is not falling, so it does not count.
@@ -49,12 +52,100 @@ local CINEMATIC_CAM_DIST = 600
 local TALK_SECONDS = 25.0  -- longest a stop waits for a conversation it started to finish
 local SUBWORLD_SECONDS = 12.0 -- how long to play as whoever a subworld handed the controller to
 local DEATHS = paths.modDir .. "\\autotest_deaths.txt"
+-- One line per flame or charge stop that ended without the target being damaged or killed: the stop is
+-- not measuring what it was recorded for, and is to be fixed (a flyer he cannot reach, a target behind
+-- something, a character that takes neither). Tour-Unattended.ps1 copies it into the run folder.
+local NOHIT = paths.modDir .. "\\autotest_nohit.txt"
+local HIT_WORDS = { "hit", "death", "dead", "die", "flamed", "burn", "damage", "stun", "knock", "charged" }
+local HIT_CHECK = 0.1 -- seconds between looks at the target: each is several reflection calls
 
 -- Ends the stop: lets go of the input and of the target, moves along any conversation it opened, and
 -- notes whether he could move (the level is loaded again after LOCKED_STOPS that could not).
+-- Has the stop's target been damaged or killed yet? Three signs, any of which will do: it is gone (a
+-- kill destroys the actor), its health is below where it started, or its enemy state or montage has
+-- become one named for being hit. Looked at every HIT_CHECK seconds while the script plays.
+-- The target's health attribute set, looked for once when the watch starts: FindAllOf walks every object
+-- (CLAUDE.md), and lib/invuln.lua's own lookup keeps one slot, for Spyro, so asking it about the target
+-- every tenth of a second would have walked the object array each time. Nil for a character without one.
+local function healthSetOf(actor)
+    local address = actor:GetAddress()
+    for _, set in ipairs(FindAllOf("PhasmidHealthSystemAttributeSet") or {}) do
+        local ok, outer = pcall(function() return set:GetOuter():GetAddress() end)
+        if ok and outer == address then return set end
+    end
+    return nil
+end
+
+local function healthOf(set)
+    if not (set and set:IsValid()) then return nil end
+    local ok, value = pcall(function() return set.HealthCurrent end)
+    if not ok then return nil end
+    if type(value) == "number" then return value end
+    local okValue, current = pcall(function() return value.CurrentValue end)
+    return okValue and type(current) == "number" and current or nil
+end
+
+local function hitWord(text)
+    text = text:lower()
+    for _, word in ipairs(HIT_WORDS) do
+        if text:find(word, 1, true) then return true end
+    end
+    return false
+end
+
+local function watchHit(run, r)
+    if run.hit or not run.hitWatch then return end
+    run.hitNext = (run.hitNext or 0) - r.dt
+    if run.hitNext > 0 then return end
+    run.hitNext = HIT_CHECK
+    local target = run.target
+    if not (target and pcall(function() return target:IsValid() end) and target:IsValid()) then
+        run.hit = "killed (the actor is gone)"
+        return
+    end
+    local distance = drive.targetDistance(run, r)
+    if distance and distance < (run.hitClosest or math.huge) then run.hitClosest = distance end
+    local okLoc, loc = pcall(function() return target:K2_GetActorLocation() end)
+    if okLoc then run.hitApart = loc.Z - r.z end
+    local health = healthOf(run.hitSet)
+    if health and run.hitHealth and health < run.hitHealth then
+        run.hit = string.format("damaged (health %.0f to %.0f)", run.hitHealth, health)
+        return
+    end
+    local state = anim.state(target)
+    local now = state.enemyState .. " " .. state.montage
+    if now ~= run.hitStart and hitWord(now) then run.hit = "reacted (" .. now .. ")" end
+end
+
+local function reportHit(run)
+    if not run.hitWatch then return end
+    local entry = run.step.entry
+    if run.hit then
+        run.dirty = true -- arrive.lua puts the enemies back before the next stop aimed at one
+        log("autotest: %s stop %d (%s, %s) hit its target: %s", entry.stop.level, entry.id,
+            entry.stop.script, entry.stop.note, run.hit)
+    else
+        local line = string.format("%s stop %d %s %s at %d FPS: NOT HIT in %.1f s (%.1f s walking in, closest %.0f units, %s)",
+            entry.stop.level, entry.id, entry.stop.script, entry.stop.note, run.step.cap,
+            (run.elapsed or 0) + (run.approachFor or 0), run.approachFor or 0, run.hitClosest or -1,
+            run.hitApart and string.format("target %.0f units %s him", math.abs(run.hitApart), run.hitApart > 0 and "above" or "below") or "height unknown")
+        log("autotest: %s -- flagged in autotest_nohit.txt", line)
+        local file = io.open(NOHIT, "a")
+        if file then
+            file:write(os.date("%Y-%m-%d %H:%M:%S") .. " " .. line .. "\n")
+            file:close()
+        end
+    end
+    run.hitWatch, run.hit, run.hitHealth, run.hitStart, run.hitClosest, run.hitNext = nil, nil, nil, nil, nil, nil
+    run.hitSet = nil
+end
+
 local function finish(run, pawn, pc, reason)
     local entry = run.step.entry
     input.clear(pawn, pc)
+    reportHit(run)
+    drive.thaw(run.frozen)
+    run.frozen = nil
     anim.release(run.targetHeld)
     run.targetHeld, run.targetOrigin = nil, nil
     -- A locked Spyro stays locked, so count the stops in a row that could not move: one is bad luck
@@ -84,7 +175,7 @@ local function finish(run, pawn, pc, reason)
 end
 
 -- "settle": standing still on the spot before the script.
-function play.settle(run, r)
+function play.settle(run, r, pawn, pc, cmc)
     local entry = run.step.entry
     run.settled = run.settled + r.dt
     -- A stop can still land over a drop (the scan's ground check only traces straight down), and a
@@ -128,6 +219,14 @@ function play.settle(run, r)
         run.phase, run.verifyFor, run.verifyBest = "verify", 0, 0
         return
     end
+    -- A flame or a charge at a character has to start within reach of it (scripts.approach): the
+    -- recorded spot is 400 units off and the character has wandered since the scan. So he walks up to
+    -- it first ("approach"), and the script's clock, origin and samples all start from where that ends.
+    if pawn and not run.approached and scripts.approach(entry.stop.script)
+       and drive.targetDistance(run, r) then
+        run.phase, run.approachFor, run.approachStalled, run.approachPlaced = "approach", 0, 0, nil
+        return
+    end
     run.phase = "play"
     run.x0, run.y0, run.z0 = r.x, r.y, r.z
     run.elapsed, run.nextSample = 0, 0
@@ -139,7 +238,85 @@ function play.settle(run, r)
         local loc = run.target:K2_GetActorLocation()
         run.targetOrigin = { x = loc.X, y = loc.Y, z = loc.Z }
         run.targetHeld = anim.hold(run.target)
+        -- A flame or a charge at it is meant to land: watch for that (watchHit), from how it is now.
+        if scripts.approach(entry.stop.script) then
+            local state = anim.state(run.target)
+            run.hitWatch, run.hit, run.hitNext, run.hitClosest = true, nil, 0, nil
+            run.hitSet = healthSetOf(run.target)
+            run.hitHealth = healthOf(run.hitSet)
+            run.hitStart = state.enemyState .. " " .. state.montage
+        end
     end
+end
+
+-- "approach": walking up to the stop's target until it is within the script's reach, facing it. Not part
+-- of the script: nothing is sampled and its clock does not run, so every pass starts its flame or charge
+-- from the same distance however long the walk took. A walk that cannot get there (a drop between them,
+-- a wall, a character that outruns him) ends with him put at that distance instead, and that is logged,
+-- because a stop that had to be placed is one where the walk-in itself is not comparable.
+function play.approach(run, pawn, pc, cmc, r)
+    local entry = run.step.entry
+    local want = scripts.approach(entry.stop.script)
+    local distance = drive.targetDistance(run, r)
+    local function done(how)
+        input.clear(pawn, pc)
+        log("autotest: %s stop %d (%s, %s) %s, %.0f units away after %.1f s", entry.stop.level, entry.id,
+            entry.stop.script, entry.stop.note, how, distance or -1, run.approachFor)
+        run.approached, run.arrived, run.lockedFor = true, nil, nil
+        run.spot = { x = r.x, y = r.y, z = r.z }
+        run.phase, run.settled = "settle", SETTLE
+    end
+    if not distance then return done("lost its target on the way in") end
+    run.approachFor = run.approachFor + r.dt
+    local yaw = drive.yawTo(run.target, r.x, r.y)
+    local facing = yaw and math.abs((r.yaw - yaw + 180) % 360 - 180) or 0
+    local grounded = r.mode ~= 3
+    local level = drive.levelWith(run.target, r)
+    if distance <= want and facing <= APPROACH_FACING and grounded and level then
+        return done(run.approachPlaced and "was put next to it" or "walked up to it")
+    end
+    if (r.speed or 0) < drive.LOCKED_SPEED then
+        run.approachStalled = run.approachStalled + r.dt
+    else
+        run.approachStalled = 0
+    end
+    -- Within reach on the map but on another level (a perch above him, a field below a ledge): no
+    -- amount of walking at it closes that, and a charge from here runs under it or off the edge.
+    local apart = distance <= want and grounded and not level
+    local walking = not run.approachPlaced and not apart and drive.walkAt(run, pawn, pc, r)
+    if walking and run.approachStalled < APPROACH_STALL and run.approachFor < APPROACH_MAX then return end
+    -- The walk is not getting there. Put him at the distance, on the side he is already on, facing it;
+    -- again each frame it has moved out of reach, until he is standing there.
+    input.clear(pawn, pc)
+    if run.approachFor > APPROACH_MAX * 2 then return done("could not be put next to it") end
+    if not grounded and run.approachPlaced then return end
+    -- Only once he has landed from the last placing, and then only if that left him out of reach.
+    if run.approachPlaced and distance <= want and level then
+        local toYaw = drive.yawTo(run.target, r.x, r.y)
+        if toYaw then
+            pawn:K2_SetActorRotation({ Pitch = 0, Yaw = toYaw, Roll = 0 }, false)
+            pc:SetControlRotation({ Pitch = 0, Yaw = toYaw, Roll = 0 })
+        end
+        return
+    end
+    local reach = want * 0.85
+    local spot = drive.spotBeside(pawn, run.target, r, reach)
+    if not spot then
+        -- Nowhere to stand beside it. Under it, at the distance, is the best there is; the stop will
+        -- most likely end without a hit and be flagged.
+        local loc = run.target:K2_GetActorLocation()
+        local dx, dy = r.x - loc.X, r.y - loc.Y
+        local len = math.sqrt(dx * dx + dy * dy)
+        if len < 1 then dx, dy, len = 1, 0, 1 end
+        if run.approachPlaced then return done("has nowhere to stand beside it") end
+        spot = { x = loc.X + dx / len * reach, y = loc.Y + dy / len * reach, z = r.z,
+                 yaw = math.deg(math.atan(-dy, -dx)) }
+    end
+    pawn:K2_TeleportTo({ X = spot.x, Y = spot.y, Z = spot.z }, { Pitch = 0, Yaw = spot.yaw, Roll = 0 })
+    cmc.Velocity = { X = 0, Y = 0, Z = 0 }
+    pc:SetControlRotation({ Pitch = 0, Yaw = spot.yaw, Roll = 0 })
+    pcall(function() pawn.FollowCamera:ResetBehind(true) end)
+    run.approachPlaced = true
 end
 
 -- "verify": pushing forward at the start of a stop that follows a locked one. If he moves, the
@@ -319,6 +496,7 @@ function play.step(run, pawn, pc, cmc, r)
         playSubworld(run, pawn, pc, r)
         return true
     end
+    watchHit(run, r)
     if trouble(run, pawn, pc, cmc, r) then return true end
     return playScript(run, pawn, pc, r)
 end

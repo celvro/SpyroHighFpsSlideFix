@@ -39,6 +39,28 @@
 --   montage=Attack   only montages whose name contains this
 --   nosamples        summary rows only, no per-sample CSV
 --   all              every montage the skeleton can play, not just the ones from this character's folder
+--   spawn=Cowlek     only this character, spawned on its own in the test room (tools/testroom.lua): a
+--                    flat floor in the empty sky above the level, with Spyro put on it first. A class from
+--                    tools/spawnlist.lua by name or by the one entry containing it, or a full class path
+--                    (/CES1015_Ram/Blueprints/BP_CES1015_Ram.BP_CES1015_Ram_C). It runs in the level
+--                    Spyro is in (or level=), measures every montage whatever animtest_done.txt says and
+--                    leaves that file and the whole-game progress alone; when it ends the character and
+--                    the floor are destroyed and Spyro is put back. Every montage loaded for its skeleton
+--                    is played, so on a skeleton shared with characters of the level (the rhynocs) the
+--                    "path" column is what says whose animation a row is.
+--                    After the montages comes the free phase (tools/freetest.lua): the character is
+--                    let loose and Spyro does something to it, at each cap, so the animations its
+--                    movement picks are seen too. These options only apply with spawn=:
+--   act=idle,flame   what Spyro does in the free phase, one trial each: idle, approach, flame, charge,
+--                    superflame, supercharge, icebreath, superjump (default idle,approach,flame,charge)
+--   power=superfly   a powerup given to Spyro before every act, as well as the act's own: superflame,
+--                    supercharge, superfly, invincible, icebreath, superjump, iface:<IForceAbility
+--                    function> or a gameplay effect class path
+--   tries=3          trials per act per cap (default 1): gameplay varies from run to run
+--   free=8           seconds per trial; free=0 skips the free phase
+--   nomontages       skip the montage phase and go straight to the free phase
+--   arena=level      use the level ground in front of Spyro instead of the sky floor: the navmesh is
+--                    baked into the level, so a character that paths by it stands still on the floor
 --
 -- An empty animtest.stop file in the same folder stops a run that is already going (the trigger file is
 -- only read between runs), the same as pressing I.
@@ -48,6 +70,8 @@ local levels = require("lib.levels")
 local log = require("lib.log")
 local paths = require("lib.paths")
 local quicksave = require("tools.quicksave")
+local testroom = require("tools.testroom")
+local freetest = require("tools.freetest")
 local util = require("lib.util")
 
 local animtest = {}
@@ -57,6 +81,8 @@ local SAMPLE = 0.05       -- seconds of game time between sample rows
 local RESET = 0.2         -- seconds standing still before a montage starts
 local SETTLE = 2.0        -- seconds after arriving in a level before the characters are listed
 local TRAVEL_GRACE = 5    -- seconds after a travel arrives before anything is measured
+local ROOM_SETTLE = 1.0   -- seconds for Spyro to land on the test room's floor before it is trusted
+local SPAWN_SETTLE = 1.5  -- seconds a spawned character is given to begin play before it is listed
 local TAIL = 0.25         -- seconds of sampling after the montage reports it has stopped
 local TIMEOUT_FACTOR = 2  -- a montage is given this many times its length, plus TIMEOUT_EXTRA
 local TIMEOUT_EXTRA = 1.0
@@ -145,6 +171,7 @@ end
 
 local function markDone(key)
     run.done[key] = true
+    if run.spawnPath then return end -- a test room run is a re-measurement: it never skips or records
     local file = io.open(DONE, "a")
     if not file then return end
     file:write(key .. "\n")
@@ -154,6 +181,7 @@ end
 -- Only the level is remembered: what is left to do at each cap comes from animtest_done.txt, so a
 -- resumed run starts this level over and skips the montages it already has.
 local function writeProgress()
+    if run.spawnPath then return end -- the whole-game sweep's place is not this run's to move
     local file = io.open(PROGRESS, "w")
     if not file then return end
     file:write(string.format("%d\n", run.levelIndex))
@@ -171,7 +199,7 @@ end
 local function readOptions()
     local file = io.open(TRIGGER, "r")
     if not file then return nil end
-    local text = file:read("a") or ""
+    local text = util.stripBom(file:read("a") or "")
     file:close()
     os.remove(TRIGGER)
     local options = {}
@@ -194,8 +222,8 @@ end
 -- The levels to visit, in the stream table's order, starting at the one Spyro is in.
 local function levelList(pawn, options)
     local current = levels.current(pawn)
-    if options.here then return current and { current } or {} end
     if options.level then return { options.level } end
+    if options.here or options.spawn then return current and { current } or {} end
     local names = quicksave.levelNames() or {}
     if #names == 0 then
         -- The stream data table is only readable once a level is loaded; the fixed list is the same rows.
@@ -239,6 +267,15 @@ local function charactersHere(pawn, options)
         order[#order + 1] = { actor = actor, class = class,
                               home = { X = loc.X, Y = loc.Y, Z = loc.Z },
                               facing = { Pitch = 0, Yaw = rot.Yaw, Roll = 0 } }
+    end
+    -- A test room run measures the one character it spawned, from the spot it was spawned on.
+    if run and run.spawnPath then
+        local actor = run.spawned
+        if actor and actor:IsValid() then
+            local class = className(actor) or "?"
+            order[1] = { actor = actor, class = class, home = run.spawnHome, facing = run.spawnFacing }
+        end
+        return order
     end
     consider(pawn)
     for _, actor in ipairs(FindAllOf("PhasmidCharacter") or {}) do
@@ -513,15 +550,26 @@ local function updatePlay(pawn, r)
     if m.tail >= TAIL then finishMontage(pawn, m.ended) end
 end
 
+-- Ends the run, however it ended: the character being measured gets its AI back, and a test room run
+-- destroys what it spawned and puts Spyro back where he was.
+local function endRun(pawn)
+    if not run then return end
+    thaw(run.job, pawn)
+    watching = nil
+    invuln.clear()
+    if run.free then freetest.abort(pawn, nil, run.free) end
+    if run.room then testroom.leave(pawn, run.room) end
+    run = nil
+end
+
 local function nextLevel(pawn, setFpsCap)
     run.levelIndex = run.levelIndex + 1
     run.capIndex, run.jobIndex, run.jobs = 1, 1, nil
     local level = run.levels[run.levelIndex]
     if not level then
         log("animtest: done, %d levels, %d montages measured; %s", run.levelIndex - 1, run.measured, CSV)
-        invuln.clear()
-        os.remove(PROGRESS)
-        run = nil
+        if not run.spawnPath then os.remove(PROGRESS) end
+        endRun(pawn)
         return
     end
     if SKIP_LEVELS[level] then
@@ -585,25 +633,42 @@ local function update(pawn, pc, r, setFpsCap)
         requested = false
         if run and run.levels then
             log("animtest: stopped at %s", tostring(run.level))
-            thaw(run.job, pawn)
-            watching = nil
-            invuln.clear()
-            run = nil
+            endRun(pawn)
             return
         end
         local options = (run and run.options) or {}
-        if options.restart then os.remove(DONE) end
+        local spawnPath = nil
+        if options.spawn then
+            local why
+            spawnPath, why = testroom.resolve(options.spawn)
+            if not spawnPath then
+                log("animtest: spawn=%s: %s", tostring(options.spawn), tostring(why))
+                run = nil
+                return
+            end
+        end
+        local trials = nil
+        if spawnPath and options.free ~= "0" then
+            local why
+            trials, why = freetest.plan(parseCaps(options.caps or ""), options)
+            if not trials then
+                log("animtest: %s", tostring(why))
+                run = nil
+                return
+            end
+        end
+        if options.restart and not spawnPath then os.remove(DONE) end
         local list = levelList(pawn, options)
         local levelIndex = 1
-        if not options.restart and not options.here and not options.level then
+        if not options.restart and not options.here and not options.level and not spawnPath then
             levelIndex = readProgress()
         end
-        local done = options.restart and {} or loadDone()
+        local done = (options.restart or spawnPath) and {} or loadDone()
         local already = 0
         for _ in pairs(done) do already = already + 1 end
         run = { options = options, caps = parseCaps(options.caps or ""), levels = list,
                 levelIndex = levelIndex - 1, capIndex = 1, jobIndex = 1,
-                done = done, measured = 0, phase = "level" }
+                done = done, measured = 0, phase = "level", spawnPath = spawnPath, trials = trials }
         log("animtest: %d levels, caps %s, %d montages already measured, starting at level %d (%s)",
             #list, table.concat(run.caps, "/"), already, levelIndex, tostring(list[levelIndex]))
         nextLevel(pawn, setFpsCap)
@@ -621,13 +686,48 @@ local function update(pawn, pc, r, setFpsCap)
             run.phase, run.settleLeft = "settle", SETTLE + TRAVEL_GRACE
         end
     end
+    if run.phase == "room" then
+        run.settleLeft = run.settleLeft - r.dt
+        if run.settleLeft > 0 then return end
+        if not testroom.standing(pawn, run.room) then
+            local loc = pawn:K2_GetActorLocation()
+            log("animtest: the test room's floor did not hold Spyro (he is at Z %.0f, the floor at %.0f); stopping",
+                loc.Z, run.room.top)
+            endRun(pawn)
+            return
+        end
+        local ok, actor, home, facing = pcall(testroom.spawn, pawn, run.room, run.spawnPath)
+        if not ok then
+            log("animtest: could not spawn %s: %s", run.spawnPath, tostring(actor))
+            endRun(pawn)
+            return
+        end
+        run.spawned, run.spawnHome, run.spawnFacing = actor, home, facing
+        run.phase, run.settleLeft = "settle", SPAWN_SETTLE
+        return
+    end
     if run.phase == "settle" then
         run.settleLeft = run.settleLeft - r.dt
         if run.settleLeft > 0 then return end
+        if run.spawnPath and not run.room then
+            local ok, room = pcall(testroom.build, pawn, pc, run.options.arena)
+            if not ok then
+                log("animtest: could not build the test room: %s", tostring(room))
+                endRun(pawn)
+                return
+            end
+            run.room = room
+            run.phase, run.settleLeft = "room", ROOM_SETTLE
+            return
+        end
         local jobs, characters = buildJobs(pawn, run.options)
+        if run.options.nomontages then jobs = {} end
         run.jobs = jobs
         log("animtest: %s has %d kinds of character and %d montages", run.level, characters, #jobs)
-        if #jobs == 0 then
+        if #jobs == 0 and run.trials then
+            run.capIndex = #run.caps + 1
+            run.phase = "next"
+        elseif #jobs == 0 then
             run.phase = "level"
         else
             startCap(pawn, setFpsCap)
@@ -652,10 +752,25 @@ local function update(pawn, pc, r, setFpsCap)
             return
         end
         run.capIndex, run.jobIndex = run.capIndex + 1, 1
-        if run.capIndex > #run.caps then
+        if run.capIndex > #run.caps and run.trials and not run.free then
+            local actor = run.spawned
+            run.free = { trials = run.trials, room = run.room, path = run.spawnPath, level = run.level,
+                         class = (actor and actor:IsValid()) and className(actor) or run.spawnPath:match("([^%.]+)$"),
+                         arena = run.room and run.room.arena or "?", setFpsCap = setFpsCap }
+            log("animtest: free phase, %d trials", #run.trials)
+            run.phase = "free"
+        elseif run.capIndex > #run.caps then
             nextLevel(pawn, setFpsCap)
         else
             startCap(pawn, setFpsCap)
+        end
+        return
+    end
+    if run.phase == "free" then
+        if freetest.update(pawn, pc, r, run.free) then
+            freetest.abort(pawn, pc, run.free)
+            run.free.done = true
+            nextLevel(pawn, setFpsCap)
         end
         return
     end
@@ -666,7 +781,7 @@ function animtest.update(pawn, pc, r, setFpsCap)
     local ok, err = pcall(update, pawn, pc, r, setFpsCap)
     if not ok then
         log("animtest error: %s", tostring(err))
-        if run then thaw(run.job, pawn) end
+        pcall(endRun, pawn)
         run = nil
     end
 end

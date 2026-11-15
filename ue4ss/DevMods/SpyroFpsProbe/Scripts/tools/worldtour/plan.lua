@@ -211,7 +211,8 @@ function plan.signature(options)
     options = options or {}
     return string.format("caps=%s|level=%s|script=%s|review=%s",
         tostring(options.caps or ""), tostring(options.level or ""),
-        tostring(options.script or ""), tostring(options.review or false))
+        tostring(options.script or ""), tostring(options.review or false)
+        .. (options.nolead and " nolead" or ""))
 end
 
 -- Called once as a run starts, before savedIndex: the options this run's progress belongs to.

@@ -171,6 +171,76 @@ The code is in `tools/worldtour/`: `worldtour.lua` starts and stops a run and st
 - **Comparing.** `tools/Compare-Autotest.ps1` joins the passes on (stop, script, t) and reports, per stop and framerate, the largest and final distance from the 30 FPS pass and the largest camera yaw/pitch difference, worst first.
 - **Restarting from outside the game.** `tools/Restart-Game.ps1` closes the game, arms `resume.go` and starts it again. `lib/resume.lua` notes the level, game index and save slot to `resume.txt` every 5 s (the game itself only records the loaded level at an autosave or a menu quit, so Alt+F4 or a kill loses it); with `resume.go` set it waits out the title screen, calls `"start game"(game, slot)` and travels back to the noted level.
 
+## Level replay (Home / End, added 2026-11-15)
+
+`tools/replay.lua`. Records every input of a level played by hand and plays the same inputs back at
+another framerate, free-run (nothing corrects the course), writing a trace per run to compare
+against the recording. The piece the world tour cannot do: a whole level of real play, not eight
+seconds of preset script on a stop.
+
+- **End** drives the take picker: pressed with nothing running it opens an on-screen list of the
+  takes recorded for the current level, newest first; **Up/Down** move the selection; **End** again
+  plays the selected take (the newest if unmoved). While a replay runs End aborts it. The overlay
+  shows `[REC]` while recording and `[PLAY]` (take, cap, phase, progress) while a replay runs, so the
+  state is visible in game. The arrows are game-bound too, so use them only with the picker open and
+  Spyro standing still. Every selection and status line is also logged, so the picker works from the
+  UE4SS console as well.
+- **The overlay is a UMG widget (tools/overlay.lua), not PrintString.** The game is a Shipping build,
+  where KismetSystemLibrary:PrintString and the on-screen debug text are compiled out (a call there
+  logged `PrintString expected 6 parameters, received 7` and drew nothing). So the overlay builds a
+  UserWidget by hand -- a CanvasPanel root, a dark auto-sizing Border, one TextBlock with the engine
+  Roboto font -- and adds it to the viewport. It is rebuilt on each hot reload (fresh Lua state).
+- **Replaying the charge turn needs a stored-stick hook, not the axis event.** The charge reads the
+  component's stored InputAxisLeftStickX, which the engine resets from hardware (0) every input tick,
+  before the charge movement runs -- so writing the property from the end-of-frame sample lost the
+  race and the replayed charge steered straight (stored stick read 0 in all 282 charging frames of
+  the first LS102 replay). tools/replay.lua hooks InputAxis_LeftStick_X/Y (as fixes/charge.lua does
+  for RightStick_X) and, while a replay drives, overwrites the stored value with the take's -- which
+  lands in time for the charge to read it. Verified turning on LS102, 2026-11-15.
+- **KNOWN ISSUE (open, 2026-11-15): 30 FPS movement is not yet reproduced exactly.** A 30 FPS take
+  replayed at 30 FPS still drifts from the recording -- on LS102 the walking heading was ~3-13 deg off
+  in the first seconds before converging (the charge now turns, but the ground path is not identical).
+  So divergence in the first ~2 s is partly harness noise, not a framerate bug, and the 30->30 pair is
+  not yet a clean baseline. Candidates to chase, next session: the left stick is camera-relative via the
+  control rotation, which is not seeded identically at replay start (the settle->play handoff,
+  FollowCamera:ResetBehind, and the SetControlRotation restore); sub-frame input timing at the row
+  boundaries (inputs are stepped by game time, not frame-aligned to the recording); and the very first
+  input frame. Fix this before reading the opening seconds of any cross-FPS replay as a bug.
+- **Capturing the stick needs the stored axis, not just the axis event.** Spyro's charge steering
+  reads the component's `InputAxisLeftStickX` property (not the movement input vector), and the mouse
+  charge steering fix reads `InputAxisRightStickX` (`docs/findings/charge-turn-camera.md`). `lib/input.lua`
+  fired only the axis *events*, which drive walking through `AddMovementInput` but never set those
+  properties, so a replayed charge turn steered straight and its yaw froze (LS102, 2026-11-15:
+  recorded yaw swept -98 to +90, the 30 FPS replay sat at -93.3 for the whole charge). `input.apply`
+  now writes the stored axis properties as well, which is also what the recording reads back.
+- **Home** starts and stops recording. Start standing on the ground where the run should begin;
+  the start transform, control rotation and the level's placement go into the take's header. Avoid
+  dying in a take: the respawn teleport is recorded as if it were play.
+- **End** replays the newest take recorded for the current level at the current F5-F8 cap (no cap
+  pressed this session: the take's own), and aborts when pressed again. The replay reloads the
+  level's gameplay sublevels first (the quicksave L machinery, without its spot teleport), places
+  Spyro on the take's start, settles for a second, then drives `lib/input.lua` by game time. Text
+  boxes and cutscenes are pressed through (`lib/igc.lua`), and a paused prompt is answered the way
+  the tour answers it (`main.lua`).
+- Axes are read each frame from the character's input component; buttons are captured by hooking
+  their input events the way `lib/mouse.lua` hooks the mouse axis. FaceTop is neither captured nor
+  replayed (`lib/input.lua`'s reason). If charge's native event can't be hooked, charge is recorded
+  from the charging tag instead and the log says so.
+- Files, flat in the mod folder: `replay_<level>_<stamp>_inputs.csv` (the take),
+  `..._ref.csv` (the trace recorded with it), `..._run<cap>_<t>.csv` (one per replay), and
+  `replay_takes.txt` (the index End reads; last line per level wins). Positions in the traces are
+  level-origin-relative, so takes survive the level streaming in at a different LevelTransform.
+- Compare with `python3 tools/compare_replays.py --dir <mod folder> --take <level>_<stamp>`
+  (python3: the Cowork VM, not the game PC). It writes `replay_<take>_compare.txt`: first
+  divergence time, max drift, jump durations and rises while the runs were still aligned, and the
+  movement-mode / montage / charging mismatch timelines. **The first divergence is the finding;
+  everything after it is drift** — the left stick is camera-relative, so once a jump lands short
+  the two runs part ways for good. For a bug late in a level, record a second, shorter take that
+  goes straight to it; takes per level accumulate and End plays the newest.
+- A 30 FPS take replayed at 30 FPS is the fidelity check, not a bug hunt: if that pair diverges
+  early, the capture or the start state is the problem, and runs at other caps prove nothing until
+  it is fixed.
+
 ## Scan sweep (scansweep.txt, added 2026-11-04)
 
 `tools/scansweep.lua` builds the route file without playing through the games: it travels to every level in the stream data table and runs the scan above in each one, so a tour has stops to play. It replaces the level tour (`tools/tour.lua`, **T**, removed 2026-09-22) that built the first route file, and keeps the two things that one learned.
@@ -242,6 +312,7 @@ Every animation of every kind of character in the level, played one at a time at
 - **Both caps in one level visit**, so the same montages are loaded for both and each level is travelled to once. A montage already measured at a cap in an earlier level is skipped (`animtest_done.txt`), which is what keeps a whole-game run to hours: the rhynocs share most of their animations.
 - **Per montage:** the character is put back on the spot and facing it had when the level's montages were listed (a montage with root motion leaves it somewhere else, and the next one played from there can meet a wall), then `Montage_Play` from a standstill, then per frame the montage position, the character's position, whether root motion is driving it, and the particle and audio components its notifies make. Row per montage per cap in `animtest_<stamp>.csv`, sample rows in `animtest_samples_<stamp>.csv`. `result` is `played` (it ran to its blend out), `looped` (its last section ran back to the start, so the duration is one pass), `cut short` (the character's own state machine played something over it), `stuck` (the position never moved) or `refused`.
 - **Things that had to be held still for the measurement to mean anything** (all restored afterwards, `lib/anim.lua`): `MeshComponentUpdateFlag` and `bEnableUpdateRateOptimizations` (a character that isn't being looked at ticks its animation at a reduced rate), `bPauseAnims`, `bNoSkeletonUpdate`, `GlobalAnimRateScale`, the mesh's component tick and `CustomTimeDilation` — a character the game has no use for yet (the Town Square thief) sits at montage position 0 for ever otherwise. The character's AI keeps walking it about even with the actor's tick off, so only frames where root motion is driving it count towards the displacement and it is put back on every other frame (`drift` is how far it had to be pulled back).
+- **One character on its own (`spawn=`, added 2026-11-14).** `animtest.txt` with `spawn=Cowlek` (a class from `tools/spawnlist.lua` by name or unique fragment, or a full class path) measures just that character in the test room, `tools/testroom.lua`: the game ships no empty map, so the room is an 8000 x 8000 floor made from the engine's cube (`/Engine/BasicShapes/Cube`, one `StaticMeshActor`) at the first height from 8000 above Spyro where line traces over its footprint find 2000 units of clear air. It keeps Spyro's X and Y, so the position grid is the level's own. Spyro is teleported onto it, the character is spawned in the middle 600 units in front of him, and every montage loaded for its skeleton is played from that spot at each cap. Such a run ignores and does not touch `animtest_done.txt` or the sweep's progress file, and when it ends (done, stopped or an error) it destroys the character and the floor and puts Spyro back. `tools/Test-EnemyAnims.ps1 -Enemy Cowlek` does all of it from outside the game, including starting the game, and writes `build\animtest\<stamp>_<enemy>\compare.txt`.
 - **Comparing.** `tools/Compare-Animtest.ps1` joins the caps on the montage's asset path and flags duration, root-motion displacement, notify counts and result mismatches, worst first.
 
 ## Animation sampling in the scripted tour (added 2026-09-20)

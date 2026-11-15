@@ -88,6 +88,23 @@ particle components at 30 FPS (20, 18, 18, 16 over four runs) and exactly 16 at 
 framerates, but a montage whose dust count is not fixed is worth a second look if the whole-game sweep
 turns up more like it.
 
+## One character in the test room (2026-11-14)
+
+`tools/Test-EnemyAnims.ps1 -Enemy <name>` measures one character away from its level: a flat floor in the
+sky, Spyro on it, the character spawned in the middle (`docs/probe.md`, montage sweep, `spawn=`). It took
+about 20 s a run once the game was up.
+
+**Cowlek (`BP_Cowlek_C`, Zephyr), three runs at 30 and 320 FPS (306–316 reached): no difference.**
+All 4 montages (`Charged`, `Flamed`, `Flee`, `SuperFlamed`) take the same time at both caps, within one
+30 FPS frame (`Charged` 1.267 against 1.268–1.271 s; `SuperFlamed` 1.233 against 1.217–1.219 s, half a
+30 FPS frame, the same in all three runs). None has root motion.
+
+The particle counts flagged every run, but they **differ just as much between runs at the same cap**:
+`Charged` made 4 and 3 components at 30 FPS and 4, 1 and 4 at 320; `SuperFlamed` 0, 2 and 1 at 30 and
+0, 3 and 1 at 320. That is not the charge-dust pattern (effects lost only at high framerates). It is the
+count itself being unsteady, which fits the bull's `Run_StopTurn` above. So **one run's `fx` flag is not
+a result**: only a difference that holds up over several runs in one direction counts.
+
 ## The route the scripted tour runs (2026-09-20)
 
 One level tour (**T**, `tour.txt` with `dwell=3`; `tools/tour.lua`, removed 2026-09-22) travelled all 101 levels in 22 minutes and scanned each
