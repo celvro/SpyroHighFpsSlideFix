@@ -1,0 +1,33 @@
+{
+  "versionFiles": [
+    { "path": "ue4ss/Mods/HighFpsSlidingAndJumpFix/Scripts/main.lua", "pattern": "^local VERSION = \"([^\"]+)\"" }
+  ],
+  "changelog": null,
+  "targets": {
+    "HighFpsGameplayFixes": {
+      "gameDomain": "spyroreignitedtrilogy",
+      "modId": "286",
+      "fileId": "7962735",
+      "displayName": "High FPS Gameplay Fixes",
+      "category": "main",
+      "archiveExisting": true,
+      "updateModVersion": true,
+      "package": ".\\tools\\Package-Release.ps1",
+      "zip": "build/release/HighFpsGameplayFixes-{version}.zip",
+      "descriptionFile": "nexus-description.bbcode"
+    }
+  },
+  "github": {
+    "repo": "celvro/SpyroHighFpsSlideFix",
+    "tag": "{version}",
+    "title": "v{version}"
+  },
+  "notes": [
+    "There is no changelog file. Write the changelog from the commits since the last tag that touch ue4ss/Mods/HighFpsSlidingAndJumpFix, and pass it with -Changelog.",
+    "The fix list lives in three places that must agree: README.md, the mod's own README.txt (ue4ss/Mods/HighFpsSlidingAndJumpFix/README.txt), and nexus-description.bbcode. Update all three for new fixes, including the before/after numbers.",
+    "nexus-description.bbcode is the source of the Nexus description: make the page match the file, not the other way round.",
+    "Update the 'loaded' example line (the mod version in the log) in README.md and nexus-description.bbcode.",
+    "Package-Release.ps1 needs the UE4SS experimental build and adds retired files from earlier tags; see CLAUDE.md.",
+    "The UE4SS for Spyro page (mod 287) is packaged separately by tools/Package-UE4SS-Release.ps1 with its own version, and is not a target here."
+  ]
+}
