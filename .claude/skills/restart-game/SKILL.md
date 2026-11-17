@@ -98,9 +98,23 @@ appears within ~60 s. Quit the game and relaunch **through Steam**, which always
 
 Allow ~1–3 min from launch to `back in`; `resume.lua` gives the whole thing up at 300 s.
 
+The probe's command channel also shows whether it is ticking and where Spyro is, without reading
+the log (see "Command channel" in `docs/probe.md`). `ping` answers as soon as the probe ticks, even
+at the title screen. `state` waits for Spyro and then reports `level=LS###`.
+
+- On the game PC: `tools\Invoke-Probe.ps1 state -Timeout 180`, which waits and prints the answer.
+  When the session runs on that PC itself, `tools\Restart-Game.ps1` does steps 1–5 in one go
+  (close, arm, start, wait for `back in`). Deploy between closing and starting.
+- From the VM: write `@r1 state` into `$P/cmd.txt` and look for the `r1` line in `$P/cmd_result.txt`
+  (`r1<TAB>ok<TAB>level=LS102 cap=...`). The probe empties that file when it loads, so lines from
+  before the restart are gone. Use a new id for each command.
+
 ## 6. Verify before testing
 
 - The log shows the expected level and no `error:` lines (CLAUDE.md: per-frame errors log once).
-- Set the frame cap for the test (F5/F6/F7/F8 = 30/60/120/uncapped) with the game focused.
-- Remember the focus rule for every later keystroke: `computer_open_application` first, then keys;
-  if a key lands elsewhere the tool reports a focus error — re-focus, never work around it.
+- Set the frame cap for the test through the command channel, not a key: `cap 30` (or 60, 120, 320,
+  0 for uncapped) with `tools\Invoke-Probe.ps1`, or a line in `cmd.txt` from the VM. It needs no
+  window focus. Every other probe hotkey works the same way with `key <NAME>` (`keys` lists them).
+- Keys sent through computer use are only needed for what the probe does not handle: moving Spyro by
+  hand, and menus. For those, follow the focus rule: `computer_open_application` first, then keys.
+  If a key lands elsewhere the tool reports a focus error; re-focus, never work around it.

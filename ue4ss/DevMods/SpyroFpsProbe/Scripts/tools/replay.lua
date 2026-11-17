@@ -88,6 +88,9 @@ local pending = nil      -- "record" or "replay", set by a key, handled in the g
 local pendingMenu = nil  -- "toggle" or "cycle" for the take picker (Ins / Del)
 local rec = nil          -- recording in progress
 local run = nil          -- replay in progress
+local pendingId = nil    -- the take a "play" request names (lib/cmd.lua), instead of the picker's
+local finishListeners = {} -- called with { id, cap, reason, path, elapsed, resetOnly } when a run ends
+local lastSaved = nil    -- { id, frames, seconds } of the take the last recording saved
 
 -- ---------------------------------------------------------------- on-screen debug menu (Ins / Del)
 --
@@ -482,6 +485,7 @@ local function stopRecord(reason)
         index:close()
     end
     log("replay: take %s saved, %d frames, %.1f s (%s)", r.id, r.frames, r.lastT or 0, reason)
+    lastSaved = { id = r.id, frames = r.frames, seconds = r.lastT or 0 }
 end
 
 local function updateRecord(pawn, pc, r)
@@ -604,6 +608,12 @@ local function finishRun(pawn, pc, reason)
     if not s then return end
     input.clear(pawn, pc)
     if s.file then s.file:close() end
+    local summary = { id = s.take.id, cap = s.cap, reason = reason, path = s.path,
+                      elapsed = s.elapsed or 0, length = s.take.rows[#s.take.rows].t, resetOnly = s.resetOnly }
+    for _, listener in ipairs(finishListeners) do
+        local okListener, listenerErr = pcall(listener, summary)
+        if not okListener then log("replay: finish listener failed: %s", tostring(listenerErr)) end
+    end
     if s.resetOnly then
         log("replay: level reset, Spyro is on the start of %s (%s)", s.take.id, reason)
         return
@@ -924,9 +934,36 @@ function replay.requestRecord() pending = "record" end
 function replay.requestReplay() pending = "end" end
 function replay.requestReset() pending = "reset" end
 
+-- Play one take by id (or the newest for this level when id is nil), without the picker: what End does
+-- with the picker open, for lib/cmd.lua. Handled on the next sampled frame, in the game thread.
+function replay.requestPlay(id)
+    pending, pendingId = "play", id
+end
+
 -- True while a replay is driving (or waiting out a reload): main.lua answers paused prompts for it.
 function replay.running()
     return run ~= nil
+end
+
+-- True while a take is being recorded.
+function replay.recording()
+    return rec ~= nil
+end
+
+-- The take the last recording saved ({ id, frames, seconds }), or nil.
+function replay.lastSaved()
+    return lastSaved
+end
+
+-- Every take recorded for a level, newest first: { { id, when }, ... }.
+function replay.takes(level)
+    return takesFor(level)
+end
+
+-- fn(summary) when a run or a level reset ends; summary = { id, cap, reason, path, elapsed, length,
+-- resetOnly }. reason is "completed", "aborted with End", "aborted by a reset", ...
+function replay.onFinish(fn)
+    finishListeners[#finishListeners + 1] = fn
 end
 
 -- Up / Down arrows: move the take-picker selection (only while it is open).
@@ -984,6 +1021,27 @@ function replay.update(pawn, pc, cmc, r, setFpsCap)
             if run then finishRun(pawn, pc, "aborted by a reset") end
             menuOpen = false
             startReset(pawn, pc, r)
+        elseif kind == "play" then
+            local id = pendingId
+            pendingId = nil
+            if run then finishRun(pawn, pc, "aborted by a new replay") end
+            menuOpen = false
+            local level = levels.current(pawn)
+            -- startReplay falls back to the newest take when the selection is not in the index, which
+            -- is right for the picker and wrong for a take asked for by name, so check it here.
+            local known = id == nil
+            for _, take in ipairs(level and takesFor(level) or {}) do
+                if take.id == id then known = true end
+            end
+            if known then
+                selected = id and { level = level, id = id } or nil
+                startReplay(pawn, pc, r, setFpsCap)
+            else
+                log("replay: %s is not a take for %s in replay_takes.txt; not replaying it", id, tostring(level))
+                for _, listener in ipairs(finishListeners) do
+                    pcall(listener, { id = id, reason = "unknown take", failed = true })
+                end
+            end
         elseif kind == "end" then
             if run then
                 finishRun(pawn, pc, "aborted with End")

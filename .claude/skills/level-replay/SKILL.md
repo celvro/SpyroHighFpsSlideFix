@@ -36,13 +36,20 @@ user to record a shorter take straight to anything suspected later in the level.
    to be sure, see the `restart-game` skill). Run `tools/Check-Lua.ps1` after any Lua edit.
 2. **Record** (the user, or Claude holding keys through computer use for simple takes):
    - Enter the level fresh, stand at the start, set the cap the take should be recorded at (F5 = 30).
-   - Press **Home**, play the level start to finish, press **Home** again.
+   - Press **Home**, play the level start to finish, press **Home** again. When Claude starts and
+     stops the take for someone playing, use `Invoke-Probe.ps1 cap 30`, then `replay-record start`,
+     then `replay-record stop`. Stop answers with the saved take's id, so there is no need to read
+     the log, and no key goes to the game window, which the player is using. Movement still needs
+     the player, or computer use holding keys.
    - Avoid dying mid-take (the respawn teleport is recorded as play). The log line
      `replay: take <id> saved` names the take.
    - Mouse camera look IS captured — not as an axis, but as the camera rotation per frame (see
      take format below). Takes recorded before 2026-11-16 predate this and replay with the camera
      running free, losing any mouse look.
-3. **Replay** (the user, or any unattended wrapper that can send keys):
+3. **Replay** (the user, or from a script with no keys at all:
+   `tools\Invoke-Probe.ps1 replay take=<id> cap=320 -Timeout 600` plays one take and returns when it
+   ends, with the trace path; `takes` lists them, `replay-reset` is PgUp, `replay-abort` is End.
+   See "Command channel" in `docs/probe.md`):
    - In the same level: press the cap key, then **End**. The probe reloads the gameplay sublevels,
      places Spyro on the take's start, restores the recorded camera heading and control rotation,
      and plays it out; **End** again aborts.

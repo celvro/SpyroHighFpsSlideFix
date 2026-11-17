@@ -58,7 +58,8 @@ measured.
 | Suspect | Tool | Read |
 |---|---|---|
 | One character's animations / montages | the `enemy-animtest` skill (`tools/Test-EnemyAnims.ps1`) | `build\animtest\<stamp>_<enemy>\compare.txt` |
-| Spyro's own movement (jump, glide, slide, charge, camera) | the probe (`ue4ss/DevMods/SpyroFpsProbe`) with the matching tracker switched on in its `config.lua`; F5/F6/F7/F8 set `t.MaxFPS` 30/60/120/0; quicksave V/B/L/N to repeat from one spot; G glide test | tracker log lines in `UE4SS.log`, `trace_*.csv`, `tools/Compare-Segments.ps1` |
+| Spyro's own movement (jump, glide, slide, charge, camera) | the probe (`ue4ss/DevMods/SpyroFpsProbe`) with the matching tracker switched on in its `config.lua`; F5/F6/F7/F8 set `t.MaxFPS` 30/60/120/0; quicksave V/B/L/N to repeat from one spot; G glide test. From a script or a Claude session, send these through `tools/Invoke-Probe.ps1` rather than keys: `cap 320`, `quicksave save`/`load`, `key G`, `teleport ... rel`, `state` | tracker log lines in `UE4SS.log`, `trace_*.csv`, `tools/Compare-Segments.ps1` |
+| A stretch of real play (a whole level, or a route to one spot) | the `level-replay` skill: record a take once, then `Invoke-Probe.ps1 replay take=<id> cap=<fps>` per cap | `replay_<take>_compare.txt` (`tools/compare_replays.py`) |
 | Unknown: "something somewhere" or many levels | `tools/Tour-Unattended.ps1 -Caps 30,30,60,160 [-Levels ...] [-Scripts ...]` (a night for the full route) | `build\tour\<stamp>\compare-autotest.txt` and `compare-anims.txt`, never the log |
 | A minigame | the probe's minigame recorder (M take, F1 mark, F2 retry, cap per take) | `minigame_*.csv` through `tools/Compare-Anims.ps1` |
 | Nothing above covers it | a new tracker in the probe's `trackers/`, off by default in `config.lua`, documenting its own log lines | |
@@ -72,8 +73,14 @@ Before a run:
   might be playing.
 - Switch on only the trackers the run needs. The probe costs game-thread time, so check the
   reached FPS in the output (e.g. `avgFps`). A "320 FPS" pass that ran at 200 didn't test 320.
+- With the game running, drive the probe through `tools/Invoke-Probe.ps1` (the `cmd.txt` channel; see
+  "Command channel" in `docs/probe.md`), not by sending keys. Every probe hotkey is `key <NAME>`.
+  `state` reads the level, cap, reached FPS and position, and `eval <lua>` reads anything else. A
+  command sent during a restart or a level load waits for Spyro.
 - Trigger files written from PowerShell need no BOM:
-  `[IO.File]::WriteAllText(path, text, [Text.UTF8Encoding]::new($false))`.
+  `[IO.File]::WriteAllText(path, text, [Text.UTF8Encoding]::new($false))`. With the game running,
+  `Invoke-Probe.ps1 trigger <tool> [options]` has the probe write the file instead. Trigger files are
+  still what the unattended scripts use: they are written before a restart and survive a crash.
 - Scripts are PowerShell. Python is not installed. Time with the engine's dt or world time.
   `os.clock()` is CPU time.
 

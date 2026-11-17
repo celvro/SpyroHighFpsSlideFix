@@ -171,6 +171,70 @@ The code is in `tools/worldtour/`: `worldtour.lua` starts and stops a run and st
 - **Comparing.** `tools/Compare-Autotest.ps1` joins the passes on (stop, script, t) and reports, per stop and framerate, the largest and final distance from the 30 FPS pass and the largest camera yaw/pitch difference, worst first.
 - **Restarting from outside the game.** `tools/Restart-Game.ps1` closes the game, arms `resume.go` and starts it again. `lib/resume.lua` notes the level, game index and save slot to `resume.txt` every 5 s (the game itself only records the loaded level at an autosave or a menu quit, so Alt+F4 or a kill loses it); with `resume.go` set it waits out the title screen, calls `"start game"(game, slot)` and travels back to the noted level.
 
+## Command channel (cmd.txt / tools/Invoke-Probe.ps1, added 2026-11-17)
+
+`lib/cmd.lua`. Drives the probe from outside the game without key presses (no computer use, no focus
+rules), and answers in a file, so a script or a Claude session gets a result instead of grepping
+`UE4SS.log`.
+
+```powershell
+.\tools\Invoke-Probe.ps1 state
+.\tools\Invoke-Probe.ps1 replay take=LS102_20261116_233040 cap=320 -Timeout 300
+.\tools\Invoke-Probe.ps1 key F9
+.\tools\Invoke-Probe.ps1 'eval pawn.CharacterMovement.MaxWalkSpeed'
+```
+
+- **Protocol.** `cmd.txt` in the probe folder, one command per line: `[@id] verb [args]`, args as words or
+  `key=value`. The probe looks for the file every 10 frames, renames it to `cmd.taken` before reading
+  (so a half-written file is never read: the script writes a temp file and moves it into place, and
+  waits while an earlier `cmd.txt` is still waiting), and appends `id<TAB>status<TAB>text` lines to
+  `cmd_result.txt` (newlines in the text written as `\n`; the file is emptied when the probe loads).
+  Statuses: `ok`, `error`, or `started` followed later by `done`/`error` for anything that takes frames
+  (replay, travel, swap, reload, replay-reset, replay-record). The probe writes trigger files and reads
+  this one through `util.stripBom`, so the BOM problem in CLAUDE.md does not apply.
+- **Invoke-Probe.ps1** gives each command a fresh id, waits through `started` for the final answer
+  (`-Async` returns at `started`), prints `status: text` (`-Quiet`: the text only) and exits 0 for
+  ok/done, 1 for error and 2 when nothing answered within `-Timeout` (default 30 s; the message says
+  whether the probe never took the file, i.e. the game or probe is not running).
+- **Commands** (`help` lists them with usage): `ping`, `state` (level, cap, fps, absolute and
+  level-relative position, yaw, speed, mode, replay/travel/swap state), `cap <fps>`, `key <name> ...`
+  and `keys`, `teleport x y z [yaw=] [rel]`, `quicksave save|load|reload|transporter`, `reload`,
+  `travel LS###` (same game only; `swap 1|2|3` changes game through the title, as the world tour
+  does), `replay [take=<id>|newest] [cap=<fps>]`, `replay-reset`, `replay-abort`,
+  `replay-record start|stop` (stop answers with the take id), `takes [LS###]`,
+  `trigger <tool> [options]` (writes `autotest`/`review`/`animtest`/`scansweep`/`spawntest`/
+  `dumpstate`/`minigame`/`scan` `.txt` for that tool), `unlock` (`tools/debugunlock.lua`'s `apply`,
+  when that module is present) and `eval <lua>` (an expression or statement in the probe's Lua state,
+  with `pc`, `pawn`, `cmc`, `r` = the last row, `state` and `UEHelpers` in scope; values come back
+  comma-separated).
+- **Every hotkey is a command.** `lib/cmd.lua` is required in `main.lua` before any key is bound and
+  wraps `RegisterKeyBind`, recording each callback under its `Key` name (`CONTROL+O` for the modifier
+  form); `key F5` calls the same function the key would. A new tool with a key binding is reachable
+  from here with no change to it. The game itself never sees these presses: it is the probe's callback
+  that runs, not input.
+- **Commands that need Spyro wait for him** (up to 120 s), so a command written during a restart or a
+  level load runs once he is back. The rest run at the title screen and while the world is paused,
+  because `cmd.update` runs in `sample()` before the pawn and pause checks.
+- **The unattended scripts keep their trigger files.** `Tour-Unattended.ps1`, `Sweep-AllGames.ps1` and
+  `Test-EnemyAnims.ps1` write `autotest.txt`/`scansweep.txt`/`animtest.txt` before they (re)start the
+  game, and the file has to survive a crash so the run can carry on. `cmd.txt` needs a running probe,
+  and `cmd_result.txt` is emptied when the probe loads. Use the channel for interactive work, not to
+  arm a run across restarts.
+- **Other modules can add verbs**: `require("lib.cmd").register(verb, handler, { pawn = true, help = "..." })`;
+  the handler returns `status, text` or `"started", text, poll[, timeout]`, where `poll(ctx)` returns
+  nil while running and `"done"`/`"error", text` at the end.
+- **The cap is set at once.** `main.lua`'s `setFpsCap` runs the console command through
+  `ExecuteInGameThread`, so `state.fpsCap` used to change a frame later, and a replay started in that
+  frame read the old cap and set it back: the first in-game test's `replay cap=30` ran at 60. `cap` and
+  `replay cap=` now write `state.fpsCap` themselves as well.
+- **Tested.** `lua tools\tests\cmd_test.lua` (stubbed: parsing, BOM, keys, waiting for a pawn, the
+  started/done commands, trigger files, eval). In game 2026-11-17 (LS102/LS103): ping, help, state,
+  keys, cap, key F6, eval, takes, unknown verbs and levels, teleport rel, reload, trigger dumpstate,
+  travel LS103 and back (with a `state` sent mid-load answering while Spyro was still falling in), a
+  16 s replay at 60 and at 30 (`done` with the trace path after 19 s), a replay aborted part way
+  (`error ... aborted with End`) and an unknown take (`error: unknown take`). Not run in game:
+  `swap`, `replay-record` (it would add a take to `replay_takes.txt`), `quicksave` and `unlock`.
+
 ## Level replay (Home / End, added 2026-11-15)
 
 `tools/replay.lua`. Records every input of a level played by hand and plays the same inputs back at

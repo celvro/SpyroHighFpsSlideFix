@@ -38,6 +38,10 @@
 --   T                  poison test: write NaN into the gem thief's anim Blueprint Speed and hold the heal
 --                      back for 5 s, to watch the pose break and come back (trackers/gemthief.lua)
 --
+-- Every key above can also be pressed from outside the game: cmd.txt in this mod folder takes commands
+-- (`key F5`, `cap 320`, `replay take=...`, `state`, `help`) and answers in cmd_result.txt (lib/cmd.lua);
+-- tools/Invoke-Probe.ps1 writes one and waits for its answer.
+--
 -- Sparx is kept full while the probe is loaded (KEEP_SPARX_FULL below, lib/invuln.lua), so a test is not
 -- cut short by a death and a level reload; Spyro still takes hits and knockback.
 --
@@ -88,6 +92,9 @@ local row = profile.wrap("row", require("lib.row"))
 local state = require("lib.state")
 local trace = profile.wrap("trace", require("lib.trace"))
 local util = require("lib.util")
+-- Required before anything binds a key: it records every RegisterKeyBind so `key <name>` in cmd.txt can
+-- press it (lib/cmd.lua, driven by tools/Invoke-Probe.ps1).
+local cmd = require("lib.cmd")
 
 -- Which trackers run is config.lua, because each one costs frame time on the game thread (see the
 -- comments there). A tracker that is off is still loaded, so its constants still read as themselves
@@ -162,6 +169,7 @@ local function sample()
     resume.update()     -- also runs with no pawn: it drives the title screen after a restart
     gameswap.update()   -- the same, for a tour swapping games through the title (lib/gameswap.lua)
     dumpstate.update()  -- the dumpstate.txt diagnostic, also with no pawn
+    cmd.update(setFpsCap) -- cmd.txt commands (lib/cmd.lua); also at the title and while paused
     local pc = UEHelpers.GetPlayerController()
     if not pc:IsValid() then return end
     local pawn = pc.Pawn
