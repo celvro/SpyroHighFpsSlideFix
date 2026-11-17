@@ -8,6 +8,8 @@
 --   Home  start/stop recording a take (stand where the run should start, in the level, on the ground)
 --   End   replay the newest take recorded for this level, at the current F5-F8 cap (no cap pressed
 --         this session: the cap the take was recorded at); press again to abort
+--   PgUp  reset the level: reload its gameplay sublevels and stand Spyro on the start of the selected
+--         (else newest) take, then stop -- nothing plays. Aborts a replay or a recording first.
 --
 -- A replay reloads the level's gameplay sublevels first (quicksave.reloadLevel), so enemies and
 -- mechanisms start where a fresh entry puts them, then teleports Spyro onto the take's start, settles,
@@ -55,6 +57,7 @@ local replay = {}
 
 local SETTLE = 1.0       -- seconds standing on the start spot before the take plays
 local SETTLE_MAX = 6.0   -- a start spot still falling/unplaced after this long aborts the run
+local PLACE_TOLERANCE = 5 -- units from the take's start the settle accepts (horizontal)
 local TAIL = 0.5         -- seconds of stillness written after the last input row
 local PROGRESS_EVERY = 10 -- seconds of game time between "replay: ... s" progress lines
 local INDEX = paths.modDir .. "\\replay_takes.txt"
@@ -120,6 +123,18 @@ end
 
 -- The overlay (tools/overlay.lua) is a UMG widget, the only thing that draws in this Shipping build.
 
+-- Every key the replay tool uses, shown in the overlay while idle or with the picker open. Keep it in step
+-- with the key binds in main.lua. ASCII only (the widget's font).
+local LEGEND = {
+    "-- replay keys --",
+    "Home    record a take (again to stop)",
+    "End     take picker / play selected / abort",
+    "PgUp    reset level to the take's start",
+    "Up/Down choose a take (picker open)",
+    "F5      30 FPS      F6   60 FPS",
+    "F7      120 FPS     F8   uncapped",
+}
+
 -- Called each frame; drives the UMG overlay (tools/overlay.lua).
 local function drawOverlay(pc, pawn, r)
     local lines = {}
@@ -128,8 +143,8 @@ local function drawOverlay(pc, pawn, r)
             rec.level, rec.frames, rec.lastT or 0)
     elseif run then
         local total = run.take.rows[#run.take.rows].t
-        lines[#lines + 1] = string.format("[PLAY] %s  @%d fps   %s   %.1f/%.1fs    (End aborts)",
-            run.take.id, run.cap, run.phase, run.elapsed or 0, total)
+        lines[#lines + 1] = string.format("[%s] %s  @%d fps   %s   %.1f/%.1fs    (End aborts)",
+            run.resetOnly and "RESET" or "PLAY", run.take.id, run.cap, run.phase, run.elapsed or 0, total)
     end
     if menuOpen then
         lines[#lines + 1] = string.format("-- replay takes for %s  (Up/Down choose, End plays) --",
@@ -145,9 +160,9 @@ local function drawOverlay(pc, pawn, r)
         local cancelIdx = #menuTakes + 1
         lines[#lines + 1] = string.format("  %s [ cancel ]", menuIndex == cancelIdx and ">" or "  ")
     end
-    if #lines == 0 then
-        -- Idle, in a level: a one-line hint. Doubles as the render check while the widget is new.
-        lines[#lines + 1] = "[replay]  End: pick a take   Home: record"
+    if #lines == 0 or menuOpen then
+        -- Idle, or the picker is open: every key this tool uses, one per line.
+        for _, text in ipairs(LEGEND) do lines[#lines + 1] = text end
     end
     overlay.set(pc, table.concat(lines, "\n"))
 end
@@ -228,10 +243,68 @@ local INJECT_FUNCS = {
     InputAxisLeftStickY = "/CharacterCommon/Components/CharacterInputComponent/CharacterInputComponent_Spyro.CharacterInputComponent_Spyro_C:InputAxis_LeftStick_Y",
 }
 local injectAxes = nil       -- { InputAxisLeftStickX = n, InputAxisLeftStickY = n } while a replay drives; nil otherwise
+local LEFT_STICK = { leftX = true, leftY = true } -- input.apply leaves these to input.sendLeftStick
+-- The RAW value the engine passed to each stick event this frame, which is what the walking (AddMovementInput)
+-- uses. It is NOT the stored InputAxisLeftStickX/Y: for keyboard input the Blueprint stores a smoothed ramp
+-- (-0.14, -0.46, -0.78, -1.0) while the movement already runs on the full key value. A take recorded from the
+-- stored values replays the opening of every walk with the wrong heading (LS102_20261115_160013: 7 deg at 1 s).
+local rawAxes = {}
+-- Every call of each stick event since the last trace row, values in call order. The engine fires the
+-- events once per input tick with the hardware value, and input.apply fires them again with the
+-- replay's value, so a replayed frame sees more calls than a recorded one -- and the replayed pawn's
+-- consumed input ran 3.0 against the recording's 2.0 at full stick (2026-11-16). This column is the
+-- measurement of what the Blueprint body was fed; written to the trace as `evt`.
+local eventCalls = { InputAxisLeftStickX = {}, InputAxisLeftStickY = {} }
+-- Every Pawn:AddMovementInput call since the last trace row, as "dirX|dirY|scale" strings. This is the
+-- movement's real input (the recording and the replay can differ here even when the stick values match:
+-- 2026-11-15 the replay's pawn input vector was longer by a constant 0.798 and the recording turned to a
+-- diagonal on a stick of (-0.07, 1.0)). Written to the trace's `ami` column.
+local amiCalls = {}
+local amiHooked = false
+local amiTriedAt = nil
+local amiTries = 0
+-- Candidate paths: the function this build's StaticFindObject answers to is unknown (the bare path
+-- found nothing, silently, for a whole session), so try each spelling and say what happened.
+local AMI_PATHS = {
+    "/Script/Engine.Pawn:AddMovementInput",
+    "Function /Script/Engine.Pawn:AddMovementInput",
+    "/Script/Engine.Default__Pawn:AddMovementInput",
+}
+local function registerAmiHook()
+    if amiHooked then return end
+    if amiTriedAt and os.clock() - amiTriedAt < 2.0 then return end
+    amiTriedAt = os.clock()
+    amiTries = amiTries + 1
+    for _, path in ipairs(AMI_PATHS) do
+        local fn = StaticFindObject(path)
+        if fn and fn:IsValid() then
+            local ok, err = pcall(RegisterHook, path, function(context, dir, scale)
+                local okd, d = pcall(function() return dir:get() end)
+                local oks, sc = pcall(function() return scale:get() end)
+                if okd and type(d) == "table" and #amiCalls < 12 then
+                    amiCalls[#amiCalls + 1] = string.format("%.2f|%.2f|%.3f", d.X or 0, d.Y or 0, oks and sc or 0)
+                end
+            end)
+            if ok then
+                amiHooked = true
+                log("replay: AddMovementInput hook registered via %s", path)
+            else
+                log("replay: AddMovementInput hook failed on %s: %s", path, tostring(err))
+                amiHooked = true -- do not retry a failing RegisterHook forever
+            end
+            return
+        end
+    end
+    if amiTries == 5 then
+        log("replay: AddMovementInput not found under any path (%d tries); the ami column stays empty", amiTries)
+    end
+end
+
 local injectHooked = {}      -- property name -> true once its hook is registered
 local injectTriedAt = nil    -- os.clock() of the last registration sweep that left one unhooked
 
 local function registerInjectHooks()
+    registerAmiHook()
     local missing = false
     for prop in pairs(INJECT_FUNCS) do if not injectHooked[prop] then missing = true end end
     if not missing then return end
@@ -241,11 +314,25 @@ local function registerInjectHooks()
         if not injectHooked[prop] then
             local fn = StaticFindObject(path)
             if fn and fn:IsValid() then
-                local ok, err = pcall(RegisterHook, path, function(context)
-                    if not injectAxes then return end
+                local ok, err = pcall(RegisterHook, path, function(context, value)
+                    local okv, raw = pcall(function() return value:get() end)
+                    if okv and type(raw) == "number" then
+                        rawAxes[prop] = raw
+                        local calls = eventCalls[prop]
+                        if calls and #calls < 12 then calls[#calls + 1] = string.format("%.3f", raw) end
+                    end
+                    -- Restore BOTH stored axes, and only after the Y event: the engine fires X then Y, so
+                    -- its zero-valued X and Y bodies (and sendLeftStick's calls) run on stored (0, 0) and
+                    -- RequestGroundMovement adds nothing, while everything after the input tick -- the
+                    -- charge above all -- reads the take's stick. Restoring each axis after its own event
+                    -- left X set when the Y body ran, which added |(x, 0)| more input every frame.
+                    if not injectAxes or prop ~= "InputAxisLeftStickY" then return end
                     local okc, comp = pcall(function() return context:get() end)
                     if okc and comp and comp:IsValid() then
-                        pcall(function() comp[prop] = injectAxes[prop] or 0 end)
+                        pcall(function()
+                            comp.InputAxisLeftStickX = injectAxes.InputAxisLeftStickX or 0
+                            comp.InputAxisLeftStickY = injectAxes.InputAxisLeftStickY or 0
+                        end)
                     end
                 end)
                 if ok then
@@ -300,14 +387,42 @@ end
 
 -- ---------------------------------------------------------------- the trace both modes write
 
-local TRACE_HEADER = "t,dt,x,y,z,yaw,vx,vy,vz,speed,mode,custom_mode,charging,pressed_jump,montage,montage_pos,cam_yaw\n"
+-- acc / last / pend: the lengths of what the movement actually consumed -- the character movement
+-- component's current acceleration (units/s^2, 1000 at full input from rest), the pawn's last movement input
+-- vector and the one pending at sample time (0..1). Recording and replay write them the same way, so a frame
+-- where the same stick gives a different speed shows which of them differs (2026-11-15: an analog stick gave
+-- +27 speed on the first frame of a replay against the recording's +18).
+local TRACE_HEADER = "t,dt,x,y,z,yaw,vx,vy,vz,speed,mode,custom_mode,charging,pressed_jump,montage,montage_pos,cam_yaw,acc,last,pend,ami,evt\n"
+
+local function vectorLength(call)
+    local ok, v = pcall(call)
+    if not (ok and type(v) == "table" or ok and v ~= nil) then return -1 end
+    local okLen, len = pcall(function() return math.sqrt((v.X or 0) ^ 2 + (v.Y or 0) ^ 2 + (v.Z or 0) ^ 2) end)
+    return okLen and len or -1
+end
+
+local function inputDiagnostics(pawn)
+    local cmc = nil
+    pcall(function() cmc = pawn.CharacterMovement end)
+    local acc = cmc and vectorLength(function() return cmc:GetCurrentAcceleration() end) or -1
+    local last = vectorLength(function() return pawn:GetLastMovementInputVector() end)
+    local pend = vectorLength(function() return pawn:GetPendingMovementInputVector() end)
+    return acc, last, pend
+end
 
 local function writeTraceRow(file, t, r, pawn, origin)
     local s = anim.state(pawn)
-    file:write(string.format("%.5f,%.5f,%.3f,%.3f,%.3f,%.2f,%.3f,%.3f,%.3f,%.2f,%d,%d,%s,%s,%s,%.4f,%.3f\n",
+    local acc, last, pend = inputDiagnostics(pawn)
+    local ami = table.concat(amiCalls, ";")
+    amiCalls = {}
+    local evt = string.format("x:%s;y:%s",
+        table.concat(eventCalls.InputAxisLeftStickX, "/"), table.concat(eventCalls.InputAxisLeftStickY, "/"))
+    eventCalls.InputAxisLeftStickX, eventCalls.InputAxisLeftStickY = {}, {}
+    file:write(string.format("%.5f,%.5f,%.3f,%.3f,%.3f,%.2f,%.3f,%.3f,%.3f,%.2f,%d,%d,%s,%s,%s,%.4f,%.3f,%.2f,%.4f,%.4f,%s,%s\n",
         t, num(r.dt), num(r.x) - origin.x, num(r.y) - origin.y, num(r.z), num(r.yaw),
         num(r.vx), num(r.vy), num(r.vz), num(r.speed), num(r.mode), num(r.customMode),
-        tostring(r.charging), tostring(r.pressedJump), s.montage, s.position, num(r.camYaw)))
+        tostring(r.charging), tostring(r.pressedJump), s.montage, s.position, num(r.camYaw),
+        acc, last, pend, ami, evt))
 end
 
 -- ---------------------------------------------------------------- recording
@@ -346,7 +461,7 @@ local function startRecord(pawn, pc, r)
     inputs:write(string.format("# v1|level=%s|cap=%s|origin=%.1f,%.1f|start=%.3f,%.3f,%.3f|rot=%.3f,%.3f,%.3f|ctrl=%.3f,%.3f\n",
         level, tostring(require("lib.state").fpsCap or ""), origin.X, origin.Y,
         r.x - origin.X, r.y - origin.Y, r.z, rot.Pitch, rot.Yaw, rot.Roll, ctrl.Pitch, ctrl.Yaw))
-    inputs:write("t,lx,ly,rx,ry,tl,tr," .. table.concat(BUTTON_ORDER, ",") .. "\n")
+    inputs:write("t,lx,ly,rx,ry,tl,tr," .. table.concat(BUTTON_ORDER, ",") .. ",rlx,rly,cpitch,cyaw\n")
     ref:write(TRACE_HEADER)
     rec = {
         id = id, level = level, origin = { x = origin.X, y = origin.Y },
@@ -374,12 +489,24 @@ local function updateRecord(pawn, pc, r)
     local axes = readAxes(pawn, pc)
     if not axes then return end -- no component this frame; the gap stays out of the file
     if chargeFallback then held.charge = r.charging or nil end
-    local t = r.time - rec.start
+    -- NOT r.time - rec.start: r.time is a float32 world clock, and hours into a session its ULP is
+    -- 1/1024 s, so every 1/30 step records as 34/1024 = 33.20 ms. That ran 0.4%% slow, half a frame
+    -- every ~4 s, and the mid-frame row selection then fired late rows one frame early (take
+    -- LS102_20261116_094803: presses at #33/#93 exact, #139/#170 one frame early). Accumulate the
+    -- engine's own dt instead, in a Lua double, exactly as the replay accumulates its elapsed.
+    rec.t = rec.frames == 0 and 0 or rec.t + r.dt
+    local t = rec.t
     local flags = {}
     for i, key in ipairs(BUTTON_ORDER) do flags[i] = held[key] and "1" or "0" end
-    rec.inputs:write(string.format("%.5f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%s\n",
+    -- Axes at full float32 precision (%.9g round-trips a float exactly): an analog value written to 4
+    -- places (0.12156862 -> 0.1216) replayed a different stick, 0.2432 of movement input against the
+    -- recording's 0.2431, and the charge steers by the stored stick, so a gamepad take drifted a float
+    -- step at a time (LS102_20261116_230304: one float32 step at f64, 3.3 units by 21 s; 2026-11-16).
+    rec.inputs:write(string.format("%.5f,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%s,%.9g,%.9g,%.5f,%.5f\n",
         t, num(axes.lx), num(axes.ly), num(axes.rx), num(axes.ry), num(axes.tl), num(axes.tr),
-        table.concat(flags, ",")))
+        table.concat(flags, ","),
+        num(rawAxes.InputAxisLeftStickX or axes.lx), num(rawAxes.InputAxisLeftStickY or axes.ly),
+        num(r.camPitch), num(r.camYaw)))
     writeTraceRow(rec.ref, t, r, pawn, rec.origin)
     rec.frames = rec.frames + 1
     rec.lastT = t
@@ -429,10 +556,31 @@ local function loadTake(id)
                 tl = tonumber(fields[6]), tr = tonumber(fields[7]),
             }
             for i, key in ipairs(BUTTON_ORDER) do row[key] = fields[7 + i] == "1" end
+            -- Takes recorded before 2026-11-15 have no raw columns; they replay from the stored values.
+            row.rlx, row.rly = tonumber(fields[8 + #BUTTON_ORDER]), tonumber(fields[9 + #BUTTON_ORDER])
+            -- Camera rotation that frame (2026-11-16 format). Older takes have none: the game's own
+            -- camera runs free, and mouse look in the recording is lost (confirmed by a camera-only take).
+            row.cpitch, row.cyaw = tonumber(fields[10 + #BUTTON_ORDER]), tonumber(fields[11 + #BUTTON_ORDER])
             if row.t then take.rows[#take.rows + 1] = row end
         end
     end
     file:close()
+    -- Takes recorded before 2026-11-16 carry the float32-clock timestamps described in updateRecord
+    -- (0.4%% slow after hours of uptime). Rows are one per frame at the take's cap, so rebuild the
+    -- times from the frame count: each recorded gap, rounded to whole frames, says how many frames
+    -- passed (1 normally; more when a frame was dropped). Harmless for clean takes, and it undoes
+    -- the drift exactly.
+    if take.cap and take.cap > 0 and #take.rows > 1 then
+        local frame = 0
+        local prevRecorded = take.rows[1].t
+        take.rows[1].t = 0
+        for i = 2, #take.rows do
+            local gap = take.rows[i].t - prevRecorded
+            prevRecorded = take.rows[i].t
+            frame = frame + math.max(1, math.floor(gap * take.cap + 0.5))
+            take.rows[i].t = frame / take.cap
+        end
+    end
     for _, name in ipairs({ "sx", "sy", "sz", "pitch", "yaw", "roll", "ctrlPitch", "ctrlYaw" }) do
         take[name] = tonumber(take[name])
         if not take[name] then
@@ -456,6 +604,10 @@ local function finishRun(pawn, pc, reason)
     if not s then return end
     input.clear(pawn, pc)
     if s.file then s.file:close() end
+    if s.resetOnly then
+        log("replay: level reset, Spyro is on the start of %s (%s)", s.take.id, reason)
+        return
+    end
     log("replay: run of %s at %d FPS %s after %.1f s of %.1f (%s)",
         s.take.id, s.cap, reason, s.elapsed or 0, s.take.rows[#s.take.rows].t,
         s.path or "no trace written")
@@ -507,6 +659,8 @@ local function startReplay(pawn, pc, r, setFpsCap)
         phase = "reload", next = 1, elapsed = 0, settled = 0, progressAt = PROGRESS_EVERY,
     }
     setFpsCap(cap)
+    log("replay: camera: %s", take.rows[1] and take.rows[1].cyaw
+        and "driving the recorded camera" or "old take, no camera data; the game's camera runs free")
     log("replay: replaying %s at %d FPS (%d input rows, %.1f s); End aborts", id, cap,
         #take.rows, take.rows[#take.rows].t)
     if not quicksave.reloadLevel(pawn, function()
@@ -517,6 +671,114 @@ local function startReplay(pawn, pc, r, setFpsCap)
     end
 end
 
+-- PgUp: put the level back as a fresh entry has it and Spyro on the selected take's start, ready to
+-- record or replay. It is a replay run that never reaches "play" (resetOnly): the same reload, place and
+-- settle, with no trace file and no cap change.
+local function startReset(pawn, pc, r)
+    if rec then
+        log("replay: can't reset while recording (Home stops the recording)")
+        return
+    end
+    local level = levels.current(pawn)
+    if not level then
+        log("replay: the level name is unavailable")
+        return
+    end
+    local id = nil
+    if selected and selected.level == level then
+        for _, take in ipairs(takesFor(level)) do
+            if take.id == selected.id then id = selected.id break end
+        end
+    end
+    id = id or newestTake(level)
+    if not id then
+        log("replay: no take recorded for %s, so there is no start to reset to (Home records one)", level)
+        return
+    end
+    local take = loadTake(id)
+    if not take then return end
+    local _, origin = levels.current(pawn)
+    origin = origin or { X = 0, Y = 0 }
+    run = {
+        take = take, cap = require("lib.state").fpsCap or take.cap or 30, resetOnly = true,
+        origin = { x = origin.X, y = origin.Y },
+        phase = "reload", next = 1, elapsed = 0, settled = 0, progressAt = PROGRESS_EVERY,
+    }
+    log("replay: resetting %s to the start of %s", level, id)
+    if not quicksave.reloadLevel(pawn, function()
+        if run and run.phase == "reload" then run.phase = "place" end
+    end) then
+        log("replay: no sublevels to reload; only moving Spyro to the start")
+        run.phase = "place"
+    end
+end
+
+local function setControlRotation(pc, take)
+    pcall(function() pc:SetControlRotation({ Pitch = take.ctrlPitch, Yaw = take.ctrlYaw, Roll = 0 }) end)
+end
+
+-- SetControlRotation alone does not move the follow camera's own yaw (the camera drives the heading the
+-- stick is relative to, and PlayerCameraManager's rotation, the recorded cam_yaw, follows it), so set that
+-- directly. Which setter takes what is not documented: try each, log what it did and where the camera ended
+-- up, and stop at the first that lands within half a degree of the recorded heading.
+local function cameraYawNow(pawn)
+    local ok, yaw = pcall(function() return pawn.FollowCamera:GetCameraYaw() end)
+    return ok and type(yaw) == "number" and yaw or nil
+end
+
+local function setCameraHeading(pawn, take)
+    local cam, camErr = nil, nil
+    local okCam, got = pcall(function() return pawn.FollowCamera end)
+    if okCam then cam = got else camErr = got end
+    if not (cam and cam:IsValid()) then
+        log("replay: no FollowCamera on the pawn (%s); the recorded camera heading was not restored", tostring(camErr or got))
+        return
+    end
+    local tries = {
+        { "SetCameraPitchYaw", function() cam:SetCameraPitchYaw(take.ctrlPitch, take.ctrlYaw) end },
+        { "SetCameraYaw",      function() cam:SetCameraYaw(take.ctrlYaw) end },
+    }
+    local before = cameraYawNow(pawn)
+    for _, try in ipairs(tries) do
+        local ok, err = pcall(try[2])
+        local now = cameraYawNow(pawn)
+        log("replay: camera %s(%.2f) -> %s; GetCameraYaw %s -> %s (want %.2f)", try[1], take.ctrlYaw,
+            ok and "ok" or tostring(err), tostring(before), tostring(now), take.ctrlYaw)
+        if ok and now and math.abs((now - take.ctrlYaw + 180) % 360 - 180) < 0.5 then return end
+    end
+end
+
+-- Replaying the camera. Mouse look never reaches the axes a take records (the charge-steering stored
+-- value is a separate path), so a recorded camera move was simply absent from the replay -- a camera-only
+-- take replayed with the camera frozen (2026-11-16). Takes now carry the PlayerCameraManager rotation per
+-- frame, and the replay sets the follow camera AND the control rotation (the heading the left stick is
+-- relative to) to it on the same frame the row's sticks go out. The cost: a camera-driven replay no longer
+-- exercises the game's own camera behaviour, so camera-centering fixes still need takes judged by eye.
+local driveCameraFailed = false
+local lastCamYaw = nil -- the yaw driveCamera last set, to tell whether the game moved the camera since
+local function driveCamera(pawn, pc, row)
+    if not (row and row.cyaw) then return end
+    local ok = pcall(function()
+        pawn.FollowCamera:SetCameraPitchYaw(row.cpitch or 0, row.cyaw)
+        pc:SetControlRotation({ Pitch = row.cpitch or 0, Yaw = row.cyaw, Roll = 0 })
+    end)
+    if ok then lastCamYaw = row.cyaw end
+    if not ok and not driveCameraFailed then
+        driveCameraFailed = true
+        log("replay: driving the recorded camera failed; the game's own camera runs this replay")
+    end
+end
+
+-- Did the game turn the camera itself during the frame that just ended? After an outside
+-- SetCameraPitchYaw the walking camera stays put (its auto-rotation does not run), but a charge's native
+-- centering (FollowCameraComponent, docs/findings/charge-turn-camera.md) still steps it every frame.
+local function gameTurnedCamera(pawn)
+    if not lastCamYaw then return false end
+    local ok, yaw = pcall(function() return pawn.FollowCamera:GetCameraYaw() end)
+    if not (ok and type(yaw) == "number") then return false end
+    return math.abs((yaw - lastCamYaw + 180) % 360 - 180) > 0.01
+end
+
 local function place(pawn, pc, cmc)
     local s = run
     local x = s.take.sx + s.origin.x
@@ -524,10 +786,18 @@ local function place(pawn, pc, cmc)
     pawn:K2_TeleportTo({ X = x, Y = y, Z = s.take.sz },
         { Pitch = s.take.pitch, Yaw = s.take.yaw, Roll = s.take.roll })
     cmc.Velocity = { X = 0, Y = 0, Z = 0 }
-    pc:SetControlRotation({ Pitch = s.take.ctrlPitch, Yaw = s.take.ctrlYaw, Roll = 0 })
+    lastCamYaw = nil -- a new run: nothing set yet, so the first frame does not count as the game turning it
+    -- The camera first, THEN the control rotation. ResetBehind(true) snaps the camera (and with it the
+    -- control rotation the left stick is relative to) to straight behind Spyro, so calling it after
+    -- SetControlRotation threw the recorded camera heading away: a take recorded with the camera 2.7 deg
+    -- off his facing replayed with it at 0, and every walk went 2.7 deg the wrong way (38 units after 4 s
+    -- of walking forward; 2026-11-15, LS102_20261115_161245). The take header's ctrl yaw is the camera
+    -- heading at the moment Home was pressed.
     if not pcall(function() pawn.FollowCamera:ResetBehind(true) end) then
-        pcall(function() pawn.FollowCamera:SetCameraYaw(s.take.yaw) end)
+        pcall(function() pawn.FollowCamera:SetCameraYaw(s.take.ctrlYaw) end)
     end
+    setControlRotation(pc, s.take)
+    setCameraHeading(pawn, s.take)
 end
 
 local function updateReplay(pawn, pc, cmc, r)
@@ -542,19 +812,27 @@ local function updateReplay(pawn, pc, cmc, r)
         s.settled = s.settled + r.dt
         input.hold({})
         input.apply(pawn, pc)
+        setControlRotation(pc, s.take) -- hold the recorded camera heading until play starts
         local dx, dy = r.x - (s.take.sx + s.origin.x), r.y - (s.take.sy + s.origin.y)
         local off = math.sqrt(dx * dx + dy * dy)
-        if off > 300 and s.settled < SETTLE_MAX then
-            -- The teleport does not always take on the first try (seen on 9% of tour stops).
+        if off > PLACE_TOLERANCE and s.settled < SETTLE_MAX then
+            -- The teleport does not always take on the first try (seen on 9% of tour stops), and a replay
+            -- that starts off the spot is shifted for its whole length (LS102_20261116_122108 started
+            -- 156 units away after a run that ended across the level, and was accepted while this
+            -- allowed 300; 2026-11-16).
             place(pawn, pc, cmc)
             return
         end
         if r.mode == 3 and s.settled < SETTLE_MAX then return end -- let him land first
-        if s.settled >= SETTLE_MAX and (off > 300 or r.mode == 3) then
+        if s.settled >= SETTLE_MAX and (off > PLACE_TOLERANCE or r.mode == 3) then
             finishRun(pawn, pc, "aborted: never settled on the start spot")
             return
         end
         if s.settled < SETTLE then return end
+        if s.resetOnly then
+            finishRun(pawn, pc, "done")
+            return
+        end
         s.phase, s.elapsed = "play", 0
         log("replay: playing")
         return
@@ -567,21 +845,70 @@ local function updateReplay(pawn, pc, cmc, r)
         return
     end
     local rows = s.take.rows
-    while s.next <= #rows and rows[s.next].t <= s.elapsed do
+    -- The row of the frame that just ended (sent at the end of the frame before it): its camera is the
+    -- one the recording had when the NEXT frame began.
+    local endedRow = s.sent and rows[s.sent] or nil
+    -- Which recorded row to send now. A recorded row (t, axes) was read at the END of the frame that
+    -- ended at t, so it is the input that frame's movement already used. What is sent here, at the end
+    -- of a frame, is used by the NEXT frame -- so sending "the row at or before elapsed" (as this did
+    -- until 2026-11-15) put every input one frame late, and its `<=` against a t rounded to 5 places
+    -- made about half the rows a second frame late (0.06667 <= 0.066666 is false). The row to send is
+    -- the one whose recorded frame covers the middle of the frame about to run: the first row with
+    -- t >= elapsed + dt/2. At the take's own cap that is exactly the next row, with half a frame of
+    -- margin against rounding; at another cap it is the recorded input in effect at that frame's middle.
+    local mid = s.elapsed + r.dt * 0.5
+    while s.next < #rows and rows[s.next].t < mid do
+        -- (Rows passed over are not applied: at a cap above the take's, a press shorter than one
+        -- replayed frame is lost. At the take's own cap nothing is passed over.)
+        s.next = s.next + 1
+    end
+    if s.next <= #rows and s.next ~= s.sent then
         local row = rows[s.next]
-        input.hold({ leftX = row.lx, leftY = row.ly, rightX = row.rx, rightY = row.ry,
-                     triggerL = row.tl, triggerR = row.tr })
+        -- The left stick goes out the way the engine's input tick sends it (input.sendLeftStick): the
+        -- frame then consumes |(x_k, y_(k-1))| + |(x_k, y_k)| like the recording, at any stick tilt. This
+        -- replaces the "half-frame filter" (2026-11-16), which averaged Y with the last row: right for
+        -- keys on Y alone, but it left the consumed input at X 1.0 / Y 3.0 against the recording's 2.0,
+        -- which a partly tilted analog stick would feel. Charging or not: a stick event adds nothing
+        -- during a charge, and the charge reads the stored stick, which the hook restores (below).
+        s.stickX, s.stickY = row.rlx or row.lx, row.rly or row.ly
+        input.hold({ rightX = row.rx, rightY = row.ry, triggerL = row.tl, triggerR = row.tr })
         s.curLx, s.curLy = row.lx, row.ly
         for _, key in ipairs(BUTTON_ORDER) do
             if row[key] ~= input.held(key) then
                 if row[key] then input.press(key) else input.release(key) end
             end
         end
-        s.next = s.next + 1
+        s.sent = s.next
     end
-    -- Force the stored stick value the charge turn reads (the event path alone does not reach it).
+    -- The stored stick (InputAxisLeftStickX/Y) as the recording had it after this frame's input tick,
+    -- restored by the stick hook after the engine's Y event (registerInjectHooks). The charge steers by
+    -- it, and anything else that reads it in the tick sees the take's value. It used to be forced only
+    -- while charging, so on the FIRST frame of a charge the stick read 0 and the turn started a frame
+    -- late (LS102_20261116_230304, a gamepad take: f34 yaw -11.21 against the recording's -8.46, the
+    -- replay a frame behind from there and the camera fighting it, 2026-11-16).
     injectAxes = { InputAxisLeftStickX = s.curLx or 0, InputAxisLeftStickY = s.curLy or 0 }
-    input.apply(pawn, pc)
+    -- The camera, in two steps around the sticks.
+    -- 1. The camera of the frame that just ended: the one the recording had when the next frame began,
+    --    which the sticks are turned by (input runs before the camera updates). Setting the NEXT frame's
+    --    camera before the sticks turned every stick by it (LS102_20261116_122108: vy 0.017 vs 0.000 on
+    --    the first walking frame).
+    -- 2. Then, unless the game is turning the camera itself, the next frame's camera. After an outside
+    --    set the walking camera stays put, so without this it lags the recording a frame (2.7 deg a
+    --    frame while it auto-rotates). A charge's native centering does step it, from wherever it is,
+    --    so there step 2 would count that step twice (+4.7 deg on the first charge frame of
+    --    LS102_20261116_230304, and the charge steers by the control rotation, so Spyro's yaw drifted);
+    --    left at the ended frame's camera, the centering steps from the recording's own state and
+    --    lands on its next value. Whether the game turned it is measured on the frame that just ended;
+    --    a charge press counts from its first frame, which nothing has measured yet.
+    local gameTurns = gameTurnedCamera(pawn)
+    driveCamera(pawn, pc, endedRow)
+    input.apply(pawn, pc, LEFT_STICK)
+    input.sendLeftStick(pawn, pc, s.stickX or 0, s.stickY or 0, s.prevStickY or 0)
+    -- The Y the engine's stored axis held when the next frame's X event runs (sendLeftStick's prevY).
+    s.prevStickY = s.stickY or 0
+    local nextRow = s.sent and rows[s.sent] or nil
+    local chargePress = nextRow and nextRow.charge and not (endedRow and endedRow.charge)
+    if not gameTurns and not chargePress then driveCamera(pawn, pc, nextRow) end
     writeTraceRow(s.file, s.elapsed, r, pawn, s.origin)
     if s.elapsed >= s.progressAt then
         s.progressAt = s.progressAt + PROGRESS_EVERY
@@ -595,6 +922,7 @@ end
 
 function replay.requestRecord() pending = "record" end
 function replay.requestReplay() pending = "end" end
+function replay.requestReset() pending = "reset" end
 
 -- True while a replay is driving (or waiting out a reload): main.lua answers paused prompts for it.
 function replay.running()
@@ -652,6 +980,10 @@ function replay.update(pawn, pc, cmc, r, setFpsCap)
     local ok, err = pcall(function()
         if kind == "record" then
             if rec then stopRecord("stopped with Home") else startRecord(pawn, pc, r) end
+        elseif kind == "reset" then
+            if run then finishRun(pawn, pc, "aborted by a reset") end
+            menuOpen = false
+            startReset(pawn, pc, r)
         elseif kind == "end" then
             if run then
                 finishRun(pawn, pc, "aborted with End")

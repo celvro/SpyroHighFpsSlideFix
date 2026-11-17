@@ -206,6 +206,126 @@ seconds of preset script on a stop.
   FollowCamera:ResetBehind, and the SetControlRotation restore); sub-frame input timing at the row
   boundaries (inputs are stepped by game time, not frame-aligned to the recording); and the very first
   input frame. Fix this before reading the opening seconds of any cross-FPS replay as a bug.
+  - **2026-11-15, found by reading the code, NOT yet verified in game: replayed input was one frame late
+    and its timing jittered.** A recorded row is read at the end of the frame that already used it; the
+    replay sends at the end of a frame, so the next frame uses it. It also chose rows with
+    `t <= elapsed`, where `t` is rounded to 5 places and `elapsed` is a running sum of `dt`, so at a
+    fixed 1/30 s about half the rows (0.06667 <= 0.066666 is false) landed a second frame late. It now
+    sends the first row with `t >= elapsed + dt/2`. **To check:** record at 30, replay at 30, run
+    `compare_replays.py`: Spyro's yaw should stay within 2 deg from t=0. `compare_replays.py` now also
+    reports camera yaw (first >2 deg off, max, and the first 3 s every 0.5 s). If the camera yaw is off
+    from the start while the input timing is right, the control-rotation seeding is the next suspect; if
+    it is not, the stick path is.
+  - **2026-11-15, measured, fix written but not yet deployed or re-run: the replay threw the recorded camera heading
+    away.** Take `LS102_20261115_161245` (stand, then hold W for 3 s, 5.6 s long) replays with the **same speed on
+    every frame** as the recording (33, 67, 100, ... 268), so the input timing fix above is right. The only difference
+    is a constant 2.7 deg: the recording had the camera at 40.8 deg with Spyro facing 43.5 (the take header's `ctrl`
+    yaw is that camera heading), and `place()` called `SetControlRotation(ctrl)` and then `FollowCamera:ResetBehind(true)`,
+    which snapped it to 43.5. Walking is camera-relative, so the path was 2.7 deg off: 38 units after 4 s. `place()` now
+    snaps first and sets the control rotation after, and the settle phase re-applies it every frame. **To check:** the
+    first row of a run's `cam_yaw` must equal the ref's (40.8 here). Takes recorded with the camera exactly behind Spyro
+    (LS102_20261115_155817 and _160013, where ctrl yaw = facing) were not affected by this; their remaining early yaw
+    difference (7.1 deg at 1.0 s, repeatable) happens where the stick ramps from keyboard keys and is still open.
+  - **2026-11-15, verified in game: camera restore and raw stick capture.** `place()` now sets the camera with
+    `FollowCamera:SetCameraPitchYaw(pitch, yaw)` (exists; the log shows `GetCameraYaw 43.49 -> 40.81`) after
+    `ResetBehind(true)`. Result on `LS102_20261115_161245` (walk forward): max position gap 38 -> 0.6 units, camera
+    yaw 0.0 deg off. A stick take also records the **raw value passed to `InputAxis_LeftStick_X/Y`** (`rlx`, `rly`
+    columns; older takes lack them and replay from the stored values) because that is what the walking uses; the
+    stored axis can be a smoothed ramp. On `LS102_20261115_170419` (keys: A, W, A, W; 14.2 s) the first 51 frames,
+    a strafe with the camera auto-rotating, match the recording to 0.0 units frame for frame, and every key
+    **press** is consumed on the right frame. **Not fixed:** a key **release** lands a frame early or late (f61:
+    recording decelerates on the release frame, replay one frame later; f334 the other way), so the runs part ways
+    after 10.9 s (100 units at 12 s). Automated key presses give flat -1/1 with no ramp, so the 7 deg opening error
+    on `_160013` (recorded from your own device, stored ramp -0.14, -0.46, -0.78, -1.0) is not yet re-tested: record a
+    take with your normal controls and replay it. The reset key above is verified (overlay `[RESET]`, level
+    reloaded, Spyro on the take start).
+  - **Camera (mouse look) is recorded and replayed (2026-11-16, verified).** Mouse look never reaches the
+    axes a take records (the charge-steering stored value is a separate path), so a camera-only take
+    replayed with the camera frozen. Takes now carry the PlayerCameraManager rotation per frame (`cpitch`,
+    `cyaw` input columns); the replay sets `FollowCamera:SetCameraPitchYaw` and the control rotation on the
+    frame each row's sticks go out, and logs `camera: driving the recorded camera` (old takes: `no camera
+    data`). Verified on `LS102_20261116_014821` (camera-only, mouse): all 151 frames match the recording
+    exactly, index for index. **compare_replays.py artifact:** at a discrete camera jump its t-join can land
+    the two traces on opposite sides of the jump and report a one-sample ~100 deg camera diff -- check the
+    frame-indexed values before believing a single-sample camera spike. (Fixed 2026-11-16: angles are
+    interpolated now, see below.)
+  - **The left stick is now sent exactly as the engine sends it (2026-11-16), and 30->30 replays match
+    frame for frame.** This replaces the "half-frame filter" (the average of this row's Y and the last
+    row's), which was tested and found right only for keys on the forward axis.
+    - **How Spyro's walking consumes the stick** (`CharacterInputComponent_Spyro`, `AssetDump --code`). On
+      the ground, `InputAxis_LeftStick_X` and `_Y` each store their axis (`InputAxisLeftStickX/Y`) and call
+      `RequestGroundMovement()`. That function (Ubergraph offset 31522) adds one vector built from both
+      stored axes: `AddMovementInput(Normal(fwd*sign(Y) + right*sign(X)), |(X, Y)|)`, using the control
+      yaw, and skipped when both axes are <= 0.1. Above 0.75 x MaxWalkSpeed, moving forward, it calls
+      `MoveAlongActorForwardVector(X, Y, ...)` instead. In the air the events call
+      `MoveAlongControlRotationRight/Forward` (`AddMovementInput(right, X)` / `(fwd, Y)`). The component
+      tick adds stick movement only while climbing.
+    - **So a recorded frame consumes |(x_k, y_(k-1))| + |(x_k, y_k)|**, because the engine fires X before
+      Y. That is a W press 1.0 (0 + 1), a W release 1.0 (1 + 0), an A press 2.0 at once, and an A release
+      0. All six LS102 takes with a `last` column show exactly this, including `LS102_20261116_223337`,
+      recorded with A before W.
+    - **What the replay did instead.** Lua fired the events in `pairs()` order (Y first), and
+      `input.apply` then left the stored axes set. So a Lua Y call added 2v and a Lua X call 1v (`pend`),
+      and the next frame the engine's own zero-valued X event added |(0, stored Y)| again. The result was
+      `last` X 1.0 and Y 3.0 against the recording's 2.0. With keys that is invisible (the CMC clamps the
+      input to length 1), but a partly tilted gamepad stick would accelerate differently. The half-frame
+      filter got W right by luck and put every A press and release 1.0 off (`122108` #176: speed 141 vs
+      268).
+    - **Now:** `input.sendLeftStick` sets stored Y to the previous frame's Y, fires X, fires Y, and zeroes
+      both stored axes so the engine's zero events add nothing. `tools/replay.lua` uses it on every frame,
+      charging or not (a stick event adds nothing during a charge).
+    - **The stored stick is restored on every frame**, by the replay's stick hook, after the engine's
+      **Y** event only, to both axes. The charge steers by the stored stick in its tick. That hook used
+      to run only while charging, and after each axis's own event. Charging-only meant the first charge
+      frame read 0, and the turn started a frame late (gamepad take `LS102_20261116_230304` f34: yaw
+      -11.21 vs the recording's -8.46). Per-axis meant X was restored before the Y body ran, which added
+      |(x, 0)| of extra input every frame.
+    - **Camera, two steps around the sticks.** Each frame the replay (1) sets the camera of the frame that
+      just ended, which is the camera the recording had when the next frame began and the one the sticks
+      are turned by, then (2) fires the sticks, then (3) sets the next frame's camera, **unless the game
+      turned the camera itself** during the frame that just ended. That is measured as `GetCameraYaw`
+      against the yaw last set; a charge press counts from its first frame. The reason: after an outside
+      `SetCameraPitchYaw` the walking camera stays put (its auto-rotation does not run), so step 3 supplies
+      the recorded turn. A charge's native centering does still step it, so with step 3 it counted that
+      step twice (+4.7 deg on `230304`'s first charge frame, and the charge steers by the control
+      rotation, so Spyro's yaw drifted to a 574-unit split). Both earlier orders were wrong for one case:
+      - camera (next frame) before the sticks turned every stick by the next frame's camera (`122108`
+        f145: `vy` 0.017 vs 0.000);
+      - the ended frame's camera alone made the walking camera lag a frame.
+    - **Takes now store sticks at full float precision** (`%.9g`, was 4 decimals) and the camera to
+      1e-5 deg. The gamepad take's 0.12156862 was stored as 0.1216, which shows as `last` 0.2432 vs 0.2431,
+      and the charge steers by the stored stick. Takes recorded before 2026-11-16 23:19 have the rounding.
+    - **Result, 30->30, frame-indexed:**
+      - `LS102_20261116_122108` (W, jump, A; 7.3 s): every frame identical, `last` included (was 9.8 units
+        off).
+      - `LS102_20261115_170419` (A, W, A, W with an A release and a W press on the same frame; 14.2 s; no
+        camera data, so the camera ran free): 0.032 units and 0.02 deg max (was 100 units off).
+      - `LS102_20261116_223337` (A, W, A; 9.7 s): `last` identical on every frame. It ends 0.95 units off
+        because of frame pacing (below).
+      - `LS102_20261116_230304`, **a gamepad take** (analog walking at partial tilt, charges, jumps;
+        21.3 s): the analog walking is exact (`last` within 1e-4, the take's rounding), Spyro's yaw within
+        0.03 deg and the camera within 0.013 deg for the whole take, except one 0.5 deg blip at f448-451.
+        Position: one float32 step at f64 (in a charge), 0.5 units by 6.2 s, 3.3 max. That is the
+        4-decimal stick rounding and frame pacing, both below anything a framerate bug does.
+      - `LS102_20261116_014821` (camera only, mouse): still exact.
+    - **Remaining noise floor: frame pacing.** At the 30 cap, 1-2% of frames run up to 0.25% long
+      (0.03334-0.03341 s), at random, in recordings and replays alike. On a frame where Spyro accelerates,
+      that changes speed by up to 0.08: `223337` f126 recorded 0.03341 s, giving 66.74 vs 66.67. That is
+      one float32 step of position (1/32 unit this far from the origin), which a wall contact at 4.7 s
+      turned into 0.95 units. Far below any framerate bug. Forcing a fixed frame time while recording and
+      replaying would remove it if it ever matters.
+    - **Camera during a jump:** the recorded `cam_yaw` (the camera manager's view) can sit up to 1 deg off
+      for a few airborne frames (`122108` f100-104), while the control rotation the movement uses is
+      driven exactly. That is harmless unless a stick is held in the air; watch it if an air-steering
+      take diverges.
+    - **Start placement now has to land within 5 units** (`PLACE_TOLERANCE`; it accepted 300). After the
+      gamepad run ended across the level, `122108` started 156 units off its spot and replayed shifted.
+    - **compare_replays.py now interpolates yaw and camera yaw** as it does positions. Taking them from the
+      row at or before t flagged 14-21 deg "differences" during turns on runs that matched to 0.02 deg,
+      because a replay's timestamps run a few 1e-5 s off the recording's.
+  - **PageUp resets the level** (added 2026-11-15): reloads the gameplay sublevels and stands Spyro
+    on the start of the selected (else newest) take, then stops, so a take can be recorded or replayed again from a fresh
+    level. It aborts a replay or a recording first.
 - **Capturing the stick needs the stored axis, not just the axis event.** Spyro's charge steering
   reads the component's `InputAxisLeftStickX` property (not the movement input vector), and the mouse
   charge steering fix reads `InputAxisRightStickX` (`docs/findings/charge-turn-camera.md`). `lib/input.lua`

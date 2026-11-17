@@ -147,17 +147,52 @@ function input.held(button)
     return buttons[button] == true
 end
 
--- Sends this frame's input. Call once per frame while a scripted run is going.
-function input.apply(pawn, pc)
+local function setProp(c, prop, value)
+    if axisPropMissing[prop] then return end
+    local ok = pcall(function() c[prop] = value end)
+    if not ok then
+        axisPropMissing[prop] = true
+        log("input: %s not writable on this character; charge/mouse steering from a script may not work", prop)
+    end
+end
+
+-- The left stick sent exactly as the engine's own input tick sends it, for a replay that must consume
+-- the same movement input as its recording. On the ground, CharacterInputComponent_Spyro's stick events
+-- each store their axis and call RequestGroundMovement, which adds ONE vector from BOTH stored axes:
+-- AddMovementInput(Normal(fwd * sign(Y) + right * sign(X)), |(X, Y)|), skipped when both are <= 0.1
+-- (bytecode offset 31522; in the air they add right * X and fwd * Y instead). The engine fires X before Y,
+-- so a frame consumes |(x_k, y_(k-1))| + |(x_k, y_k)|: a W press 1.0, a W release 1.0, an A press 2.0
+-- straight away. Firing the events from Lua (in pairs() order, Y first) with stored Y left set gave X 1.0
+-- and Y 3.0 instead, the extra 1.0 being the engine's own zero-valued X event adding |(0, stored Y)|
+-- (2026-11-16, docs/probe.md). So: stored Y = the previous frame's Y, fire X, fire Y, and then zero both
+-- stored axes so the engine's own zero events add nothing. Not for a charge, which reads the stored stick
+-- during its tick (tools/replay.lua forces it through a hook instead).
+function input.sendLeftStick(pawn, pc, x, y, prevY)
+    local c = find(pawn, pc)
+    if not c then return false end
+    setProp(c, input.AXIS_PROPS.leftY, prevY or 0)
+    call(c, input.AXES.leftX, x or 0)
+    call(c, input.AXES.leftY, y or 0)
+    setProp(c, input.AXIS_PROPS.leftX, 0)
+    setProp(c, input.AXIS_PROPS.leftY, 0)
+    return true
+end
+
+-- Sends this frame's input. Call once per frame while a scripted run is going. `skip` (optional) is a set
+-- of axis keys this call leaves alone -- neither event nor stored value -- for a caller that sends them
+-- itself (tools/replay.lua sends the left stick through input.sendLeftStick).
+function input.apply(pawn, pc, skip)
     local c = find(pawn, pc)
     if not c then return false end
     for key, event in pairs(input.AXES) do
-        call(c, event, axes[key] or 0)
+        if not (skip and skip[key]) then call(c, event, axes[key] or 0) end
     end
     -- Also set the stored axis value, for the Blueprint logic that reads it rather than the movement
     -- input vector (the charge turn above all). Written after the event so it wins over a native zero.
     for key, prop in pairs(input.AXIS_PROPS) do
-        if not axisPropMissing[prop] then
+        if skip and skip[key] then
+            -- the caller sends this one
+        elseif not axisPropMissing[prop] then
             local ok = pcall(function() c[prop] = axes[key] or 0 end)
             if not ok then
                 axisPropMissing[prop] = true

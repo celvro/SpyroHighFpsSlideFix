@@ -47,6 +47,11 @@ def read_trace(path):
                     "speed": float(p[idx["speed"]]), "mode": int(float(p[idx["mode"]])),
                     "charging": p[idx["charging"]] == "true" if "charging" in idx else False,
                     "montage": p[idx["montage"]],
+                    "cam": float(p[idx["cam_yaw"]]) if "cam_yaw" in idx else float("nan"),
+                    "acc": float(p[idx["acc"]]) if "acc" in idx else float("nan"),
+                    "last": float(p[idx["last"]]) if "last" in idx else float("nan"),
+                    "pend": float(p[idx["pend"]]) if "pend" in idx else float("nan"),
+                    "dt": float(p[idx["dt"]]) if "dt" in idx else float("nan"),
                 })
             except ValueError:
                 continue
@@ -74,6 +79,14 @@ def sample(rows, t):
     out = dict(a)
     for k in ("x", "y", "z"):
         out[k] = a[k] + (b[k] - a[k]) * f
+    # Angles too, the short way round. Taken from the row at or before t they flagged false yaw
+    # differences: a replay's timestamps run a few 1e-5 s off the recording's, so a grid point can land
+    # between the two traces' rows for the same frame, and during a turn of 25 deg a frame one trace
+    # reported frame k and the other frame k-1 (14-21 deg "off" on runs that match frame for frame to
+    # 0.02 deg, 2026-11-16). It also settles the one-sample ~100 deg camera spikes at a camera snap.
+    for k in ("yaw", "cam"):
+        if a[k] == a[k] and b[k] == b[k]:  # neither is NaN
+            out[k] = a[k] + ((b[k] - a[k] + 180.0) % 360.0 - 180.0) * f
     return out
 
 
@@ -108,6 +121,9 @@ def compare(ref, run, run_name, out):
     mode_mismatch = montage_mismatch = charging_mismatch = 0
     mode_intervals, current = [], None
     montage_pairs = {}
+    cam_first = yaw_first = None       # first time camera / Spyro yaw is > 2 deg off the recording
+    cam_max = yaw_max = 0.0
+    early = []                         # (t, yaw diff, cam diff) at 0.5 s steps for the first 3 s
     for i in range(n + 1):
         t = min(i * GRID, end)
         a, b = sample(ref, t), sample(run, t)
@@ -117,6 +133,16 @@ def compare(ref, run, run_name, out):
         for th in THRESHOLDS:
             if th not in crossings and d > th:
                 crossings[th] = t
+        yd, cd = yaw_diff(a["yaw"], b["yaw"]), yaw_diff(a["cam"], b["cam"])
+        yaw_max = max(yaw_max, yd)
+        if yd > 2.0 and yaw_first is None:
+            yaw_first = t
+        if cd == cd:  # not NaN
+            cam_max = max(cam_max, cd)
+            if cd > 2.0 and cam_first is None:
+                cam_first = t
+        if t <= 3.0 and i % 5 == 0:
+            early.append((t, yd, cd))
         if a["mode"] != b["mode"]:
             mode_mismatch += 1
             if current and current[1] == a["mode"] and current[2] == b["mode"]:
@@ -157,6 +183,27 @@ def compare(ref, run, run_name, out):
         out(f"    seg {i + 1} at t={rs[0]:.1f}: duration {rs[1]:.2f} vs {qs[1]:.2f} s ({d_dur:+.2f}), "
             f"rise {rs[2]:.0f} vs {qs[2]:.0f} ({d_apex:+.0f}){flag}")
 
+    # What the movement consumed on the frames just before and at the first frame where the runs part by more
+    # than half a unit (acc = CMC acceleration, last/pend = the pawn's movement input vector lengths).
+    # Needs a ref and run recorded with the acc/last/pend columns (tools/replay.lua, 2026-11-15).
+    k = next((j for j in range(min(len(ref), len(run)))
+              if math.dist((ref[j]["x"], ref[j]["y"]), (run[j]["x"], run[j]["y"])) > 0.5), None)
+    if k is not None and ref[k]["acc"] == ref[k]["acc"]:
+        out(f"  first frame >0.5 units apart: #{k} (t={ref[k]['t']:.2f} s); acc / last / pend, ref vs run:")
+        for j in range(max(0, k - 2), min(len(ref), len(run), k + 4)):
+            a, b = ref[j], run[j]
+            out(f"    #{j}: acc {a['acc']:7.1f} vs {b['acc']:7.1f}   last {a['last']:.3f} vs {b['last']:.3f}"
+                f"   pend {a['pend']:.3f} vs {b['pend']:.3f}   speed {a['speed']:.0f} vs {b['speed']:.0f}")
+    # Heading vs camera. The left stick is camera-relative, so a camera that is off by a few degrees
+    # at the start sends the walk off by the same few degrees. If the camera yaw diverges first (or at
+    # all) the replay's camera seeding / right-stick path is the cause; if Spyro's yaw diverges while
+    # the camera stays on the recording, it is input timing or the movement itself.
+    out(f"  Spyro yaw: first >2 deg off at "
+        + (f"t={yaw_first:.1f} s" if yaw_first is not None else "never") + f", max {yaw_max:.1f} deg")
+    out(f"  camera yaw: first >2 deg off at "
+        + (f"t={cam_first:.1f} s" if cam_first is not None else "never") + f", max {cam_max:.1f} deg")
+    out("  first 3 s, every 0.5 s (t: spyro yaw diff / camera yaw diff, deg): "
+        + "  ".join(f"{t:.1f}: {yd:.1f}/{cd:.1f}" for t, yd, cd in early))
     out(f"  movement mode: differs {100.0 * mode_mismatch / total:.1f}% of the time")
     for t0, ma, mb, t1 in mode_intervals[:8]:
         if t1 - t0 >= 0.2:

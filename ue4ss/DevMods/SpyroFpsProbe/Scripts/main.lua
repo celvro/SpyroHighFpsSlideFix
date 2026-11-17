@@ -33,6 +33,7 @@
 --   End                closed: open the on-screen take picker for this level; open: play the
 --                      selected take at the current F5-F8 cap (newest if unmoved), writing a trace
 --                      to compare against the recording; while a replay runs: abort it (tools/replay.lua)
+--   PageUp             reset the level to the start of the selected/newest replay take (tools/replay.lua)
 --   Up / Down          move the take-picker selection while it is open (tools/replay.lua)
 --   T                  poison test: write NaN into the gem thief's anim Blueprint Speed and hold the heal
 --                      back for 5 s, to watch the pose break and come back (trackers/gemthief.lua)
@@ -327,6 +328,12 @@ if Key.END then
     RegisterKeyBind(Key.END, replaytest.requestReplay)
 else
     log("replay: this UE4SS build has no Key.END; replaying has no key")
+end
+-- PgUp resets the level to the start of the selected (else newest) take: sublevels reloaded, Spyro placed.
+if Key.PAGE_UP then
+    RegisterKeyBind(Key.PAGE_UP, replaytest.requestReset)
+else
+    log("replay: this UE4SS build has no Key.PAGE_UP; the level reset has no key")
 end
 -- The take picker: End opens it (and plays the selection), the arrows move through it. The game
 -- binds the arrows too, so only press them with the picker open and Spyro standing still.
