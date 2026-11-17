@@ -323,6 +323,29 @@ seconds of preset script on a stop.
     - **compare_replays.py now interpolates yaw and camera yaw** as it does positions. Taking them from the
       row at or before t flagged 14-21 deg "differences" during turns on runs that matched to 0.02 deg,
       because a replay's timestamps run a few 1e-5 s off the recording's.
+  - **First uncapped replays (2026-11-16, ~250 FPS, hitches to 55, one to 14).** Four LS102 takes recorded at
+    30 FPS, replayed with F8. Movement matches closely; where the runs part, the cause is in the game:
+    - `223337` (keys, walking): within 5 units over 9.7 s; facing ~1 deg off after turns.
+    - `230304` (gamepad, charges, jumps): within ~15 units for 14 s. All three jumps rise the same (the probe's
+      `rise` apex +84.68 against +84.64 at 30) and last the same to 0.01 s. The gap builds in a long charge, at
+      identical speed with ~0.5 deg of heading.
+    - `233040` (gamepad): 14 deg apart within one frame while walking off from rest, then 30 units off at 7.2 s
+      and off an edge. That is the 8-way snap below 75% walk speed, decided per frame:
+      `docs/findings/sliding-walking.md`.
+    - `122108` (keys): an enemy hits Spyro in both runs, at slightly different moments. Enemy AI repeats
+      exactly at 30->30 but not across framerates, so **a take that meets an enemy only compares up to the
+      meeting**.
+    - **Reading a cross-cap report:** the "first frame >0.5 units apart" block indexes frames by number, which
+      only means something when both runs are at the same cap. Use the time-based lines, or sample the
+      faster run at the recording's timestamps.
+  - **compare_replays.py fixes from the uncapped runs:**
+    - **Stale timestamps.** `sample()` cached each trace's timestamps under `id(rows)`. A freed run's id is
+      reused by the next one read, so every run after the first in a report sampled with another run's
+      timestamps (a 9.8-unit 30->30 run read as 1719 units at 0.2 s). The cache now keeps the list itself.
+    - **Jump rise.** It was measured from the first Falling row, which at 30 FPS has already risen a frame
+      (~7 units), so every uncapped jump read 6 units higher. It now measures from the last ground row.
+    - **Jump timing.** A jump now starts at that ground row (the launch is at the start of the frame), and
+      ends halfway between the rows either side of the landing.
   - **PageUp resets the level** (added 2026-11-15): reloads the gameplay sublevels and stands Spyro
     on the start of the selected (else newest) take, then stops, so a take can be recorded or replayed again from a fresh
     level. It aborts a replay or a recording first.

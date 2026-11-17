@@ -11,7 +11,7 @@ Investigation logs live in `docs/`; each fix module in `ue4ss/Mods/HighFpsSlidin
 | Doc | Topic | Status |
 |---|---|---|
 | `docs/findings/jump-glide.md` | Jump/hover height (zero-gravity phase rounds to frames), glide distance (position rounding), glide start wait, framerate config | fixed, verified |
-| `docs/findings/sliding-walking.md` | Braking slide, acceleration lanes, stuck from standstill (float32 position quantization far from origin) | fixed, verified |
+| `docs/findings/sliding-walking.md` | Braking slide, acceleration lanes, stuck from standstill (float32 position quantization far from origin); walking off from rest turns differently above 30 FPS (8-way snap below 75% walk speed, decided per frame) | fixed, verified; turn snap measured 2026-11-16, not fixed |
 | `docs/findings/charge-turn-camera.md` | Charge slip, mouse charge steering, camera centering, centering switch, stuck charge camera (native disassembly) | slip/steering/centering fixed, verified; `FIX_STUCK_CAMERA` **re-verified by A/B 2026-10-11** (`camrepro`, R): at a 33 deg start the gap runs to ~83 deg without it at both 30 and 315 FPS, and the camera catches up with it. **Still open**: a charge restarted within ~0.5 s of stopping and steered by mouse at ~210 deg/s, harsher than the tool's 130.8 |
 | `docs/findings/super-charge.md` | Super charge stages, ramp, jump assist | matches 30 FPS |
 | `docs/findings/charge-dust.md` | Charge dust (one-tick effects emit nothing at high FPS) | fixed, verified |

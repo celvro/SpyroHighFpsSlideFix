@@ -88,6 +88,14 @@ user to record a shorter take straight to anything suspected later in the level.
   - Frame pacing is the noise floor: 1-2% of frames run up to 0.25% long, moving Spyro a float32 step,
     which a wall contact can grow to about 1 unit. A 30->30 pair that drifts by more than a few units
     is a harness problem worth reading. Details in the replay section of `docs/probe.md`.
+- **Across caps, read the time-based lines only.** The "first frame >0.5 units apart" block indexes
+  frames by number, which is meaningful only when both runs are at the same cap.
+- **Enemies repeat at 30->30 but not across caps.** A take that meets an enemy compares cleanly only
+  up to the meeting. A hit (`Damage_Knockback` montage) in either run marks it.
+- First uncapped results (2026-11-16, ~250 FPS): walking, braking, charge speed and jump arcs match 30.
+  The first real difference found is the 8-way input snap below 75% walk speed, decided per frame
+  (`docs/findings/sliding-walking.md`): starting off from rest with a slightly off-axis stick, facing
+  can differ by 10+ deg within one frame.
 - Treat a single cross-cap difference like a single tour flag: **re-run it before believing it.**
 
 From a confirmed divergence, carry on with the `spyro-fps-bug-hunt` skill: quicksave V/B at the

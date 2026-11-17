@@ -63,10 +63,14 @@ def read_trace(path):
 def sample(rows, t):
     """The trace's state at time t: positions interpolated, the rest from the row at or before t."""
     import bisect
-    times = sample.cache.get(id(rows))
-    if times is None:
-        times = [r["t"] for r in rows]
-        sample.cache[id(rows)] = times
+    # Cached per trace by id(), holding the list itself too: an id is only unique while its object lives,
+    # and a freed run's id is handed to the next run read, so a bare id key served the next run the last
+    # one's timestamps (every run after the first in a report diverged "at 0.2 s", 2026-11-16).
+    hit = sample.cache.get(id(rows))
+    if hit is None or hit[0] is not rows:
+        hit = (rows, [r["t"] for r in rows])
+        sample.cache[id(rows)] = hit
+    times = hit[1]
     i = bisect.bisect_right(times, t) - 1
     if i < 0:
         return rows[0]
@@ -99,15 +103,25 @@ def yaw_diff(a, b):
 
 def airborne_segments(rows):
     """(start t, duration, apex rise) of every Falling stretch — the jump/glide/fall shape."""
+    # Measured from the last ground row before the launch: from the first Falling row, a trace at 30 FPS
+    # had already risen a whole frame (~7 units at 209 u/s) and an uncapped one under 1, so every jump
+    # compared 6 units "higher" uncapped when the probe's own apex matched to 0.04 (2026-11-16). Timed from
+    # that ground row too, since a jump launches at the start of the frame whose row first reads Falling,
+    # and to halfway between the rows either side of the landing, which happens somewhere inside a frame.
     segs, start, z0, apex = [], None, 0.0, 0.0
+    prev = None
     for r in rows:
         if r["mode"] == 3:
             if start is None:
-                start, z0, apex = r["t"], r["z"], r["z"]
+                start = prev["t"] if prev else r["t"]
+                z0 = prev["z"] if prev else r["z"]
+                apex = r["z"]
             apex = max(apex, r["z"])
         elif start is not None:
-            segs.append((start, r["t"] - start, apex - z0))
+            end = (prev["t"] + r["t"]) / 2
+            segs.append((start, end - start, apex - z0))
             start = None
+        prev = r
     if start is not None:
         segs.append((start, rows[-1]["t"] - start, apex - z0))
     return segs
