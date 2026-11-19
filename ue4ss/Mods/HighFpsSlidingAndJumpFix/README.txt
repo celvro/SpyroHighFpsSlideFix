@@ -72,6 +72,14 @@ Fixes (numbers were recorded in game at 30 FPS and at 144 FPS, before and after 
     Time to walk its route:  30 FPS 6.9 s  |  160-210 FPS before 9.8 s, or 17.0 s and stuck for good
     |  after 6.8 s, with 0.15 s of standing still against 3.0-12.8 s
 
+- Zephyr (Spyro 2) Sergeant Tub: at high FPS he never walks off his cannon after you first talk to him,
+  so the rest of his conversations by the turret cannot happen.
+    Walk off the cannon:  30 FPS ~300 units in 3 s  |  220-300 FPS before ~10 units, then gives up
+    |  after reaches the same spot, at most ~0.3 s behind 30 FPS
+
+- Rams (Spyro 1, Stone Hill): at high FPS they get going more slowly when they start walking.
+    Time to reach walking speed:  30 FPS 0.33 s  |  ~250 FPS before 0.44-0.46 s  |  after 0.32 s
+
 - Idle animation while running (Artisans gem thief, and any other NPC or enemy): at high FPS a character
   can start running away in its idle animation and keep it for the rest of the level, because the speed
   its animation reads stops being a number. The fix puts the character's real speed back, which the game

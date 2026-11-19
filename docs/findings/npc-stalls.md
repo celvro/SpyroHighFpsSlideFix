@@ -116,3 +116,109 @@ Three unrelated enemy types are confirmed and more are untested, so a per-charac
 **Verification:** re-run the probe spawn test on the three confirmed types at 30 FPS and uncapped (`fps=30 only=CES1015_Ram,CES2019_WaterWorker,CES3016_RhynocSpearmen`), and check that distance per second of wanting to move matches the 30 FPS numbers in the table above (148 / 83 / 209 units) within about 10%. Then the tour for patrols, and a pass through a Spyro 2 water level for the Water Worker in its own level.
 
 **Open questions:** whether the AI's requested moves in Custom movement mode (the thieves' flee, waypoint traversal) need the same treatment (the tour should say); and whether writing velocity on characters whose Blueprints move them directly (`K2_SetActorLocation`, montage root motion) can be told apart by the root-motion and tolerance checks alone.
+
+## Zephyr's Sergeant Tub never leaves the cannon (measured and fixed 2026-11-18, `FIX_NPC_WALK`, `fixes/npcwalk.lua`)
+
+The first stall of a walking NPC confirmed in a real level. In Zephyr (LS213), when Tub's first
+conversation ends, `BP_LS213_TubController` sends him into his `Move` state (`PhasmidPatrolPath_1`), which
+walks him off the turret so the next conversations happen by it. His AI requests the move directly
+(`RequestedVelocity`, `bRequestedMoveUseAcceleration`), in Walking mode, with `MaxAcceleration` 2048 and
+`MaxWalkSpeed` 100. The level sits on the 300,000 grid on both axes. His move was started with the
+controller's `MissionAlert`, which is what the end of the conversation sends.
+
+- **30 FPS:** 100 units/s from the first half second, about 300 units in 3 s, then Idle at the bottom
+  (−3665, 1480, z 738).
+- **220–300 FPS, unfixed (2 runs):** 0–8 units/s, about 10 units in 4 s, then the `Move` state gives up,
+  and he is Idle on the turret for good.
+- **Frame-by-frame record at 320 FPS:** after one 4.4-unit move he sat at exactly x = −3371.156 for
+  720 frames, with his AI requesting the move every frame and his velocity flicking between 0 and the
+  (1/32)/dt lock of about 7. The front of his 34-unit capsule was at the edge of the turret's top: every
+  0.03-unit move was blocked, which rounding the velocity alone cannot fix. The first version of the fix
+  (velocity only) left him there, with 669 of 1250 frames not a rounding difference.
+- **The fix does two things, per actor, from the mod's tick:**
+  - It keeps the unrounded velocity, with Sheila's model (`fixes/sheila.lua`).
+  - It gives a blocked walker its time in 30 FPS portions, the lava lizard's trick
+    (`fixes/lizard.lua`). `CustomTimeDilation` gives one tick in every 1/30 s a whole 30 FPS frame of
+    time, until two portions in a row move it. Two details were needed beyond the lizard's version:
+    - **The trigger is slow progress, not zero displacement.** The portions start once the AI has been
+      asking for 0.1 s and the walker covers under a quarter of the asked speed for 3 frames in a row.
+      In some runs Tub didn't stand still at the edge: he crept sideways one 1/32 step a frame
+      (`vy` ≈ −9) until his `Move` state timed out, which a zero-displacement test never caught.
+    - **Each portion starts at the asked walking speed,** in the direction of the AI's last request.
+      From a standstill a portion covers only 2.3 units (2048 × (1/30)²). In one run all 211 portions
+      started from 0 and none got past the edge in 7 s. At 30 FPS he arrives there already walking
+      (3.3 units a frame).
+- Characters are found through `NotifyOnNewObject(PhasmidCharacter)` and kept when their class is in
+  `fix.WALKERS`. Only Tub is listed so far; add a class once its stall is measured.
+- **Fixed, 6 runs at 220–310 FPS from a fresh reset:** every run walked off and stopped at
+  (−3661 to −3662, 1482, z 738), against 30 FPS's (−3665, 1480).
+  - At 3 s he was at x −3591 to −3615, against −3619 at 30 FPS.
+  - The edge held him for 0.04–0.31 s (2–10 portions).
+  - Earlier versions of the fix, without those two details, left him on the cannon or held him up to
+    3.2 s, and once took him up to z 792 on the way, which 30 FPS never does.
+- An unexplained crash happened once: an access violation in UE4SS reading a property of a freed
+  object, right after a probe level reset at 320 FPS. Seven resets after it did not crash.
+
+## Stone Hill rams accelerate slowly from rest at high FPS (measured and fixed 2026-11-19, `fixes/npcwalk.lua`)
+
+Reported by the user ("the rams accelerate more slowly at high fps") and measured with the replay's
+character traces (`tools/Compare-ReplayActors.ps1`, `docs/probe.md`). `BP_CES1015_Ram_C` (8 in LS102) has
+`MaxAcceleration` 512 and `MaxWalkSpeed` 180 in NavWalking, the lowest acceleration in the level (sheep
+1200, shepherds and the thief 2048, Spyro 1000), which is the low-acceleration group this doc is about.
+
+Take `LS102_20261116_233040`, 30 FPS run against an uncapped (~254 FPS) run. `BP_CES1015_Ram_681` makes
+one clean move from a standstill in both (at 1.53 / 1.55 s); speed after the start of the move:
+
+| after | 30 FPS | ~254 FPS |
+|---|---|---|
+| 0.05 s | 50.6 | 15.3 |
+| 0.10 s | 67.6 | 19.7 |
+| 0.20 s | 118.5 | 80.3 |
+| 0.30 s | 169.1 | 133.1 |
+| 0.40 s | 180.1 | 156.9 |
+| 0.50 s | 180.0 | 182.9 |
+
+At 30 FPS it reaches 180 in ~0.35 s, which is what 512 units/s² allows; uncapped it has a third of
+that speed for the first 0.1 s and reaches 180 at ~0.5 s, covering 47.9 units in the first 0.5 s
+against 54.8. Both then leap (Falling, ~457 units/s) at the same moment. One move only: the other rams
+stood still in this take, or moved after Spyro's own run had drifted (the walk-off turn snap,
+`sliding-walking.md`). A take that keeps the rams walking will give more moves.
+
+**Fixed:** `BP_CES1015_Ram_C` added to `fixes/npcwalk.lua`'s `WALKERS`. The rams move like Tub: requested
+moves with `bRequestedMoveUseAcceleration`, so the fix's velocity model (the walking fix's, keeping the
+unrounded velocity while the engine's differs only by rounding) covers them; the 30 FPS portions never
+started (no edge). It wrote 271 of 272 walking frames of the move. `BP_CES1015_Ram_681` in every run of
+the same take, against one 30 FPS reference (`tools\Compare-ReplayActors.ps1 -Class Ram`; t90 is the time
+from rest to 90% of the move's top speed, cut at the leap):
+
+| run | t90 | distance in the first 0.5 s |
+|---|---|---|
+| 30 FPS (3 runs) | 0.33 s | 60.8, 54.8, 54.8 |
+| ~60 FPS, unfixed | 0.32 s | 61.6 |
+| ~246-254 FPS, unfixed (2 runs) | 0.44 / 0.46 s | 47.9 / 45.8 |
+| ~251-252 FPS, fixed (2 runs) | 0.32 / 0.32 s | 58.4 / 58.2 |
+
+The distance column moves by about one 30 FPS frame of walking between 30 FPS runs whose ram paths agree
+to 0.2 units (where a move starts is only known to the frame), so t90 is the measure. Still one ram and one
+move; the ram's later position gap (~130 units from 2.7 s) is Spyro's own uncapped drift, which the rams
+react to.
+
+## Zephyr's cowleks: no slow start (checked 2026-11-19, `npc-accel-check` skill)
+
+`BP_Cowlek_C` (7 in LS213): `MaxAcceleration` 2048, `MaxWalkSpeed` 55, NavWalking, requested moves with
+acceleration. They wander at random, so a replay cannot repeat the flames and charges on them (they leave
+their recorded paths within 0.1-0.5 s even at 30 FPS); the user recorded the test once per framerate
+instead, flaming, super-flaming and charging cowleks, and the two recordings were compared
+(`tools\Compare-ReplayActors.ps1 -Reference <30 take>_ref_actors.csv -Run <uncapped take>_ref_actors.csv`).
+
+| take | FPS | moves from rest | t90 (median) | walking speed (distance / time) | knocked flying |
+|---|---|---|---|---|---|
+| `LS213_20261119_151043` | 30 | 20 | 0.03 s | 43.2 (69 s of walking) | 418 / 482 units/s |
+| `LS213_20261119_150914` | 30 | 12 | 0.03 s | - | 276 / 417 |
+| `LS213_20261119_151147` | ~212 | 34 | 0.03 s | 43.7 (129 s) | 482 |
+
+Every cowlek reaches walking speed within one 30 FPS frame at both framerates (2048 units/s² gets to 55 in
+0.027 s), and walks at the same speed. Their `Velocity` reads 59-60 at the top uncapped against 55-56 at
+30: at ~212 FPS a cowlek moves 0.26 units a frame, and walking recomputes `Velocity` from a position on
+the 1/32 grid, so it carries a few units/s of rounding; the distance actually covered matches. Not added to
+`fixes/npcwalk.lua`.

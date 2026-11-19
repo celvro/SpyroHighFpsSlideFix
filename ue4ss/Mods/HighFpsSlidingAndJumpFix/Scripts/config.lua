@@ -20,6 +20,7 @@ return {
     FIX_SHEILA_BUZZ_WALK = true,          -- false: Sheila stalling and crawling around Buzz's arena
     FIX_NAN_ANIM_SPEED = true,            -- false: a character whose anim Blueprint Speed goes NaN keeps its idle pose
     FIX_LIZARD_STEPS = true,              -- false: the Skelos Badlands lava lizard stuck at the two steps on its route
+    FIX_NPC_WALK = true,                  -- false: Zephyr's Sergeant Tub never walking off his cannon
 
     PROFILE = false,                     -- log the fixes' per-frame cost to UE4SS.log
     PROFILE_INTERVAL = 10,                -- seconds between profile log lines
