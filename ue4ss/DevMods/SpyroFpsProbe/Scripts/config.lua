@@ -48,6 +48,23 @@ return {
     -- and a write every frame: the biggest single cost after the per-actor trackers.
     TRACE = true,
 
+    -- Level replay and PgUp reset: after the sublevel reload, re-send the two level-start events the reload
+    -- skips (lib/playerready.lua): PlayerReady to the NPC dialogue selectors, which pick their conversation
+    -- on it, and the current game state to the dialogues and cutscenes, which only play once they have
+    -- seen it. Without them no NPC in the level can be talked to after a reset (Zephyr's Sergeant Tub
+    -- stayed on his cannon while Spyro walked up to him).
+    REPLAY_PLAYER_READY = true,
+
+    -- Level replay: every other character's position and velocity, every frame, into
+    -- replay_<take>_run<cap>_<stamp>_actors.csv (lib/actortrace.lua), for tools/Compare-ReplayActors.ps1.
+    -- 0.11 ms a frame for Stone Hill's 27 characters.
+    REPLAY_ACTORS = true,
+
+    -- Level replay and PgUp reset: put the characters back the way the recording found them
+    -- (lib/actorstart.lua, from the take's replay_<take>_ref_actors.csv): the ones dead when the take started
+    -- are destroyed after the reload, and the rest are teleported to where they stood when it started.
+    REPLAY_ACTOR_START = true,
+
     -- Optional reads in lib/row.lua. Each is a reflection call (several wrapped in pcall) on every
     -- frame, so they follow the trackers that want them. A group that is off leaves its row fields
     -- nil and its trace columns blank.
@@ -59,6 +76,15 @@ return {
     ROW_CHARGE_TAG = true, -- IGetIsCharging. With it off, r.charging falls back to
                             -- MaxWalkSpeed >= 450, which is what the call fails over to anyway.
     ROW_DUST = false,       -- Charge_GroundEffects, for the charge line's dust counts. Wanted by charge.
+
+    -- Debug unlocks (tools/debugunlock.lua), applied on every level load. They write save data (the
+    -- guidebook flag, inventory items), so back the save up first (tools/Save-GameSnapshot.ps1).
+    -- Remove the whole table to have the probe write nothing; guidebook = false clears the flag again.
+    DEBUG_UNLOCKS = {
+        guidebook = true,   -- the guidebook lists and travels to every level, visited or not
+        moves = true,       -- Spyro 2: climbing, head bash, swimming underwater; Spyro 3: Sparx's four powers
+        superflame = false, -- Spyro 2/3: permanent super flame (replaces the normal flame, so off)
+    },
 
     -- Times each tracker's share of the frame and logs a ranked summary every PROFILE_INTERVAL
     -- seconds (lib/profile.lua). Two clock reads per tracker per frame, so it costs something

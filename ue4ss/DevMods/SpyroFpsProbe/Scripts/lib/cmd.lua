@@ -520,6 +520,48 @@ cmd.register("takes", function(ctx, args)
     return "ok", #list > 0 and table.concat(list, "\n") or ("no takes for " .. level)
 end, { pawn = true, help = "takes [LS###] - replay takes for a level, newest first" })
 
+-- Every character in the level by class, with what decides how it gets going from a standstill
+-- (.claude/skills/npc-accel-check): MaxAcceleration, MaxWalkSpeed, movement mode, and whether its AI's
+-- requested moves accelerate (fixes/npcwalk.lua covers those). With a class filter, each matching
+-- character's name, level-relative position and distance from Spyro instead. One FindAllOf walk.
+cmd.register("characters", function(ctx, args)
+    local filter = args[1] and args[1]:lower()
+    local _, origin = require("lib.levels").current(ctx.pawn)
+    local ox, oy = origin and origin.X or 0, origin and origin.Y or 0
+    local me = ctx.pawn:K2_GetActorLocation()
+    local classes, order, lines = {}, {}, {}
+    for _, actor in ipairs(FindAllOf("Character") or {}) do
+        pcall(function()
+            if not actor:IsValid() or actor:GetAddress() == ctx.pawn:GetAddress() then return end
+            local class = actor:GetClass():GetFName():ToString()
+            if filter then
+                if not class:lower():find(filter, 1, true) then return end
+                local l = actor:K2_GetActorLocation()
+                lines[#lines + 1] = string.format("%s %s rel=%.0f,%.0f,%.0f dist=%.0f", actor:GetFName():ToString(),
+                    class, l.X - ox, l.Y - oy, l.Z, math.sqrt((l.X - me.X) ^ 2 + (l.Y - me.Y) ^ 2))
+                return
+            end
+            local c = classes[class]
+            if not c then
+                local m = actor.CharacterMovement
+                c = { n = 0, text = string.format("acc=%.0f walk=%.0f mode=%s requestedAccel=%s", m.MaxAcceleration,
+                    m.MaxWalkSpeed, util.MOVE_MODE_NAMES[m.MovementMode] or tostring(m.MovementMode),
+                    tostring(m.bRequestedMoveUseAcceleration)) }
+                classes[class] = c
+                order[#order + 1] = class
+            end
+            c.n = c.n + 1
+        end)
+    end
+    if filter then
+        table.sort(lines)
+        return "ok", #lines > 0 and table.concat(lines, "\n") or ("no character class matches " .. args[1])
+    end
+    table.sort(order)
+    for _, class in ipairs(order) do lines[#lines + 1] = string.format("%s x%d %s", class, classes[class].n, classes[class].text) end
+    return "ok", table.concat(lines, "\n")
+end, { pawn = true, help = "characters [class text] - every character class (count, acceleration, walk speed, mode); with a filter, each one's position and distance" })
+
 -- tools/debugunlock.lua (guidebook levels, Spyro 2/3 abilities and characters) applies everything once
 -- and is idempotent. Required here only when asked, so a probe without that module still loads.
 cmd.register("unlock", function(ctx)

@@ -13,6 +13,7 @@
 --
 --   "resume" lines  what was noted, and each step of getting back in (or why it gave up)
 local UEHelpers = require("UEHelpers")
+local controller = require("lib.controller")
 local frontend = require("lib.frontend")
 local levels = require("lib.levels")
 local log = require("lib.log")
@@ -84,7 +85,7 @@ function resume.update()
         end
     end
 
-    local pc = UEHelpers.GetPlayerController()
+    local pc = controller.get() -- every frame, so not UEHelpers' object-array walk
     local pawn = pc:IsValid() and pc.Pawn or nil
     local hasPawn = pawn and pawn:IsValid()
 

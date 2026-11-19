@@ -14,6 +14,10 @@ local num, angleDiff, tryCall = util.num, util.angleDiff, util.tryCall
 
 local CHARGE_WALK_SPEED = 450 -- GE_Spyro_Movement_Charging sets MaxWalkSpeed 458.5; used if the tag query fails
 local NAN = 0 / 0
+-- IGetIsCharging's out-param, reused. The UE4SS build in use (v3.0.1, 2026-09-20) never releases the registry
+-- reference it takes on an out-param table, so a fresh table per frame was kept alive forever; a reused one
+-- still leaks the registry slot, but not a table (docs/findings/frame-rate-ceiling.md).
+local chargeOut = {}
 
 local row = {}
 
@@ -90,7 +94,8 @@ function row.build(pc, pawn, cmc, statics, time, prev)
     -- IGetIsCharging checks the Character.MoveState.Charging gameplay tag.
     if config.ROW_CHARGE_TAG then
         r.chargeTag = tryCall("IGetIsCharging", function()
-            local out = {}
+            local out = chargeOut
+            out.IsCharging = nil
             local ret = pawn:IGetIsCharging(out)
             if type(out.IsCharging) == "boolean" then return out.IsCharging end
             if type(ret) == "boolean" then return ret end

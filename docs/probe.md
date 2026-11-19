@@ -48,6 +48,26 @@ leave on — and it must be `false` in commits.
 
 **J** sends `Character.Event.SlideDown.Start` so `GA_Spyro_SlideDown` starts the steep-slope slide (the looping `AM_CPS1999_SlideDownLoop`, dust trail and camera wind lines) wherever Spyro is, for screenshots. Press J again to send `Character.Event.SlideDown.End`. `tools/slide.lua` reads the `Character.MoveState.SlideDown` tag to decide which one to send, and logs `slide` lines, including one if the game ends the slide itself. Not measured yet: whether the game's slope check ends it right away on flat ground.
 
+## Debug unlocks (config.lua DEBUG_UNLOCKS, added 2026-11-17)
+
+`tools/debugunlock.lua` applies the switches in `DEBUG_UNLOCKS` and logs one `debugunlock` line. It checks once a second and reapplies whenever the game index or the pawn changes. The game index has to be part of that key: on a Spyro 2 → 3 swap the new pawn reused the old one's address, so a key on the pawn alone never fired. `tools\Invoke-Probe.ps1 unlock` applies them on demand. The switches:
+
+- `guidebook`: writes the game's own developer toggle, global float data `debug.show_unvisited_levels`, through `FalconGameplayStatics.SetGlobalFloatData`. With it on, `UI_Inventory` and `UI_InventoryLevelList` list every homeworld and level, not only the visited ones, and travel is gated only by the native `CanLoadLevel`. `false` writes 0, which clears it again.
+- `moves`: in Spyro 2, sets the inventory items `EIT_Climbing` (30), `EIT_HeadBash` (31) and `EIT_Swimming` (32) to 1 with the game state's `"set player inventory item count"(item, 1, true)`. The `true` calls `PlayerSettingsUpdated`, so `BP_Base_Playable.UpdateSettingsSpyro2` applies `GE_Enable_*` at once. In Spyro 3, where those three are always on, it sets Sparx's four powers (`EIT_SparxPower_*`, 45 to 48) instead.
+- `superflame`: `EIT_Superflame` (33), the permanent super flame. It replaces the normal flame, so it is off by default.
+
+All of it is save data: it is written to `FalconSave.106.sav` the next time the game saves. Back the save up with `tools/Save-GameSnapshot.ps1` first.
+
+Verified in game on 2026-11-17 with the command channel's `eval`:
+
+- **Spyro 2 (LS202):** after the unlock, Spyro's ability system had `Character.Enable.Climb`, `.HeadBash` and `.SwimUnderwater`, and not `.SuperFirePermanent`. To show the probe causes it: setting `EIT_Climbing` to 0 dropped the Climb tag, and `unlock` brought it back.
+- **Spyro 3:** setting `EIT_SparxPower_ChestBreaking` to 0 turned the pawn's `SparxDestroysChests` off, and `unlock` turned it back on.
+- **Guidebook:** `FalconGameplayStatics.GetGlobalFloatData("debug.show_unvisited_levels")` read back 1.0. `DebugFunctionLibrary."Get Toggle Setting"`, the call the guidebook itself makes, returned `On=true`.
+- **Not done:** looking at the guidebook on screen. `GameMapsFunctionLib."Get Homeworld Paths"` can't be called from Lua either: UE4SS fails on its array out-parameter with "no table was on the stack".
+- **Game swap:** a Spyro 2 → 3 swap reapplied the unlocks by itself 9 s after Spyro 2's.
+
+**Spyro 3's characters are not unlocked.** No single flag exists for them. Each rescue is a set of states on the native quest board, saved in `QuestSaveData`. In Sunrise Spring that is `Sheila` = trapped, `sheila jail` = Locked, `Sheila's Sign` = Illegible and `LS306_SheilasAlp_Start` = Closed. Each level's character door is another state, and C++ quest code (`QuestFramework`, `QuestCore`) reads them. The quest board's reflected `GetBoardValue`/`SetBoardValue` would be the way in. With `guidebook` on, the guidebook does reach each character's own level (Sheila's Alp, Sgt. Byrd's Base, Bentley's Outpost, Agent 9's Lab), and Spyro plays as that character there.
+
 ## Quicksave (V / B / L / N, added 2026-09-17)
 
 Testing aid, in the probe only. One quicksave slot, not one per level. **V** saves Spyro's spot (level, position, facing, control rotation) to `spots.txt` in the deployed probe folder, which survives restarts and `-ModsOnly` redeploys. The position is stored relative to the level's `LevelTransform`, because the same level can stream in at a different offset after a restart (LS204 was at y +300000 in one session and −300000 in the next; teleporting to the old absolute spot dropped Spyro into the void). Older `spots.txt` lines without the origin fields assume the nearest 300000 grid point. **B** goes to it, travelling to its level first if Spyro is elsewhere. **L** reloads the current level's gameplay sublevels, teleporting to the spot afterwards only if the spot belongs to that level. **N** dumps the GlobalTransporter (see below). Velocity and ability state aren't saved, so save while standing. Keys only queue a request; `sample()` hands it to `tools/quicksave.lua` on the next unpaused frame. Free keys only: the game binds every number key, W/A/S/D/E/F/P/Q/X/Z, LeftControl and the arrows (`DefaultInput.ini`), F11 toggles fullscreen and UE4SS uses Ctrl+R.
@@ -426,9 +446,10 @@ seconds of preset script on a stop.
 - **End** replays the newest take recorded for the current level at the current F5-F8 cap (no cap
   pressed this session: the take's own), and aborts when pressed again. The replay reloads the
   level's gameplay sublevels first (the quicksave L machinery, without its spot teleport), places
-  Spyro on the take's start, settles for a second, then drives `lib/input.lua` by game time. Text
-  boxes and cutscenes are pressed through (`lib/igc.lua`), and a paused prompt is answered the way
-  the tour answers it (`main.lua`).
+  Spyro on the take's start, settles for a second, then drives `lib/input.lua` by game time. Only the
+  take's own inputs go in: nothing looks for text boxes or cutscenes. **Jump goes out as a real Space
+  key** (see "Jump as a real Space key" below), so a press the recording made into a text box closes
+  it the same way. A paused prompt is answered the way the tour answers it (`main.lua`).
 - Axes are read each frame from the character's input component; buttons are captured by hooking
   their input events the way `lib/mouse.lua` hooks the mouse axis. FaceTop is neither captured nor
   replayed (`lib/input.lua`'s reason). If charge's native event can't be hooked, charge is recorded
@@ -437,6 +458,40 @@ seconds of preset script on a stop.
   `..._ref.csv` (the trace recorded with it), `..._run<cap>_<t>.csv` (one per replay), and
   `replay_takes.txt` (the index End reads; last line per level wins). Positions in the traces are
   level-origin-relative, so takes survive the level streaming in at a different LevelTransform.
+- **Every other character is traced too, in the recording and in every replay (2026-11-19, config `REPLAY_ACTORS`, on):** `replay_<take>_ref_actors.csv` while recording,
+  `replay_<take>_run<cap>_<t>_actors.csv` (`lib/actortrace.lua`) has a row per character per frame:
+  name, level-relative position, `CharacterMovement.Velocity`, movement mode. Names match across runs
+  (placed actors keep theirs through the sublevel reload). The list is taken when the take starts
+  playing, so a character spawned later is missing. Reading Stone Hill's 27 characters costs 0.11 ms a
+  frame (properties; `K2_GetActorLocation` doubled it); an uncapped 16 s run is ~7 MB.
+  `tools\Compare-ReplayActors.ps1 -Take <id> [-Class <text>] [-All] [-Reference <file>] [-Run <file>]`
+  compares a run with the recording (or, for takes before 2026-11-19, the newest 30 FPS run); `-All` puts
+  every run of the take in one table, one column each. In about 1.5 s a pair it prints per class and
+  per character the largest gap and when it passed 5 units, plus for every move from a standstill
+  `t50`/`t90` (seconds to 50/90% of that move's top speed) and `d0.5` (units in its first 0.5 s). It
+  writes the same to `build\replay\<take>_actors.txt`. First result: a Stone Hill ram accelerating
+  slowly at ~254 FPS, then fixed (`docs/findings/npc-stalls.md`). Read `t90`, not `d0.5`, for acceleration:
+  where a move starts is only known to the frame, which moves `d0.5` by a frame of walking.
+- **The characters start the way the recording found them (2026-11-19, config `REPLAY_ACTOR_START`,
+  on; `lib/actorstart.lua`).** The reload brings every enemy back alive on its spawn point, while a take
+  starts wherever the player left them (`LS213_20261119_143909`: 30 of 55 characters 28-799 units off,
+  Sergeant Tub back on his cannon). The recording's character list carries each one's state
+  (`dead`/`alive`, from `IsDead`: a killed enemy stays in the level as a dead actor, so being listed is
+  not being alive), and its first rows where each stood. After the reload, every character the recording
+  did not have or had dead is destroyed (killed birds no longer bomb Spyro); when the take starts
+  playing, every living one is teleported to its first row, one recorded frame back along its velocity,
+  with its yaw and velocity. They then start within about a frame of motion (a 100 units/s caterpillar
+  3.3). Log lines: `replay: start state: N character(s) dead or absent ... removed`, `... M of K
+  character(s) put where the recording started them`.
+  - **What cannot be copied: random AI.** Wanderers (cowleks, fodder, birds) pick their next move at
+    random with no seed the probe can set, so they leave the recording within 0.1-0.5 s even at 30 FPS.
+    In `LS213_20261119_145931` a cowlek that wandered elsewhere in the replay stood in Spyro's path at
+    5.80 s and shoved him, which is where that 30->30 run first parts from the recording.
+  - **Mouse charge steering replays (2026-11-19).** It reads the stored `InputAxisRightStickX` in the
+    charge's tick, and the engine's own right-stick event (0, nobody moving the mouse) overwrote what the
+    replay stored, so a mouse-steered charge went straight (recorded yaw 24.5 -> 55.9 deg in 0.2 s,
+    replay 24.45). It is now restored after that event like the left stick; the same take then matched
+    to 5.80 s instead of 2.07 s.
 - Compare with `python3 tools/compare_replays.py --dir <mod folder> --take <level>_<stamp>`
   (python3: the Cowork VM, not the game PC). It writes `replay_<take>_compare.txt`: first
   divergence time, max drift, jump durations and rises while the runs were still aligned, and the
@@ -447,6 +502,121 @@ seconds of preset script on a stop.
 - A 30 FPS take replayed at 30 FPS is the fidelity check, not a bug hunt: if that pair diverges
   early, the capture or the start state is the problem, and runs at other caps prove nothing until
   it is fixed.
+- **Fodder wander at random, and they can block Spyro (2026-11-17).** Asked because a random
+  critter in the way would look like a framerate difference.
+  - **Random:** all 55 fodder Blueprints under `Falcon/Plugins/Characters/Fodder`, read with
+    `AssetDump --code`, have no movement logic of their own. They configure the native
+    `FalconEnemyComponent` state machine:
+    - `Wander` states (from `BP_Base_Fodder`, inherited by 51 classes), with `WanderOuterRadius`
+      100–250 around their origin, plus `WanderDelay` and `WanderTurnRate`.
+    - Weighted random next-state picks in 19 classes (`bChooseRandomNextState`). For example, a
+      Spyro 3 rabbit picks Idle 25 / Idle_Alt 25 / Wander 50.
+    - No seed or random stream anywhere in the assets, so the picks come from the engine's global
+      random state and cannot repeat from run to run.
+  - **They block:** a replay walking to Tub's cannon in Zephyr failed because a bug critter stood in
+    Spyro's way (seen by the user).
+  - **What blocks is not identified.** The capsules alone do not: a fodder capsule is object type
+    `Fodder` (GameTraceChannel7) and blocks Pawn, but Spyro's capsule answers that channel with
+    Overlap, and a pair only blocks when both sides block. A caterpillar frozen 16 units from Spyro's
+    path in take `LS213_20261117_160549` left the trace identical, every frame. So it is another
+    component, another class, or a bug-type enemy rather than fodder.
+  - A "ghost fodder" switch (`IgnoreActorWhenMoving` both ways, matched by fodder class) was written
+    and then removed on the capsule result; it would not have covered an enemy either.
+  - **Dropped (2026-11-19, the user's call).** The blocking actor was not chased further and replays
+    leave fodder as they are. A run that meets a critter the recording did not is noise: record another
+    take instead.
+- **Talking to NPCs after a reset (fixed 2026-11-17/18, config `REPLAY_PLAYER_READY`, on).** In Zephyr
+  (LS213), Sergeant Tub on the cannon turned to Spyro after a PgUp/End reset but never started his
+  conversation, and stayed on the cannon. Two level-start events were missing; each alone stops
+  every conversation in the level, and `lib/playerready.lua` now re-sends both after the reload.
+  - **How a conversation starts:** every NPC talk goes through an `IGC_Selector_C` (Tub's is
+    `IGC_Selector2_3253`). Entering its volume starts `IGC_Current`, the dialogue at `IGC_Index` of
+    its `IGC_List`. A dialogue that needs no prompt starts by itself, through a DoOnce: one try per
+    volume entry.
+  - **What broke:** the selector assigns `IGC_Current` only in its `PlayerReady` event, which
+    `ReceiveBeginPlay` binds to the game state's `OnPlayerReady` delegate. The game broadcasts that on
+    level entry and respawn. The reset's sublevel reload never sends it, so every reloaded selector
+    had `IGC_Current` null. Its one try started nothing, no prompt appeared, and no NPC in the level
+    could be talked to until the level was entered again.
+  - **The fix:** `lib/playerready.lua` runs once the reload is back and calls `PlayerReady()` on every
+    `IGC_Selector_C` in the reloaded sublevels (10 in LS213), which is exactly the call they missed.
+    It costs one `FindAllOf("Actor")` walk per reset. It is kept to selectors on purpose: calling
+    `PlayerReady` on all 21 reloaded actors that have one (Zoe, reward and sequence cinematics)
+    started a cinematic by itself, and the game state's `OnPlayerReadyCallback` would reach everything
+    already in the level too. Log line: `replay: PlayerReady sent to N reloaded NPC dialogue
+    selector(s) in LS###`.
+  - **Measured (take `LS213_20261117_160355`, which walks into Tub's volume):**
+    - Without the call: `IGC_Current` stays null and the selector never activates. Tub turns to
+      Spyro and stays on the cannon. This is the reported bug.
+    - With it: `IGC_Current` is `1_SergeantTub0_Intro_DoEvent`, the selector activates on entry, and
+      the conversation walks Spyro to his talk spot (the fix mod's `path following move` lines). It
+      did so again after a second reset. But the intro still never played: the second event below.
+  - **The second missing event: the game state change (fixed 2026-11-18).** The dialogues and
+    cutscenes themselves (`Spyro_IGC_Base_C` and every subclass: `_Dialog`, `_DoEvent`, `_Sequence`,
+    ...) only play from `StartIGC` when `GameState_CutsceneReady` is set; otherwise they set
+    `QueueReady` and wait. Only `GameStateChange` sets that flag (`NextState` 3, in game), bound at
+    `ReceiveBeginPlay` to the game state's `OnGameStateChanged`, and the game state does not change
+    when sublevels reload. Measured after a reset: the flag false on all 36 IGC actors in LS213 while
+    `FalconGameStateBase.theCurrentGameState` was 3. So the selector started Tub's intro (walking Spyro
+    to his spot) and the intro queued itself for a state change that never came: no text box, no
+    `MissionAlert`, and Tub stayed on the cannon. This is what "Spyro walks up to him and no
+    conversation triggers" was. `lib/playerready.lua` now also calls
+    `GameStateChange(thePreviousGameState, theCurrentGameState)` on every `Spyro_IGC_Base_C` in the
+    reloaded sublevels. Log line: `replay: PlayerReady sent to 10 reloaded NPC dialogue selector(s),
+    game state 3 sent to 36 dialogue/cutscene actor(s) in LS213`.
+  - **Verified end to end (take `LS213_20261117_161516` at 30 FPS, 2026-11-19):** after the reset the
+    intro played as Spyro walked in, the take's own Space presses (as real keys) closed it, the
+    selector moved on to `1_SergeantTub1_Instructions`, and Tub walked off the cannon to
+    (-3664, 1481) — the 30 FPS end spot. That take was recorded while the bug held Tub on the cannon,
+    so its presses were jumps in the recording and the run parts from it at ~2.5 s, where the intro now
+    walks Spyro to his spot. A replay still cannot answer a talk *prompt*: talking is the `FreeLook`
+    action (FaceTop), which takes never capture. Tub's intro needs no prompt.
+- **Jump as a real Space key (2026-11-19).** The take's Jump column goes out as a real Space down/up
+  posted to the game window (`lib/realkeys.lua`, helper `KeyPipe.ps1` in the probe folder, started
+  once per session through `io.popen` and fed one line per key; the window is the process's
+  `UnrealWindow`, not its `MainWindowHandle`, which is UE4SS's console). Space is Jump and UI_Confirm,
+  so a press the recording made into a text box closes it, with no text-box logic in the replay.
+  - **Why not the widget:** calling the text box's own `OnMouseButtonDownFromGameInstance` from Lua
+    (what `lib/dialogue.lua` did, once a missing out-param `Handled` was added) froze the game for good
+    within a fraction of a second of the box opening, in four replays and once by hand. The game thread
+    spun at `Spyro-Win64-Shipping.exe+0x64CC1C` under UE4SS's new-object dispatch, with no crash dump
+    (read with a `MiniDumpWriteDump` type `0x1000` stack dump of the hung process, `DumpInfo <dmp>
+    --threads`, `tools/Resolve-Ue4ssStack.ps1`). A posted key closed the same box every time.
+  - **Timing:** a key posted at the end of frame N runs Jump in frame N+2 at 30 FPS, one frame after
+    an injected event would. So the key goes out one replayed frame early (from the row the next frame
+    sends). And the engine runs a frame's action events before its axis events, while the replay sends
+    the stick between frames: on a frame whose Jump arrives as a key, the stick is held back and sent
+    by the Jump event's hook, right after Jump runs. Without that, the take-off frame consumed 2.0265 of
+    movement input (ground) against the recording's 1.0133 (air), turning Spyro 5.8 deg.
+  - **Measured (2026-11-19):** `LS102_20261116_233040` at 30->30: max gap 0.40 (the old injected Jump
+    0.55), take-offs 6.267 / 7.600 / 9.133 as recorded. `LS102_20261116_230304` (gamepad) 30->30: 2.81
+    (injected 3.15-3.28). Uncapped (~265 FPS) the take-offs land where the injected Jump's did (6.239
+    against 6.238); both uncapped runs leave the recording at 0.5-1 s from the walk-off turn snap
+    (`docs/findings/sliding-walking.md`), not from the jumps.
+  - **Gotchas:** the helper inherits every file the game has open when it starts and holds it until the
+    game exits, so it is started before the run's trace is opened (a run CSV opened first stayed locked
+    against readers). The button hooks used to be registered only while recording; the replay
+    registers them too, and does not play until the key helper and the Jump hook are both ready
+    (otherwise it falls back to the injected Jump and says so in `replay: playing (...)`).
+- **The world tour's Continue (`lib/dialogue.lua`) is a real Enter key too (2026-11-19)**, through the
+  same helper: Enter is UI_Confirm only, so a late press cannot make Spyro jump. It never touches the
+  widgets (the old Blueprint calls had been failing on a missing out-param until 2026-11-18, and froze
+  the game once they worked).
+  - **Not the cause, though it looked like it:** the save component's checkpoint records
+    (`FalconGameSaveComponent`, `getCheckpointDataForActorByName`). Tub's controller writes one when
+    his intro ends (`MissionAlert` → `Set Collected`). With that record present, and committed by
+    Zoe's `save progression`, a reset still brought him back fresh, with the turret firing. Those
+    records last the whole session and survive a travel out and back. The actor variant
+    `objectStoreCheckpointData(actor, {saveDataList = {}}, false)` empties one; the by-name variant
+    does nothing from Lua.
+  - **A reset does not apply checkpoint records at all (2026-11-18).** A selector keeps its place in the
+    conversation as one (`IGCSave` stores the save param `Saved` = index, and `restoreObjectSaveData`
+    reads it back into `IGC_Index`). With Tub's selector holding `Saved` = 1, a reset still brought it
+    back at `IGC_Index` 0. So emptying the records before a reset (tried, then removed) changes nothing.
+    A real level entry would restore them, which is why the skill still says a take should start from
+    a fresh entry.
+- **Walking NPCs at high FPS** are the fix mod's business, not the replay's. Tub never walking off his
+  cannon above ~200 FPS is fixed there (`fixes/npcwalk.lua`, `docs/findings/npc-stalls.md`).
 
 ## Scan sweep (scansweep.txt, added 2026-11-04)
 

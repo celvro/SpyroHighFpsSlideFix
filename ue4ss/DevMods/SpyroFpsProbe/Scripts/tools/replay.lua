@@ -13,8 +13,7 @@
 --
 -- A replay reloads the level's gameplay sublevels first (quicksave.reloadLevel), so enemies and
 -- mechanisms start where a fresh entry puts them, then teleports Spyro onto the take's start, settles,
--- and drives lib/input.lua from the take by game time. Text boxes and cutscenes that open are pressed
--- through (lib/igc.lua / lib/dialogue.lua), as the world tour does.
+-- and drives lib/input.lua from the take by game time, Jump as a real Space key (lib/realkeys.lua).
 --
 -- What is captured, and how:
 --   axes     read each sampled frame from the character's input component (lib/input.lua's cache):
@@ -39,14 +38,17 @@
 --
 -- Log lines: "replay" (start/stop/abort/progress, and why a capture channel is degraded).
 local UEHelpers = require("UEHelpers")
+local actorstart = require("lib.actorstart")
+local actortrace = require("lib.actortrace")
 local anim = require("lib.anim")
-local dialogue = require("lib.dialogue")
-local igc = require("lib.igc")
+local config = require("config")
+local realkeys = require("lib.realkeys")
 local input = require("lib.input")
 local invuln = require("lib.invuln")
 local levels = require("lib.levels")
 local log = require("lib.log")
 local paths = require("lib.paths")
+local playerready = require("lib.playerready")
 local quicksave = require("tools.quicksave")
 local overlay = require("tools.overlay")
 local util = require("lib.util")
@@ -173,12 +175,28 @@ end
 
 -- ---------------------------------------------------------------- capture: button hooks
 
+-- The left stick of a frame whose Jump arrives as a real Space key, held back until that Jump has run
+-- (the "play" phase): { pawn, pc, x, y, prevY }.
+local deferredStick = nil
+local jumpPending = false -- a real Space change is on its way and its Jump has not run yet
+local JUMP_WAIT_TICKS = 3 -- ticks a stick is held back for that Jump before it is sent as usual
+
+local function sendDeferredStick()
+    local d = deferredStick
+    deferredStick, jumpPending = nil, false
+    if d and d.pawn:IsValid() and d.pc:IsValid() then input.sendLeftStick(d.pawn, d.pc, d.x, d.y, d.prevY) end
+end
+
 local function hookButton(b, path)
     local fn = StaticFindObject(path)
     if not (fn and fn:IsValid()) then return false, "not found" end
     local ok, err = pcall(RegisterHook, path, function(context, pressed)
         local okGet, value = pcall(function() return pressed:get() end)
         if okGet and type(value) == "boolean" then held[b.key] = value or nil end
+        -- A replayed real Space has just run Jump: now the frame's stick, as the engine orders them.
+        if b.key == "jump" then
+            if deferredStick then pcall(sendDeferredStick) else jumpPending = false end
+        end
     end)
     if not ok then return false, tostring(err) end
     return true
@@ -244,8 +262,14 @@ end
 local INJECT_FUNCS = {
     InputAxisLeftStickX = "/CharacterCommon/Components/CharacterInputComponent/CharacterInputComponent_Spyro.CharacterInputComponent_Spyro_C:InputAxis_LeftStick_X",
     InputAxisLeftStickY = "/CharacterCommon/Components/CharacterInputComponent/CharacterInputComponent_Spyro.CharacterInputComponent_Spyro_C:InputAxis_LeftStick_Y",
+    -- Mouse charge steering reads the stored InputAxisRightStickX in the charge's tick (the mouse's X for
+    -- the frame; docs/findings/charge-turn-camera.md). The engine's own right-stick event (0: nobody is
+    -- moving the mouse) overwrote what input.apply stored, so a mouse-steered charge went straight in the
+    -- replay (LS213_20261119_145931: recorded yaw 24.5 -> 55.9 deg in 0.2 s, replay stayed at 24.45;
+    -- 2026-11-19). Restored after that event like the left stick.
+    InputAxisRightStickX = "/CharacterCommon/Components/CharacterInputComponent/CharacterInputComponent_Spyro.CharacterInputComponent_Spyro_C:InputAxis_RightStick_X",
 }
-local injectAxes = nil       -- { InputAxisLeftStickX = n, InputAxisLeftStickY = n } while a replay drives; nil otherwise
+local injectAxes = nil       -- { InputAxisLeftStickX/Y = n, InputAxisRightStickX = n } while a replay drives; nil otherwise
 local LEFT_STICK = { leftX = true, leftY = true } -- input.apply leaves these to input.sendLeftStick
 -- The RAW value the engine passed to each stick event this frame, which is what the walking (AddMovementInput)
 -- uses. It is NOT the stored InputAxisLeftStickX/Y: for keyboard input the Blueprint stores a smoothed ramp
@@ -329,7 +353,15 @@ local function registerInjectHooks()
                     -- RequestGroundMovement adds nothing, while everything after the input tick -- the
                     -- charge above all -- reads the take's stick. Restoring each axis after its own event
                     -- left X set when the Y body ran, which added |(x, 0)| more input every frame.
-                    if not injectAxes or prop ~= "InputAxisLeftStickY" then return end
+                    if not injectAxes then return end
+                    if prop == "InputAxisRightStickX" then
+                        local okc, comp = pcall(function() return context:get() end)
+                        if okc and comp and comp:IsValid() then
+                            pcall(function() comp.InputAxisRightStickX = injectAxes.InputAxisRightStickX or 0 end)
+                        end
+                        return
+                    end
+                    if prop ~= "InputAxisLeftStickY" then return end
                     local okc, comp = pcall(function() return context:get() end)
                     if okc and comp and comp:IsValid() then
                         pcall(function()
@@ -470,6 +502,11 @@ local function startRecord(pawn, pc, r)
         id = id, level = level, origin = { x = origin.X, y = origin.Y },
         inputs = inputs, ref = ref, start = r.time, frames = 0,
     }
+    -- Every other character while the take is played, so each replay can be compared against what they
+    -- really did (tools/Compare-ReplayActors.ps1 takes this as its reference).
+    if config.REPLAY_ACTORS then
+        rec.actors = actortrace.open(string.format("%s\\replay_%s_ref_actors.csv", paths.modDir, id), rec.origin, pawn)
+    end
     log("replay: RECORDING %s (stop with Home). Play the level; avoid dying.", id)
 end
 
@@ -479,6 +516,7 @@ local function stopRecord(reason)
     if not r then return end
     r.inputs:close()
     r.ref:close()
+    actortrace.close(r.actors)
     local index = io.open(INDEX, "a")
     if index then
         index:write(string.format("%s %s\n", r.level, r.id))
@@ -512,6 +550,7 @@ local function updateRecord(pawn, pc, r)
         num(rawAxes.InputAxisLeftStickX or axes.lx), num(rawAxes.InputAxisLeftStickY or axes.ly),
         num(r.camPitch), num(r.camYaw)))
     writeTraceRow(rec.ref, t, r, pawn, rec.origin)
+    actortrace.sample(rec.actors, t)
     rec.frames = rec.frames + 1
     rec.lastT = t
 end
@@ -607,7 +646,10 @@ local function finishRun(pawn, pc, reason)
     injectAxes = nil
     if not s then return end
     input.clear(pawn, pc)
+    if s.spaceDown then realkeys.up(realkeys.SPACE) end -- never leave the player's Space held
+    deferredStick, jumpPending = nil, false
     if s.file then s.file:close() end
+    actortrace.close(s.actors)
     local summary = { id = s.take.id, cap = s.cap, reason = reason, path = s.path,
                       elapsed = s.elapsed or 0, length = s.take.rows[#s.take.rows].t, resetOnly = s.resetOnly }
     for _, listener in ipairs(finishListeners) do
@@ -657,6 +699,10 @@ local function startReplay(pawn, pc, r, setFpsCap)
     origin = origin or { X = 0, Y = 0 }
     local stamp = os.date("%Y%m%d_%H%M%S")
     local path = string.format("%s\\replay_%s_run%d_%s.csv", paths.modDir, id, cap, stamp)
+    -- Jump goes out as a real Space (the "play" phase); the settle waits for the key helper. Started
+    -- before the trace is opened: the helper inherits every file the game has open when it starts and
+    -- keeps it until the game exits, which left the run's CSV locked against readers (2026-11-19).
+    realkeys.start()
     local file = io.open(path, "w")
     if not file then
         log("replay: could not open %s", path)
@@ -667,6 +713,8 @@ local function startReplay(pawn, pc, r, setFpsCap)
         take = take, cap = cap, file = file, path = path,
         origin = { x = origin.X, y = origin.Y },
         phase = "reload", next = 1, elapsed = 0, settled = 0, progressAt = PROGRESS_EVERY,
+        -- Who was alive at the take's start, and where (lib/actorstart.lua); nil for older takes.
+        start = config.REPLAY_ACTOR_START and actorstart.read(take.id) or nil,
     }
     setFpsCap(cap)
     log("replay: camera: %s", take.rows[1] and take.rows[1].cyaw
@@ -674,6 +722,10 @@ local function startReplay(pawn, pc, r, setFpsCap)
     log("replay: replaying %s at %d FPS (%d input rows, %.1f s); End aborts", id, cap,
         #take.rows, take.rows[#take.rows].t)
     if not quicksave.reloadLevel(pawn, function()
+        -- The reloaded NPC dialogue selectors missed the level's player-ready event (lib/playerready.lua).
+        if config.REPLAY_PLAYER_READY then playerready.notifyAndLog(level) end
+        -- Enemies dead when the take started stay dead (lib/actorstart.lua).
+        if run and run.start then actorstart.removeAndLog(run.start, pawn, level) end
         if run and run.phase == "reload" then run.phase = "place" end
     end) then
         log("replay: no sublevels to reload; replaying against the level as it stands")
@@ -713,9 +765,12 @@ local function startReset(pawn, pc, r)
         take = take, cap = require("lib.state").fpsCap or take.cap or 30, resetOnly = true,
         origin = { x = origin.X, y = origin.Y },
         phase = "reload", next = 1, elapsed = 0, settled = 0, progressAt = PROGRESS_EVERY,
+        start = config.REPLAY_ACTOR_START and actorstart.read(take.id) or nil,
     }
     log("replay: resetting %s to the start of %s", level, id)
     if not quicksave.reloadLevel(pawn, function()
+        if config.REPLAY_PLAYER_READY then playerready.notifyAndLog(level) end
+        if run and run.start then actorstart.removeAndLog(run.start, pawn, level) end
         if run and run.phase == "reload" then run.phase = "place" end
     end) then
         log("replay: no sublevels to reload; only moving Spyro to the start")
@@ -840,15 +895,32 @@ local function updateReplay(pawn, pc, cmc, r)
         end
         if s.settled < SETTLE then return end
         if s.resetOnly then
+            actorstart.placeAndLog(s.start, s.origin, pawn) -- every character where the take started it
             finishRun(pawn, pc, "done")
             return
         end
+        -- A real Space needs the key helper, and the Jump hook that sends the stick held back for it.
+        local realReady = realkeys.ready() and hooked.jump == true
+        if not realReady and s.settled < SETTLE_MAX then return end
+        s.realJump = realReady
         s.phase, s.elapsed = "play", 0
-        log("replay: playing")
+        -- Every character where the take started it, now that the take starts: during the settle they
+        -- would have wandered off again (lib/actorstart.lua).
+        actorstart.placeAndLog(s.start, s.origin, pawn)
+        if config.REPLAY_ACTORS and s.path then
+            local actorsPath = s.path:gsub("%.csv$", "_actors.csv") -- one value: gsub also returns a count
+            s.actors = actortrace.open(actorsPath, s.origin, pawn)
+        end
+        log("replay: playing (Jump as %s)", s.realJump and "a real Space key"
+            or "an injected input event: the key helper or the Jump hook never got ready, so a conversation will not close")
         return
     end
     -- "play"
-    if igc.active(s.take.level) then igc.close(pc, pawn, s.take.level) end
+    -- Only the take's own inputs go in: nothing here looks for text boxes or cutscenes. The take's Jump
+    -- goes out as a real Space key (lib/realkeys.lua), the way the player pressed it, so a press the
+    -- recording made into a conversation's text box (Space is Jump and UI_Confirm) reaches the box the
+    -- same way. Injected through the input component, as the other buttons are, it never reached a box,
+    -- and calling the box's own press function from Lua froze the game (docs/probe.md, 2026-11-18).
     local health = invuln.health(pawn)
     if health and health <= 0 then
         finishRun(pawn, pc, "DIED -- a death that the recording did not have is a finding")
@@ -882,13 +954,49 @@ local function updateReplay(pawn, pc, cmc, r)
         -- during a charge, and the charge reads the stored stick, which the hook restores (below).
         s.stickX, s.stickY = row.rlx or row.lx, row.rly or row.ly
         input.hold({ rightX = row.rx, rightY = row.ry, triggerL = row.tl, triggerR = row.tr })
-        s.curLx, s.curLy = row.lx, row.ly
+        s.curLx, s.curLy, s.curRx = row.lx, row.ly, row.rx
         for _, key in ipairs(BUTTON_ORDER) do
-            if row[key] ~= input.held(key) then
+            if not (key == "jump" and s.realJump) and row[key] ~= input.held(key) then
                 if row[key] then input.press(key) else input.release(key) end
             end
         end
         s.sent = s.next
+    end
+    -- Jump as a real Space key goes out one replayed frame ahead: from the row the NEXT frame will send.
+    -- A posted key goes through the message pump and the player input and acts a frame after the
+    -- injected event (which runs between frames): sent from the current row, all three take-offs of
+    -- LS102_20261116_233040 at 30->30 came 0.033 s late, with every frame before the first jump exact
+    -- (2026-11-19).
+    local spaceChanges = false
+    if s.realJump then
+        local ahead, midNext = s.next, s.elapsed + r.dt * 1.5
+        while ahead < #rows and rows[ahead].t < midNext do ahead = ahead + 1 end
+        local want = rows[ahead] and rows[ahead].jump == true
+        if want ~= (s.spaceDown == true) then
+            s.spaceDown = want
+            if want then realkeys.down(realkeys.SPACE) else realkeys.up(realkeys.SPACE) end
+        end
+        if want ~= (s.spaceWas == true) then
+            s.spaceWas = want
+            jumpPending, s.holdFrom, s.holdTicks = true, s.elapsed + r.dt * 0.5, JUMP_WAIT_TICKS
+        end
+    end
+    -- A stick held back for a Jump that did not run in its frame (the key went to a text box, which takes
+    -- Space as Continue): that frame is over, so the stick is dropped rather than added to the next one.
+    if deferredStick then
+        deferredStick = nil
+        if not s.lateStickNoted then
+            s.lateStickNoted = true
+            log("replay: a Space press did not run Jump in time (a text box took it?); a frame's stick was dropped")
+        end
+    end
+    -- Hold this tick's stick back for the Jump if the Space change is still on its way: from the tick
+    -- after the one that sent it (a key sent at the end of frame N ran Jump in frame N+2 at 30 FPS), for
+    -- at most JUMP_WAIT_TICKS ticks.
+    if jumpPending and s.holdTicks and s.elapsed > s.holdFrom then
+        spaceChanges = true
+        s.holdTicks = s.holdTicks - 1
+        if s.holdTicks <= 0 then jumpPending = false end
     end
     -- The stored stick (InputAxisLeftStickX/Y) as the recording had it after this frame's input tick,
     -- restored by the stick hook after the engine's Y event (registerInjectHooks). The charge steers by
@@ -896,7 +1004,8 @@ local function updateReplay(pawn, pc, cmc, r)
     -- while charging, so on the FIRST frame of a charge the stick read 0 and the turn started a frame
     -- late (LS102_20261116_230304, a gamepad take: f34 yaw -11.21 against the recording's -8.46, the
     -- replay a frame behind from there and the camera fighting it, 2026-11-16).
-    injectAxes = { InputAxisLeftStickX = s.curLx or 0, InputAxisLeftStickY = s.curLy or 0 }
+    injectAxes = { InputAxisLeftStickX = s.curLx or 0, InputAxisLeftStickY = s.curLy or 0,
+                   InputAxisRightStickX = s.curRx or 0 }
     -- The camera, in two steps around the sticks.
     -- 1. The camera of the frame that just ended: the one the recording had when the next frame began,
     --    which the sticks are turned by (input runs before the camera updates). Setting the NEXT frame's
@@ -913,13 +1022,23 @@ local function updateReplay(pawn, pc, cmc, r)
     local gameTurns = gameTurnedCamera(pawn)
     driveCamera(pawn, pc, endedRow)
     input.apply(pawn, pc, LEFT_STICK)
-    input.sendLeftStick(pawn, pc, s.stickX or 0, s.stickY or 0, s.prevStickY or 0)
+    if spaceChanges then
+        -- The engine runs a frame's action events (Jump) before its axis events. Sent from here, the stick
+        -- would come before the real Space's Jump: the take-off frame of LS102_20261116_233040 then
+        -- consumed 2.0265 of movement input (the ground's two vectors) against the recording's 1.0133 (the
+        -- air's one), turning Spyro 5.8 deg and drifting the run 5 units (2026-11-19). The Jump hook sends
+        -- it instead, straight after Jump, as the engine orders them (sendDeferredStick).
+        deferredStick = { pawn = pawn, pc = pc, x = s.stickX or 0, y = s.stickY or 0, prevY = s.prevStickY or 0 }
+    else
+        input.sendLeftStick(pawn, pc, s.stickX or 0, s.stickY or 0, s.prevStickY or 0)
+    end
     -- The Y the engine's stored axis held when the next frame's X event runs (sendLeftStick's prevY).
     s.prevStickY = s.stickY or 0
     local nextRow = s.sent and rows[s.sent] or nil
     local chargePress = nextRow and nextRow.charge and not (endedRow and endedRow.charge)
     if not gameTurns and not chargePress then driveCamera(pawn, pc, nextRow) end
     writeTraceRow(s.file, s.elapsed, r, pawn, s.origin)
+    actortrace.sample(s.actors, s.elapsed) -- every other character (config REPLAY_ACTORS)
     if s.elapsed >= s.progressAt then
         s.progressAt = s.progressAt + PROGRESS_EVERY
         log("replay: %.0f / %.0f s", s.elapsed, rows[#rows].t)
@@ -1059,7 +1178,10 @@ function replay.update(pawn, pc, cmc, r, setFpsCap)
         registerInjectHooks()
         handleMenu(pawn)
         if rec then updateRecord(pawn, pc, r) end
-        if run then updateReplay(pawn, pc, cmc, r) end
+        if run then
+            registerHooks(pawn, pc) -- the Jump hook sends a stick held back for a real Space (updateReplay)
+            updateReplay(pawn, pc, cmc, r)
+        end
         drawOverlay(pc, pawn, r)
     end)
     if not ok then

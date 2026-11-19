@@ -408,9 +408,18 @@ local function readTrigger()
     return line ~= "" and line or nil
 end
 
+-- The trigger file is looked for every TRIGGER_POLL_FRAMES frames, not every frame: a failed fopen is
+-- ~11 us, which is all this costs per frame when no minigame is running (2026-11-19).
+local TRIGGER_POLL_FRAMES = 10
+local triggerPoll = 0
+
 function minigame.update(pawn, pc, cmc, r, fpsCap)
-    local trigger = readTrigger()
-    if trigger then pending = trigger end
+    triggerPoll = triggerPoll + 1
+    if triggerPoll >= TRIGGER_POLL_FRAMES then
+        triggerPoll = 0
+        local trigger = readTrigger()
+        if trigger then pending = trigger end
+    end
     handle(pawn, pc, cmc)
     if not state then return end
     state.cap = fpsCap

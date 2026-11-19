@@ -95,6 +95,8 @@ local util = require("lib.util")
 -- Required before anything binds a key: it records every RegisterKeyBind so `key <name>` in cmd.txt can
 -- press it (lib/cmd.lua, driven by tools/Invoke-Probe.ps1).
 local cmd = require("lib.cmd")
+-- The player controller kept between frames: UEHelpers.GetPlayerController() walks the object array.
+local controller = require("lib.controller")
 
 -- Which trackers run is config.lua, because each one costs frame time on the game thread (see the
 -- comments there). A tracker that is off is still loaded, so its constants still read as themselves
@@ -152,6 +154,7 @@ local scan = require("tools.scan")
 local scansweep = require("tools.scansweep")
 local replaytest = require("tools.replay")
 local dumpstate = require("tools.dumpstate")
+local debugunlock = require("tools.debugunlock")
 
 -- Sparx is topped up to full every couple of seconds while the probe runs, so a test is not cut short by a
 -- death and a level reload. He still takes hits and knockback (lib/invuln.lua).
@@ -170,13 +173,14 @@ local function sample()
     gameswap.update()   -- the same, for a tour swapping games through the title (lib/gameswap.lua)
     dumpstate.update()  -- the dumpstate.txt diagnostic, also with no pawn
     cmd.update(setFpsCap) -- cmd.txt commands (lib/cmd.lua); also at the title and while paused
-    local pc = UEHelpers.GetPlayerController()
+    local pc = controller.get()
     if not pc:IsValid() then return end
     local pawn = pc.Pawn
     if not pawn:IsValid() then return end
     local cmc = pawn.CharacterMovement
     if not cmc:IsValid() then return end
     glide.register() -- after the pawn exists: its abilities are loaded by then
+    debugunlock.update(pawn) -- once per pawn: guidebook to any level, Spyro 2/3 moves (config DEBUG_UNLOCKS)
 
     local statics = UEHelpers.GetGameplayStatics()
     local time = statics:GetTimeSeconds(pawn)
