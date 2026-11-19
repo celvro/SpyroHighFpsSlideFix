@@ -21,7 +21,7 @@ local log = require("lib.log")
 local lookup = require("lib.lookup")
 local profiler = require("profiler")
 
-local VERSION = "1.5.0" -- tools/Package-Release.ps1 names the release zip from this
+local VERSION = "1.6.0" -- tools/Package-Release.ps1 names the release zip from this
 
 local camera = require("fixes.camera")
 

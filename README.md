@@ -88,7 +88,7 @@ Spyro Reignited Trilogy\Falcon\Binaries\Win64\ue4ss\UE4SS.log
 Near the end you should see:
 
 ```
-[HighFpsSlidingAndJumpFix] v1.5.0 loaded
+[HighFpsSlidingAndJumpFix] v1.6.0 loaded
 ```
 
 ## Troubleshooting
