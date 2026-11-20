@@ -34,6 +34,8 @@ local levelFixes = {
     require("fixes.buzz"),
     require("fixes.sheila"),
     require("fixes.npcwalk"),
+    require("fixes.barrelspin"),
+    require("fixes.rooflaser"),
     require("fixes.animspeed"),
     require("fixes.lizard"),
 }

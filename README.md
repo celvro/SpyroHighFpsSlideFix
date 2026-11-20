@@ -25,6 +25,9 @@ Spyro Reignited Trilogy was tuned for 30 FPS. At higher framerates Spyro handles
 - **Skelos Badlands lizards (Spyro 2):** in the orb mission, the lizard with the longest walk stops at the two steps near the end, and can stay stuck there until the mission gives up on it (6.8 s with the mod against 6.9 s at 30 FPS, and 9.8 s or never without it).
 - **Sergeant Tub in Zephyr (Spyro 2):** after you first talk to him he never walks off his cannon, so the rest of his conversations by the turret cannot happen (at 220–300 FPS he managed ~10 units before giving up, against ~300 in 3 s at 30 FPS).
 - **Stone Hill rams (Spyro 1):** they get going more slowly when they start walking (0.44–0.46 s to walking speed at ~250 FPS, against 0.33 s at 30 FPS and 0.32 s with the mod).
+- **Gulp (Spyro 2 boss):** he stands still instead of charging for most of the fight (212 units walked in 45 s at ~400 FPS, against 1493 at 30 FPS; with the mod his charges reach the same speeds as at 30 FPS).
+- **Bamboo Terrace boulders and barrels (Spyro 3):** in Bentley's section they spin ten times too fast (3184°/s at ~318 FPS instead of 300°/s).
+- **Frozen Altars lasers (Spyro 3):** the roof lasers kill enemies far too fast (0.12 s to burn a Clubber Rhynoc at ~300 FPS, against 0.8–1.0 s at 30 FPS).
 - **Idle animation while running:** a character that starts running away can keep its standing-still animation for the rest of the level, sliding along in its idle pose (the Artisans gem thief, and any other NPC or enemy).
 
 `ue4ss/Mods/HighFpsSlidingAndJumpFix/README.txt` and `nexus-description.bbcode` list the recorded before/after numbers for each fix.

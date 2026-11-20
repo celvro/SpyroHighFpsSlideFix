@@ -80,6 +80,16 @@ Fixes (numbers were recorded in game at 30 FPS and at 144 FPS, before and after 
 - Rams (Spyro 1, Stone Hill): at high FPS they get going more slowly when they start walking.
     Time to reach walking speed:  30 FPS 0.33 s  |  ~250 FPS before 0.44-0.46 s  |  after 0.32 s
 
+- Gulp (Spyro 2 boss): at high FPS he stands still instead of charging, for most of the fight.
+    Walking and charging in the first 45 s:  30 FPS 1493 units  |  ~400 FPS before 212 units (35 s standing still)
+    |  after his charges reach the same speeds as at 30 FPS (0.3-1.0 s to top speed)
+
+- Bamboo Terrace (Spyro 3, Bentley's section): the rolling boulders and barrels spin ten times too fast.
+    Spin:  30 FPS 300 deg/s  |  ~318 FPS before 3184 deg/s  |  after 300 deg/s
+
+- Frozen Altars (Spyro 3): the roof lasers kill enemies far too fast.
+    Time to burn a Clubber Rhynoc:  30 FPS 0.80-0.97 s  |  ~300 FPS before 0.12 s  |  after 0.97 s
+
 - Idle animation while running (Artisans gem thief, and any other NPC or enemy): at high FPS a character
   can start running away in its idle animation and keep it for the rest of the level, because the speed
   its animation reads stops being a number. The fix puts the character's real speed back, which the game

@@ -203,6 +203,35 @@ to 0.2 units (where a move starts is only known to the frame), so t90 is the mea
 move; the ram's later position gap (~130 units from 2.7 s) is Spyro's own uncapped drift, which the rams
 react to.
 
+## Gulp never charges (Spyro 2 boss, measured and fixed 2026-11-19, `fixes/npcwalk.lua`)
+
+Reported as "Gulp fails to charge". `BP_CBS2002_Gulp_C`: `MaxAcceleration` 500, `MaxWalkSpeed` 530 (his own
+Blueprint ramps it toward ~800 during a charge), Walking, requested moves (`RequestedVelocity` aimed to reach
+the next point in one frame, ~125,000 units/s). Gulp's Overlook (LS219) is on the 300,000 grid on both axes,
+and √(64 × 500) ≈ 180 FPS is where his first step from rest starts rounding to nothing.
+
+**Method (no replay needed).** Each run is a fresh level load (`tools\Restart-Game.ps1` into LS219: a probe
+reset leaves the fight broken, with his `MaxWalkSpeed` dropping to 0 after 31 units). Then forward plus Space
+taps through `lib/realkeys.lua` until his AI asks for a move, and an `eval` loop records his position, speed and
+request every frame for 45 s. The fight starts 1.4–1.8 s in at every cap.
+
+| run | distance walked in 45 s | his moves (top speed, time to 90% of it) |
+|---|---|---|
+| 30 FPS | 1493 | top 196–442, t90 0.33–1.00 s, alternating ~0.9 s and ~2.3 s charges |
+| ~400 FPS, unfixed | 212 (126 in the first attempt, then 35 s standing with a live request every frame) | none past 141 |
+| ~400 FPS, fixed (first version) | 6305 | top 530–606 from the first frame (t90 0.00): wrong, see below |
+| ~400 FPS, fixed | 3792 | top 178–419, t90 0.32–1.01 s, the same alternation |
+
+How far he walks in 45 s depends on his attack choices (the 30 FPS run spent its first 14 s on other attacks),
+so the per-move columns are the measure.
+
+**The first version launched him.** The fix's "blocked at an edge" test, written for Tub, judged a walker
+blocked once it covered under a quarter of the asked speed after 0.1 s of asking. Tub (2048 / 100) is at full
+speed by 0.05 s, but after 0.1 s Gulp is meant to be at only 50 of 530, so every start of his counted as blocked,
+and each 30 FPS portion set his velocity to the full asked speed. Both now use `min(asked speed,
+MaxAcceleration × time asked)`, what 30 FPS would have reached. For Tub that changes nothing (2048 × 0.1 > 100),
+checked again afterwards: two reset runs ended at (−3662, 1482) with 2 portions at the edge, as before.
+
 ## Zephyr's cowleks: no slow start (checked 2026-11-19, `npc-accel-check` skill)
 
 `BP_Cowlek_C` (7 in LS213): `MaxAcceleration` 2048, `MaxWalkSpeed` 55, NavWalking, requested moves with

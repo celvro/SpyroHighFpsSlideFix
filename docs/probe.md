@@ -191,6 +191,31 @@ The code is in `tools/worldtour/`: `worldtour.lua` starts and stops a run and st
 - **Comparing.** `tools/Compare-Autotest.ps1` joins the passes on (stop, script, t) and reports, per stop and framerate, the largest and final distance from the 30 FPS pass and the largest camera yaw/pitch difference, worst first.
 - **Restarting from outside the game.** `tools/Restart-Game.ps1` closes the game, arms `resume.go` and starts it again. `lib/resume.lua` notes the level, game index and save slot to `resume.txt` every 5 s (the game itself only records the loaded level at an autosave or a menu quit, so Alt+F4 or a kill loses it); with `resume.go` set it waits out the title screen, calls `"start game"(game, slot)` and travels back to the noted level.
 
+## Driving tests from `eval` without a take (gotchas, 2026-11-19)
+
+Learned while measuring the 2026-11-19 reports (`docs/findings/s3-reports-2026-11.md` and the docs it names):
+
+- **`LoopInGameThreadAfterFrames` does not stop on `return true` in this UE4SS build.** A loop that writes a file
+  when it ends kept rewriting a growing file every frame (1.3 MB, the game down to 122 FPS) until a restart. Keep a
+  `done` flag and return at the top of the callback once it is set.
+- **Posted keys (`lib/realkeys.lua`) need the game window focused.** They started the Gulp fight right after a
+  launch, then moved nothing once focus was elsewhere. `lib/input.lua`'s injected events work without focus; add a
+  button it leaves out at runtime (`input.BUTTONS.bash = "InputAction_FaceTop"`, then `input.press("bash")`).
+  Calling an input event on a component from `FindAllOf("FalconCharacterInputComponent")` directly may hit the wrong
+  component; `lib/input.lua` picks the player controller's.
+- **Resuming into Sunrise Spring (LS301) leaves Spyro 3's opening cinematic running** (game state 5: Spyro takes no
+  input). Skipping its movie widget is not enough; `BP_SP3_OpeningCinematic_C`'s `OnSkip()` ends it (state back to
+  3). A probe `reload` brings the sublevel back and the cinematic with it.
+- **Teleport by an actor's live position, not by saved coordinates:** levels are placed at a different offset per
+  load (Sunrise Spring's rock moved by 300,000 in x between two loads).
+- **Far actors tick every 0.1 s.** The game sets a 0.1 s actor tick interval on actors far from Spyro and 0 near him,
+  so a per-tick bug measured from across the level does not show (`docs/findings/bamboo-barrels.md`). Put Spyro next
+  to what is measured.
+- **A probe `reload` does not reset everything:** a broken treasure chest comes back broken when its gems have save
+  records (Sunrise Spring's head-bash rock), and it crashed the game once in Frozen Altars (an access violation in
+  PhysX while streaming out). A boss fight reloaded this way can be left broken (Gulp's `MaxWalkSpeed` went to 0):
+  restart into the level instead.
+
 ## Command channel (cmd.txt / tools/Invoke-Probe.ps1, added 2026-11-17)
 
 `lib/cmd.lua`. Drives the probe from outside the game without key presses (no computer use, no focus

@@ -66,6 +66,11 @@ fix.WALKERS = {
     -- Time to 90% of walking speed from rest: 30 FPS 0.33 s, ~250 FPS 0.44-0.46 s unfixed, 0.32 s with
     -- this (2026-11-19, docs/findings/npc-stalls.md).
     BP_CES1015_Ram_C = true,
+    -- Spyro 2 boss Gulp (Gulp's Overlook): MaxAcceleration 500, MaxWalkSpeed 530 (ramped up to ~800 by his
+    -- own Blueprint during a charge), Walking on the 300,000 grid. From a fresh level load (2026-11-19):
+    -- 30 FPS 1445 units of walking and charging in 30 s; ~400 FPS 126 units, then 35 s standing still
+    -- with his AI requesting a move every frame (docs/findings/npc-stalls.md).
+    BP_CBS2002_Gulp_C = true,
 }
 
 local entries = {} -- actor address -> { actor, class, tracked = { x, y, stats } | nil, last = { X, Y, Z } }
@@ -100,6 +105,16 @@ end
 local function requestedSpeed(cmc, request)
     local size = math.sqrt(request.X * request.X + request.Y * request.Y)
     return math.min(cmc.MaxWalkSpeed, size)
+end
+
+-- The speed 30 FPS would have reached by now: the asked speed, or less while it is still accelerating
+-- from rest at MaxAcceleration. Both the "blocked" test and a portion's starting speed use it. Without the
+-- cap, Gulp (500 / 530, ~1 s to full speed) counted as blocked on every start, since after 0.1 s he is
+-- meant to be at only 50, and each portion then launched him at full speed: 530-600 from the first frame
+-- against 30 FPS's 0.4-1.0 s to 200-440 (2026-11-19). Tub (2048 / 100) is at full speed by 0.05 s, so the
+-- cap never bites for him.
+local function expectedSpeed(asked, cmc, speed)
+    return math.min(speed, cmc.MaxAcceleration * math.max(asked, util.REFERENCE_DT))
 end
 
 -- Normal time back, if this fix is the one that set it (something else may have taken it over).
@@ -145,7 +160,9 @@ local function step(e, actor, cmc, moved, dt)
         local rx, ry = e.last.X, e.last.Y
         local size = math.sqrt(rx * rx + ry * ry)
         if size > 0 then
-            local speed = math.min(cmc.MaxWalkSpeed, size)
+            -- Asked time from when the portions began, plus the time since: on the near-frozen ticks in
+            -- between, the AI's request can look unchanged, which resets e.asked.
+            local speed = expectedSpeed(s.asked + s.time, cmc, math.min(cmc.MaxWalkSpeed, size))
             VELOCITY.X, VELOCITY.Y = rx / size * speed, ry / size * speed
             cmc.Velocity = VELOCITY
         end
@@ -228,7 +245,7 @@ local function correct(e, realDt)
         if e.stepping then return end
         e.tracked = nil -- carry on from whatever velocity the engine has now
     elseif request and util.aboveReferenceFps(realDt) and actor.CustomTimeDilation == 1 and moved
-        and e.asked > ASKED_BEFORE_JUDGING and moved < MOVED_SHARE * requestedSpeed(cmc, request) * realDt then
+        and e.asked > ASKED_BEFORE_JUDGING and moved < MOVED_SHARE * expectedSpeed(e.asked, cmc, requestedSpeed(cmc, request)) * realDt then
         -- Asked to walk for a while, and covering under a quarter of the asked speed: count it; a few
         -- in a row start the portions. Not "no displacement at all": at the turret's edge he crept
         -- sideways one 1/32 step a frame (vy -9) until his Move state timed out (2026-11-18).
@@ -237,7 +254,8 @@ local function correct(e, realDt)
             e.blocked = 0
             endStint(e)
             -- It has already lost BLOCKED_FRAMES frames: the first portion is due now.
-            e.stepping = { owed = util.REFERENCE_DT, judge = 0, good = 0, portions = 0, moved = 0, time = 0, written = 1 }
+            e.stepping = { owed = util.REFERENCE_DT, judge = 0, good = 0, portions = 0, moved = 0, time = 0, written = 1,
+                asked = e.asked }
             step(e, actor, cmc, 0, realDt)
             return
         end
