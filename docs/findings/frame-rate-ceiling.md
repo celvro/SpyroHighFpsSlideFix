@@ -113,7 +113,30 @@ read 0.4, object property read 1.0, struct property read (`Velocity`, `Requested
 6.0, `IsPlayingRootMotion` 9.0, `K2_GetActorLocation` 11.8. A UFunction call is 5–12 µs, a property read about
 1 µs.
 
-**Suggested (not done: the file belongs to the session working on NPC stalls):**
+**Fixed (2026-11-19).** `fixes/npcwalk.lua` now:
+- Checks an idle walker (not tracked, not stepping, not blocked) with property reads only: `Velocity`, then
+  `RequestedVelocity`, then `Acceleration`, and returns before the UFunction calls when it is standing still.
+- Looks at an idle walker again only every 1/120 s (a quarter of a 30 FPS frame, so a move start is still seen
+  inside the 30 FPS frame it falls in; frames of 1/120 s or longer look every frame). Each struct read is a new
+  Lua table of ~260 B, so the fast path alone still left 8 idle rams at 6.2 KB/frame.
+- Reads the frame's world delta once, from the player controller.
+- Keeps each walker's `CharacterMovement` once it has existed for 0.5 s and the component has a movement mode.
+
+Two of those broke Sergeant Tub on the way (he never left the cannon after a probe reset), and both are
+written up in the code:
+- **Sharing the first walker's world delta.** The streamed-out Tub stayed valid for a while with a world delta
+  of 0, so the new Tub's idle wait never counted down.
+- **Keeping the component from the first frame.** The reloaded Tub's component was replaced after he was
+  registered, and the kept one stayed valid at mode 0 with no velocity.
+
+Measured in Stone Hill (8 idle rams, ~320 FPS, `PROFILE` + `GC_PROFILE`): fixes avg **0.40–0.45 → 0.19–0.20
+ms**, allocation **14.8 → 4.4 KB/frame**, of which the NPC walk fix **12.6 → 2.25**. The fix mod's 4.4 KB is
+the same as Zephyr's before this fix existed. Behaviour unchanged:
+- Rams: t90 0.32 s in 4 uncapped runs of `LS102_20261116_233040`, against 0.33 at 30 FPS.
+- Tub: walks off from a probe reset and stops at (−3661 to −3662, 1482) in 3 runs, against 30 FPS's
+  (−3665, 1480).
+
+**The suggestion this followed (written before the fix):**
 - Check an idle walker first, using property reads only (`Velocity`, `RequestedVelocity`, and the `Acceleration`
   property, which holds what `GetCurrentAcceleration` returns). Do that for walkers that are not tracked, not
   stepping and not blocked, and skip the calls when it is idle. This should bring an idle ram down to about 5 µs

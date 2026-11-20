@@ -35,7 +35,7 @@ Investigation logs live in `docs/`; each fix module in `ue4ss/Mods/HighFpsSlidin
 | `docs/tools.md` | Full packaging/Vortex/tool notes | reference |
 | `docs/findings/tour-2026-11.md` | First full trilogy tour (1843 stops at 30/30/60/160): 20 cross-checked findings, 13 of them a charge; Cupid shown to be an arrow rather than the framerate, and the three harness artefacts the run exposed | measured, charge cluster open |
 | `docs/probe.md` | Probe mod: log lines, CSV columns, hotkeys, quicksave, level streaming, the `cmd.txt` command channel | reference |
-| `docs/findings/frame-rate-ceiling.md` | Uncapped FPS and what the mods cost: PresentMon method (`tools/Measure-FrameTime.ps1`), probe 0.8 → ~0.15 ms (cached PlayerController), fix mod 0.22 ms Zephyr / 0.40–0.45 ms Stone Hill (mostly `npcwalk`), UE4SS out-param registry leak, 320 FPS driver cap | measured 2026-11-19; probe fixed, npcwalk idle cost open |
+| `docs/findings/frame-rate-ceiling.md` | Uncapped FPS and what the mods cost: PresentMon method (`tools/Measure-FrameTime.ps1`), probe 0.8 → ~0.15 ms (cached PlayerController), fix mod 0.22 ms Zephyr / 0.40–0.45 ms Stone Hill (mostly `npcwalk`, now 0.19–0.20 ms), UE4SS out-param registry leak, 320 FPS driver cap | measured 2026-11-19; probe and npcwalk idle cost fixed |
 
 ## Game install
 

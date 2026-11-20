@@ -53,6 +53,9 @@ local MOVED_SHARE = 0.25       -- share of a 30 FPS move a portion must cover to
 local GOOD_PORTIONS = 2        -- moving portions in a row that give normal time back
 local JUDGE_FRAMES = 2         -- frames a portion is given to show up as displacement
 local MAX_STEPPING = 10        -- seconds of portions before giving its time back anyway
+-- How long an idle walker goes between looks: a quarter of a 30 FPS frame, so a move start is still
+-- seen inside the 30 FPS frame it falls in. Frames of 1/30 s or longer are looked at every frame.
+local IDLE_RECHECK = util.REFERENCE_DT / 4
 
 local fix = { name = "NPC walk fix", enabled = config.FIX_NPC_WALK, failed = false }
 
@@ -152,23 +155,70 @@ local function step(e, actor, cmc, moved, dt)
     s.written = actor.CustomTimeDilation
 end
 
+-- The walker's CharacterMovement, kept once it is settled: the object property read costs ~1 us and
+-- some garbage per walker per frame. Not from the first frame: a Tub streamed back in by a probe reset
+-- had his component replaced after he was registered, and the one read on his first frame stayed valid
+-- at mode 0 with no velocity, so he looked idle for good and never left the cannon (2026-11-19). So the
+-- property is read every frame until the walker has existed for CMC_SETTLE and the component has a
+-- movement mode.
+local CMC_SETTLE = 0.5 -- seconds
+
+local function movementOf(e, realDt)
+    local cmc = e.cmc
+    if cmc and cmc:IsValid() then return cmc end
+    cmc = e.actor.CharacterMovement
+    e.age = e.age + realDt
+    if e.age >= CMC_SETTLE and cmc:IsValid() and cmc.MovementMode ~= 0 then e.cmc = cmc end
+    return cmc
+end
+
 -- One NPC, once per frame. The rounding model and thresholds are fixes/sheila.lua's correct().
-local function correct(e)
+-- realDt is the frame's world delta, read once for every walker (they share the world).
+local function correct(e, realDt)
     local actor = e.actor
-    local cmc = actor.CharacterMovement
+    local cmc = movementOf(e, realDt)
     local mode = cmc:IsValid() and cmc.MovementMode
-    if (mode ~= MOVE_WALKING and mode ~= MOVE_NAV_WALKING) or not cmc:IsComponentTickEnabled()
-        or actor:IsPlayingRootMotion() then
+    if mode ~= MOVE_WALKING and mode ~= MOVE_NAV_WALKING then
+        release(e)
+        e.x, e.idleWait = nil, 0
+        return endStint(e)
+    end
+    -- Standing still with nothing going on, which is most walkers most of the time: property reads only
+    -- (~2.5 us), before the UFunction calls below (5-12 us each, ~38 us a frame in all, measured
+    -- 2026-11-19 in docs/findings/frame-rate-ceiling.md). The outcome is the same as the full path's
+    -- "standing still" return: no request, no velocity, no input acceleration (the Acceleration property
+    -- holds what GetCurrentAcceleration returns).
+    local request, requestRead = nil, false
+    if not e.tracked and not e.stepping and e.blocked == 0 then
+        -- Each struct read is a new Lua table (~260 B), so an idle walker is only looked at again every
+        -- IDLE_RECHECK: 8 idle rams read every frame were still 6.2 KB of garbage a frame at 320 FPS.
+        if e.idleWait > 0 then
+            e.idleWait = e.idleWait - realDt
+            return
+        end
+        local vel = cmc.Velocity
+        if vel.X == 0 and vel.Y == 0 then
+            request, requestRead = liveRequest(e, cmc), true
+            if not request then
+                local accel = cmc.Acceleration
+                if accel.X == 0 and accel.Y == 0 then
+                    e.asked, e.x = 0, nil
+                    -- Counting this frame, so a frame of IDLE_RECHECK or longer looks again next frame.
+                    e.idleWait = IDLE_RECHECK - realDt
+                    return
+                end
+            end
+        end
+    end
+    if not cmc:IsComponentTickEnabled() or actor:IsPlayingRootMotion() then
         release(e)
         e.x = nil
         return endStint(e)
     end
-    -- The real length of the frame: the portions are counted against it.
-    local realDt = engine.worldDeltaSeconds(actor)
     local loc = actor:K2_GetActorLocation()
     local moved = e.x and math.sqrt((loc.X - e.x) ^ 2 + (loc.Y - e.y) ^ 2) or nil
     e.x, e.y = loc.X, loc.Y
-    local request = liveRequest(e, cmc)
+    if not requestRead then request = liveRequest(e, cmc) end
     -- How long its AI has been asking it to walk without a break (accelerating from rest is slow at first).
     e.asked = request and e.asked + realDt or 0
 
@@ -206,7 +256,7 @@ local function correct(e)
         if vx ~= 0 or vy ~= 0 then return end
     end
     local tracked = e.tracked
-    local dt = engine.worldDeltaSeconds(actor) * actor.CustomTimeDilation
+    local dt = realDt * actor.CustomTimeDilation
     local s = tracked.stats
     s.time, s.frames = s.time + dt, s.frames + 1
     if request then s.requested = s.requested + 1 end
@@ -244,18 +294,24 @@ local function resolve()
         if actor:IsValid() then
             local class = actor:GetClass():GetFName():ToString()
             if fix.WALKERS[class] then
-                entries[actor:GetAddress()] = { actor = actor, class = class, last = { X = 0, Y = 0, Z = 0 }, blocked = 0, asked = 0 }
+                entries[actor:GetAddress()] = { actor = actor, class = class, last = { X = 0, Y = 0, Z = 0 }, blocked = 0, asked = 0, idleWait = 0, age = 0 }
             end
         end
     end
 end
 
-function fix.update()
+function fix.update(ctx)
     if #pending > 0 then resolve() end
+    -- The frame's world delta, read once from the player controller, which lives in the persistent
+    -- level. Not from the first walker: after a probe reset the streamed-out Tub stayed valid for a
+    -- while with a world delta of 0, and sharing that 0 held the new Tub's idle wait for good, so he
+    -- never left the cannon (2026-11-19). Without a controller, each walker reads its own.
+    local pc = ctx and ctx.pc
+    local shared = pc and pc:IsValid() and engine.worldDeltaSeconds(pc) or nil
     for address, e in pairs(entries) do
         -- A level unload frees the actor; IsValid is the only safe question to ask a dead wrapper.
         if e.actor:IsValid() then
-            correct(e)
+            correct(e, shared or engine.worldDeltaSeconds(e.actor))
         else
             entries[address] = nil
         end
